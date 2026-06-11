@@ -168,7 +168,7 @@ describe('ViewerPage (integration)', () => {
       providers: [
         provideZonelessChangeDetection(),
         provideRouter(
-          [{ path: 'r/:owner/:repo', component: ViewerPage }],
+          [{ path: 'r/:owner/:repo', component: ViewerPage, data: { provider: 'github' } }],
           withComponentInputBinding(),
         ),
         { provide: GIT_PROVIDERS, useExisting: GithubProvider, multi: true },

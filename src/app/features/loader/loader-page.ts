@@ -2,6 +2,7 @@ import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/cor
 import { Router } from '@angular/router';
 
 import { ProviderRegistry } from '../../core/git/git-provider';
+import { LocalRepos, supportsLocalRepos } from '../../core/git/local/local-repos';
 import { RecentRepos, RecentRepo } from '../../core/store/recent-repos';
 
 const EXAMPLES = ['angular/angular', 'sindresorhus/ky', 'octocat/Hello-World'];
@@ -37,8 +38,8 @@ const COMMIT_SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
           </div>
           <h1 class="text-3xl font-semibold tracking-tight text-zinc-50">Time Tracer</h1>
           <p class="mt-2 max-w-md text-sm leading-6 text-zinc-400">
-            Explore any public GitHub repository in your browser — and soon, travel back through its
-            history change by change.
+            Explore any public GitHub or GitLab repository — or a local folder — and travel back
+            through its history change by change, right in your browser.
           </p>
         </div>
 
@@ -50,7 +51,7 @@ const COMMIT_SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
             type="text"
             autocomplete="off"
             spellcheck="false"
-            placeholder="github.com/owner/repo  ·  owner/repo  ·  git&#64;github.com:owner/repo"
+            placeholder="github.com/owner/repo  ·  gitlab.com/owner/repo.git  ·  owner/repo"
             class="h-11 min-w-0 flex-1 rounded-lg border border-zinc-700 bg-zinc-900 px-4 text-sm text-zinc-100 placeholder:text-zinc-600 outline-none transition focus:border-indigo-400/60 focus:ring-2 focus:ring-indigo-400/20"
             [value]="query()"
             (input)="onInput($event)"
@@ -66,6 +67,31 @@ const COMMIT_SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 
         @if (error()) {
           <p class="mt-3 text-sm text-rose-400" role="alert">{{ error() }}</p>
+        }
+
+        @if (canOpenLocal) {
+          <button
+            type="button"
+            [disabled]="busy()"
+            class="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900/60 px-4 py-2.5 text-sm text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100 disabled:cursor-wait disabled:opacity-60"
+            (click)="openLocal()"
+          >
+            <svg
+              class="size-4 text-indigo-300/80"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path
+                d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"
+              />
+            </svg>
+            Open a local repository folder…
+          </button>
         }
 
         <div class="mt-4 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
@@ -94,9 +120,19 @@ const COMMIT_SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
                     class="flex min-w-0 flex-1 flex-col items-start gap-0.5 px-4 py-3 text-left transition hover:bg-zinc-800/40"
                     (click)="openRecent(recent)"
                   >
-                    <span class="font-mono text-sm text-zinc-200"
-                      >{{ recent.owner }}/{{ recent.repo }}</span
-                    >
+                    <span class="flex items-center gap-2 font-mono text-sm text-zinc-200">
+                      @if ((recent.provider ?? 'github') === 'local') {
+                        {{ recent.repo }}
+                      } @else {
+                        {{ recent.owner }}/{{ recent.repo }}
+                      }
+                      @if (recent.provider && recent.provider !== 'github') {
+                        <span
+                          class="rounded-full border border-zinc-700 px-1.5 text-[10px] text-zinc-500"
+                          >{{ recent.provider }}</span
+                        >
+                      }
+                    </span>
                     @if (recent.description) {
                       <span class="w-full truncate text-xs text-zinc-500">{{
                         recent.description
@@ -128,8 +164,8 @@ const COMMIT_SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
         }
 
         <p class="mt-10 text-center text-xs leading-5 text-zinc-600">
-          Client-only — data is fetched straight from GitHub's public API (60 requests/hour
-          unauthenticated). No server, nothing leaves your browser.
+          Client-only — data comes straight from the GitHub/GitLab public APIs (rate-limited when
+          unauthenticated) or your own disk. No server, nothing leaves your browser.
         </p>
       </div>
     </main>
@@ -138,12 +174,14 @@ const COMMIT_SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 export class LoaderPage {
   private readonly router = inject(Router);
   private readonly registry = inject(ProviderRegistry);
+  private readonly localRepos = inject(LocalRepos);
   protected readonly recents = inject(RecentRepos);
 
   protected readonly examples = EXAMPLES;
   protected readonly query = signal('');
   protected readonly error = signal<string | null>(null);
   protected readonly busy = signal(false);
+  protected readonly canOpenLocal = supportsLocalRepos();
 
   protected onInput(event: Event): void {
     this.query.set((event.target as HTMLInputElement).value);
@@ -162,7 +200,7 @@ export class LoaderPage {
     const parsed = provider?.parseUrl(input);
     if (!provider || !parsed) {
       this.error.set(
-        'That does not look like a GitHub repository. Try "owner/repo" or a full github.com URL.',
+        'That does not look like a GitHub or GitLab repository. Try "owner/repo" or a full URL.',
       );
       return;
     }
@@ -189,7 +227,24 @@ export class LoaderPage {
     const queryParams: Record<string, string> = {};
     if (ref) queryParams['ref'] = ref;
     if (path) queryParams['path'] = path;
-    void this.router.navigate(['/r', parsed.owner, parsed.repo], { queryParams });
+    void this.router.navigate([routePrefix(provider.id), parsed.owner, parsed.repo], {
+      queryParams,
+    });
+  }
+
+  /** Opens a local folder via the File System Access API. */
+  protected async openLocal(): Promise<void> {
+    if (this.busy()) return;
+    this.busy.set(true);
+    this.error.set(null);
+    try {
+      const name = await this.localRepos.pick();
+      if (name) void this.router.navigate(['/local', name]);
+    } catch (error) {
+      this.error.set(error instanceof Error ? error.message : 'Could not open the folder.');
+    } finally {
+      this.busy.set(false);
+    }
   }
 
   protected openExample(example: string): void {
@@ -198,6 +253,15 @@ export class LoaderPage {
   }
 
   protected openRecent(recent: RecentRepo): void {
-    void this.router.navigate(['/r', recent.owner, recent.repo]);
+    const provider = recent.provider ?? 'github';
+    if (provider === 'local') {
+      void this.router.navigate(['/local', recent.repo]);
+      return;
+    }
+    void this.router.navigate([routePrefix(provider), recent.owner, recent.repo]);
   }
+}
+
+function routePrefix(providerId: string): string {
+  return providerId === 'gitlab' ? '/gl' : '/r';
 }

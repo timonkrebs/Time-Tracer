@@ -266,6 +266,7 @@ export class RepoStore {
         owner: metadata.owner,
         repo: metadata.name,
         description: metadata.description,
+        provider: slug.provider,
       });
     } catch (error) {
       if (seq !== this.loadSeq) return;

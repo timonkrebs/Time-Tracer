@@ -11,6 +11,7 @@ import {
 import { Title } from '@angular/platform-browser';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 
+import { LocalRepos } from '../../core/git/local/local-repos';
 import { RenameCandidate, RepoStore } from '../../core/store/repo-store';
 import { relativeTime, shortSha } from '../../core/util/relative-time';
 import { DiffView } from './diff-view';
@@ -23,6 +24,7 @@ const TREE_WIDTH_DEFAULT = 300;
 const TREE_WIDTH_MIN = 200;
 const TREE_WIDTH_MAX = 600;
 const VIEW_MODE_KEY = 'time-tracer.view-mode';
+const HISTORY_OPEN_KEY = 'time-tracer.history-open';
 
 /**
  * `/r/:owner/:repo?ref=…&path=…&at=…&view=…&blame=…` — the split-pane
@@ -116,7 +118,7 @@ const VIEW_MODE_KEY = 'time-tracer.view-mode';
           @if (store.truncated()) {
             <span
               class="shrink-0 rounded-full border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 text-[11px] text-amber-300"
-              title="GitHub truncated the tree listing — some files may be missing."
+              title="The provider truncated the tree listing — some files may be missing."
             >
               partial tree
             </span>
@@ -158,13 +160,23 @@ const VIEW_MODE_KEY = 'time-tracer.view-mode';
             <h2 class="text-base font-semibold text-zinc-100">{{ errorTitle() }}</h2>
             <p class="mt-2 text-sm leading-6 text-zinc-400">{{ store.error()?.message }}</p>
             <div class="mt-6 flex items-center justify-center gap-3">
-              <button
-                type="button"
-                class="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-400"
-                (click)="store.retry()"
-              >
-                Try again
-              </button>
+              @if (provider() === 'local') {
+                <button
+                  type="button"
+                  class="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-400"
+                  (click)="reconnectLocal()"
+                >
+                  Reconnect folder
+                </button>
+              } @else {
+                <button
+                  type="button"
+                  class="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-400"
+                  (click)="store.retry()"
+                >
+                  Try again
+                </button>
+              }
               <a
                 routerLink="/"
                 class="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 transition hover:border-zinc-500"
@@ -420,10 +432,13 @@ export class ViewerPage {
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
   private readonly title = inject(Title);
+  private readonly localRepos = inject(LocalRepos);
 
   /** Bound from the route by `withComponentInputBinding`. */
   readonly owner = input.required<string>();
   readonly repo = input.required<string>();
+  /** Provider id, bound from the route's data (github/gitlab/local). */
+  readonly provider = input('github');
   readonly ref = input<string | undefined>();
   readonly path = input<string | undefined>();
   /** Commit sha the selected file is viewed at (time travel). */
@@ -437,7 +452,8 @@ export class ViewerPage {
 
   protected readonly treeWidth = signal(restoreTreeWidth());
   protected readonly dragging = signal(false);
-  protected readonly historyOpen = signal(false);
+  /** Remembered across files and sessions: once opened, History stays open. */
+  protected readonly historyOpen = signal(restoreHistoryOpen());
   /** Remembered File/Changes choice; Changes is the default. */
   private readonly viewPref = signal<'file' | 'diff'>(restoreViewMode());
   private dragOrigin: { x: number; width: number } | null = null;
@@ -530,10 +546,11 @@ export class ViewerPage {
 
   constructor() {
     effect(() => {
+      const provider = this.provider() || 'github';
       const owner = this.owner();
       const repo = this.repo();
       const ref = this.ref() || undefined;
-      untracked(() => void this.store.loadRepo({ provider: 'github', owner, repo }, ref));
+      untracked(() => void this.store.loadRepo({ provider, owner, repo }, ref));
     });
 
     effect(() => {
@@ -719,8 +736,28 @@ export class ViewerPage {
     this.goToCommit(idx === 0 ? null : this.store.history()[idx - 1].sha);
   }
 
+  /** Re-grants read permission to a persisted local folder (user gesture). */
+  protected async reconnectLocal(): Promise<void> {
+    const name = this.repo();
+    try {
+      const ok = await this.localRepos.reconnect(name);
+      if (ok) {
+        this.store.retry();
+      } else if (!(await this.localRepos.hasStoredHandle(name))) {
+        void this.router.navigate(['/']);
+      }
+    } catch {
+      void this.router.navigate(['/']);
+    }
+  }
+
   protected toggleHistory(): void {
     this.historyOpen.update((open) => !open);
+    try {
+      localStorage.setItem(HISTORY_OPEN_KEY, this.historyOpen() ? '1' : '0');
+    } catch {
+      // Best-effort only.
+    }
   }
 
   protected toggleBlame(): void {
@@ -810,5 +847,13 @@ function persistViewMode(mode: 'file' | 'diff'): void {
     localStorage.setItem(VIEW_MODE_KEY, mode);
   } catch {
     // Best-effort only.
+  }
+}
+
+function restoreHistoryOpen(): boolean {
+  try {
+    return localStorage.getItem(HISTORY_OPEN_KEY) === '1';
+  } catch {
+    return false;
   }
 }

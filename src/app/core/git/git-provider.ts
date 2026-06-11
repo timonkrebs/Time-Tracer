@@ -78,7 +78,8 @@ export interface GitProvider {
    */
   getCommitFiles(slug: RepoSlug, sha: string): Promise<CommitFileChange[]>;
 
-  webLinks(slug: RepoSlug, ref: string, path?: string): RepoWebLinks;
+  /** Outbound web links, or null when the provider has no web pendant. */
+  webLinks(slug: RepoSlug, ref: string, path?: string): RepoWebLinks | null;
 }
 
 /** All registered git providers (multi token). */

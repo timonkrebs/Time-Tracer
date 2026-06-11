@@ -1,10 +1,11 @@
 # Time Tracer
 
-Explore any public GitHub repository in your browser — and, as the project grows, travel back
-through its history change by change.
+Explore any public GitHub or GitLab repository — or a git repository on your own disk — and
+travel back through its history change by change.
 
-Time Tracer is a **client-only** Angular app: there is no backend. Everything is fetched directly
-from GitHub's public REST API, so nothing you browse ever leaves your machine.
+Time Tracer is a **client-only** Angular app: there is no backend. Hosted repositories are read
+through the GitHub/GitLab public REST APIs; local folders are read directly via the File System
+Access API and parsed with isomorphic-git. Nothing you browse ever leaves your machine.
 
 ## Vision
 
@@ -23,12 +24,18 @@ commits and time travel (see `listCommits` on the provider interface).
 ## Current features
 
 - **Load a repo** from `owner/repo`, any `github.com` URL (`/tree/<ref>`, `/blob/<ref>/<path>`,
-  commit URLs, `.git`, SSH form) or a `raw.githubusercontent.com` URL — including branch names
-  containing `/`, resolved against the repo's real refs.
+  commit URLs, `.git`, SSH form), a `raw.githubusercontent.com` URL — including branch names
+  containing `/`, resolved against the repo's real refs — or any `gitlab.com` URL
+  (`…/gitlab-org/gitlab.git`, `/-/tree/...`, `/-/blob/...`, nested groups included).
+- **Open local repositories** like vscode.dev: pick a folder with the File System Access API and
+  Time Tracer parses its `.git` directly in the browser with isomorphic-git — full tree, history,
+  diffs, blame and rename candidates, completely offline and read-only. Folder handles persist
+  across reloads (IndexedDB); a one-click "Reconnect folder" re-grants permission.
 - **Desktop-first split-pane viewer**: resizable file tree (drag the divider, double-click to
   reset) next to a file view with a line-number gutter — the future home of blame annotations.
 - **Per-file commit history**: a History panel lists the commits that touched the selected file
-  (paginated), with author and relative date.
+  (paginated), with author and relative date. Its open/closed state is remembered, so it can stay
+  open permanently across files and sessions.
 - **Time travel**: pick any commit to see the file exactly as it was, with a banner showing where
   in time you are and a one-click way back to the tip. The ← Older / Newer → steppers are always
   visible (only the dead direction is disabled) and work straight from the current version,
@@ -74,7 +81,9 @@ commits and time travel (see `listCommits` on the provider interface).
 - **Angular 21** — zoneless change detection, signals everywhere, standalone components, signal
   inputs/outputs, the built-in control flow syntax, and router component-input binding.
 - **Tailwind CSS v4** via `@tailwindcss/postcss` (configured in `.postcssrc.json`).
-- **Vitest** through `ng test` (jsdom), including router-driven integration tests of the viewer.
+- **isomorphic-git** (lazy-loaded) to parse local repositories in the browser.
+- **Vitest** through `ng test` (jsdom), including router-driven integration tests of the viewer
+  and local-provider tests that build a real git repo in an in-memory filesystem.
 
 ## Architecture
 
@@ -86,7 +95,9 @@ src/app/
 │   ├── models.ts            # RepoSlug, TreeEntry, RepoFile, CommitInfo, errors…
 │   ├── git/
 │   │   ├── git-provider.ts  # GitProvider interface · GIT_PROVIDERS token · registry
-│   │   └── github/          # URL parser + unauthenticated REST implementation
+│   │   ├── github/          # URL parser + unauthenticated REST implementation
+│   │   ├── gitlab/          # gitlab.com URL parser + REST v4 implementation
+│   │   └── local/           # File System Access fs + isomorphic-git provider
 │   ├── store/
 │   │   ├── repo-store.ts    # signals store: load lifecycle, tree, selection, file +
 │   │   │                    # history caches, time-travel (viewAt) state
@@ -130,5 +141,7 @@ npm run build      # production build into dist/
    predecessor's timeline).
 6. **Branch/ref switcher** — pick branches and tags from the viewer header (any ref already works
    via the `?ref=` query param).
-7. **Quality of life** — syntax highlighting, optional personal-access-token input for a higher
-   API budget, and GitLab/Bitbucket providers behind the existing `GitProvider` interface.
+7. ~~**More sources** — GitLab provider and local folders behind the `GitProvider` interface.~~
+   ✅ Done.
+8. **Quality of life** — syntax highlighting and an optional personal-access-token input for a
+   higher hosted-API budget.
