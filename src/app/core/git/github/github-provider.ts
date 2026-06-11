@@ -3,6 +3,7 @@ import { Injectable } from '@angular/core';
 import {
   CommitInfo,
   ParsedRepoUrl,
+  RefResolution,
   RepoFile,
   RepoMetadata,
   RepoProviderError,
@@ -47,6 +48,11 @@ interface GithubBlobResponse {
   encoding: string;
 }
 
+interface GithubMatchingRefResponse {
+  /** Fully qualified ref name, e.g. `refs/heads/feature/foo`. */
+  ref: string;
+}
+
 interface GithubCommitResponse {
   sha: string;
   html_url: string;
@@ -73,6 +79,40 @@ export class GithubProvider implements GitProvider {
 
   parseUrl(input: string): ParsedRepoUrl | null {
     return parseGithubUrl(input);
+  }
+
+  /**
+   * Disambiguates the `<ref>/<path>` tail of a tree/blob URL: lists all
+   * branches (then tags) starting with the first segment via the cheap
+   * `matching-refs` endpoint and picks the longest one that prefixes the
+   * combined string. Resolves to null on no match or any API failure.
+   */
+  async resolveRefPath(slug: RepoSlug, refAndPath: string): Promise<RefResolution | null> {
+    const firstSegment = refAndPath.split('/', 1)[0];
+    for (const namespace of ['heads', 'tags'] as const) {
+      let matches: GithubMatchingRefResponse[];
+      try {
+        matches = await this.request<GithubMatchingRefResponse[]>(
+          `/repos/${enc(slug.owner)}/${enc(slug.repo)}/git/matching-refs/${namespace}/${enc(firstSegment)}`,
+          { notFound: `No refs matching "${firstSegment}" were found.` },
+        );
+      } catch {
+        return null;
+      }
+      const qualifier = `refs/${namespace}/`;
+      let best: string | null = null;
+      for (const match of matches) {
+        if (!match.ref.startsWith(qualifier)) continue;
+        const name = match.ref.slice(qualifier.length);
+        if (name !== refAndPath && !refAndPath.startsWith(`${name}/`)) continue;
+        if (!best || name.length > best.length) best = name;
+      }
+      if (best) {
+        const path = refAndPath.slice(best.length + 1);
+        return { ref: best, ...(path ? { path } : {}) };
+      }
+    }
+    return null;
   }
 
   async getMetadata(slug: RepoSlug): Promise<RepoMetadata> {

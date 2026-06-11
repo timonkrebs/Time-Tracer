@@ -25,6 +25,13 @@ export interface ParsedRepoUrl {
   readonly path?: string;
 }
 
+/** A `<ref>/<path>` split confirmed against the provider's actual refs. */
+export interface RefResolution {
+  readonly ref: string;
+  /** Remaining path after the ref; absent when the ref consumed everything. */
+  readonly path?: string;
+}
+
 /** Repository metadata as reported by the provider. */
 export interface RepoMetadata {
   readonly owner: string;

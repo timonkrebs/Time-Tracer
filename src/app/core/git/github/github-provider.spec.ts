@@ -226,6 +226,52 @@ describe('GithubProvider', () => {
     );
   });
 
+  it('resolves a branch name containing slashes', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([{ ref: 'refs/heads/claude/brave-hamilton' }, { ref: 'refs/heads/claudette' }]),
+    );
+
+    const resolved = await provider.resolveRefPath(slug, 'claude/brave-hamilton');
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://api.github.com/repos/acme/rocket/git/matching-refs/heads/claude',
+    );
+    expect(resolved).toEqual({ ref: 'claude/brave-hamilton' });
+  });
+
+  it('splits ref and path at the matching branch boundary', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([{ ref: 'refs/heads/feature/foo' }]));
+
+    const resolved = await provider.resolveRefPath(slug, 'feature/foo/src/main.ts');
+
+    expect(resolved).toEqual({ ref: 'feature/foo', path: 'src/main.ts' });
+  });
+
+  it('falls back to tags when no branch matches', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(jsonResponse([{ ref: 'refs/tags/release/1.0' }]));
+
+    const resolved = await provider.resolveRefPath(slug, 'release/1.0/docs');
+
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      'https://api.github.com/repos/acme/rocket/git/matching-refs/tags/release',
+    );
+    expect(resolved).toEqual({ ref: 'release/1.0', path: 'docs' });
+  });
+
+  it('resolves null when no ref matches the combined string', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([{ ref: 'refs/heads/main-old' }]));
+
+    await expect(provider.resolveRefPath(slug, 'main/packages')).resolves.toBeNull();
+  });
+
+  it('resolves null instead of rejecting when the ref lookup fails', async () => {
+    fetchMock.mockRejectedValue(new TypeError('Failed to fetch'));
+
+    await expect(provider.resolveRefPath(slug, 'feature/foo')).resolves.toBeNull();
+  });
+
   it('recognises GitHub inputs via canHandle', () => {
     expect(provider.canHandle('https://github.com/a/b')).toBe(true);
     expect(provider.canHandle('a/b')).toBe(true);

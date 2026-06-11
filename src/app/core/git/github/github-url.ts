@@ -15,7 +15,7 @@ const REPO_PATTERN = /^[A-Za-z0-9._-]+$/;
  *
  * Note: for `tree`/`blob` URLs the ref is taken as the first segment after the
  * keyword; branch names containing `/` cannot be disambiguated without an API
- * round trip and are treated as ref + path.
+ * round trip — callers re-split afterwards via `GitProvider.resolveRefPath`.
  */
 export function parseGithubUrl(input: string): ParsedRepoUrl | null {
   const trimmed = input.trim();

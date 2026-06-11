@@ -6,6 +6,9 @@ import { RecentRepos, RecentRepo } from '../../core/store/recent-repos';
 
 const EXAMPLES = ['angular/angular', 'sindresorhus/ky', 'octocat/Hello-World'];
 
+/** Full commit shas need no ref/path disambiguation — they never contain `/`. */
+const COMMIT_SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
+
 @Component({
   selector: 'app-loader-page',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -54,9 +57,10 @@ const EXAMPLES = ['angular/angular', 'sindresorhus/ky', 'octocat/Hello-World'];
           />
           <button
             type="submit"
-            class="h-11 shrink-0 rounded-lg bg-indigo-500 px-5 text-sm font-medium text-white transition hover:bg-indigo-400 focus-visible:ring-2 focus-visible:ring-indigo-300 active:bg-indigo-600"
+            [disabled]="busy()"
+            class="h-11 shrink-0 rounded-lg bg-indigo-500 px-5 text-sm font-medium text-white transition hover:bg-indigo-400 focus-visible:ring-2 focus-visible:ring-indigo-300 active:bg-indigo-600 disabled:cursor-wait disabled:opacity-60"
           >
-            Open
+            {{ busy() ? 'Opening…' : 'Open' }}
           </button>
         </form>
 
@@ -139,14 +143,16 @@ export class LoaderPage {
   protected readonly examples = EXAMPLES;
   protected readonly query = signal('');
   protected readonly error = signal<string | null>(null);
+  protected readonly busy = signal(false);
 
   protected onInput(event: Event): void {
     this.query.set((event.target as HTMLInputElement).value);
     this.error.set(null);
   }
 
-  protected open(event: Event): void {
+  protected async open(event: Event): Promise<void> {
     event.preventDefault();
+    if (this.busy()) return;
     const input = this.query().trim();
     if (!input) {
       this.error.set('Paste a repository URL to get started.');
@@ -160,9 +166,29 @@ export class LoaderPage {
       );
       return;
     }
+
+    // The URL parser splits `tree/<ref>/<path>` at the first segment, which is
+    // wrong for refs containing `/` (e.g. `feature/foo`). Let the provider
+    // re-split against the repo's actual refs; on failure keep the naive split.
+    let { ref, path } = parsed;
+    if (ref && path && provider.resolveRefPath && !COMMIT_SHA_PATTERN.test(ref)) {
+      this.busy.set(true);
+      try {
+        const resolved = await provider.resolveRefPath(
+          { provider: provider.id, owner: parsed.owner, repo: parsed.repo },
+          `${ref}/${path}`,
+        );
+        if (resolved) ({ ref, path } = resolved);
+      } catch {
+        // Best-effort only — proceed with the naive split.
+      } finally {
+        this.busy.set(false);
+      }
+    }
+
     const queryParams: Record<string, string> = {};
-    if (parsed.ref) queryParams['ref'] = parsed.ref;
-    if (parsed.path) queryParams['path'] = parsed.path;
+    if (ref) queryParams['ref'] = ref;
+    if (path) queryParams['path'] = path;
     void this.router.navigate(['/r', parsed.owner, parsed.repo], { queryParams });
   }
 

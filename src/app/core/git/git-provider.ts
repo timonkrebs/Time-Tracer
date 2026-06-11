@@ -3,6 +3,7 @@ import { InjectionToken, Injectable, inject } from '@angular/core';
 import {
   CommitInfo,
   ParsedRepoUrl,
+  RefResolution,
   RepoFile,
   RepoMetadata,
   RepoSlug,
@@ -32,6 +33,15 @@ export interface GitProvider {
 
   /** Parses user input into owner/repo (+ optional ref/path), or null. */
   parseUrl(input: string): ParsedRepoUrl | null;
+
+  /**
+   * Splits the combined `<ref>/<path>` tail of a tree/blob URL by matching it
+   * against the repository's actual branches and tags, so refs containing `/`
+   * (e.g. `feature/foo`) resolve correctly. Best-effort: resolves to null
+   * (never rejects) when nothing matches or the lookup fails, in which case
+   * callers keep their existing first-segment split.
+   */
+  resolveRefPath?(slug: RepoSlug, refAndPath: string): Promise<RefResolution | null>;
 
   getMetadata(slug: RepoSlug): Promise<RepoMetadata>;
 
