@@ -1,20 +1,24 @@
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { provideRouter, withComponentInputBinding } from '@angular/router';
+import { Router, provideRouter, withComponentInputBinding } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 
 import { GIT_PROVIDERS } from '../../core/git/git-provider';
 import { GithubProvider } from '../../core/git/github/github-provider';
 import { ViewerPage } from './viewer-page';
 
+const NEW_SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
+const OLD_SHA = 'ffeeddccbbaa99887766554433221100ffeeddcc';
+
 /**
- * Integration test of the full viewer pipeline: route → input binding →
- * store → provider (stubbed fetch) → rendered tree → file click → rendered
- * file content.
+ * Integration tests of the full viewer pipeline: route → input binding →
+ * store → provider (stubbed fetch) → rendered tree/file/history DOM.
  */
 describe('ViewerPage (integration)', () => {
   let harness: RouterTestingHarness;
+  let router: Router;
 
+  /** Fixtures keyed by API pathname; query strings are ignored for matching. */
   const fixtures: Record<string, unknown> = {
     '/repos/acme/rocket': {
       name: 'rocket',
@@ -26,7 +30,7 @@ describe('ViewerPage (integration)', () => {
       fork: false,
       owner: { login: 'acme' },
     },
-    '/repos/acme/rocket/git/trees/main?recursive=1': {
+    '/repos/acme/rocket/git/trees/main': {
       truncated: false,
       tree: [
         { path: 'src', type: 'tree', sha: 'tree1' },
@@ -46,6 +50,34 @@ describe('ViewerPage (integration)', () => {
       content: btoa('export const thrust = 1;'),
       encoding: 'base64',
     },
+    '/repos/acme/rocket/commits': [
+      {
+        sha: NEW_SHA,
+        html_url: `https://github.com/acme/rocket/commit/${NEW_SHA}`,
+        commit: {
+          message: 'docs: update readme',
+          author: { name: 'Ada', email: 'ada@example.com', date: '2026-06-01T00:00:00Z' },
+        },
+        parents: [{ sha: OLD_SHA }],
+      },
+      {
+        sha: OLD_SHA,
+        html_url: `https://github.com/acme/rocket/commit/${OLD_SHA}`,
+        commit: {
+          message: 'docs: initial readme',
+          author: { name: 'Grace', email: 'grace@example.com', date: '2026-01-01T00:00:00Z' },
+        },
+        parents: [],
+      },
+    ],
+    '/repos/acme/rocket/contents/README.md': {
+      type: 'file',
+      path: 'README.md',
+      sha: 'oldblob',
+      size: 12,
+      content: btoa('# Rocket v0\n'),
+      encoding: 'base64',
+    },
   };
 
   beforeEach(async () => {
@@ -53,8 +85,8 @@ describe('ViewerPage (integration)', () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string) => {
-        const apiPath = url.replace('https://api.github.com', '');
-        const body = fixtures[apiPath];
+        const pathname = new URL(url).pathname;
+        const body = fixtures[pathname];
         if (!body) return new Response(JSON.stringify({ message: 'Not Found' }), { status: 404 });
         return new Response(JSON.stringify(body), { status: 200 });
       }),
@@ -71,6 +103,7 @@ describe('ViewerPage (integration)', () => {
       ],
     });
     harness = await RouterTestingHarness.create();
+    router = TestBed.inject(Router);
   });
 
   afterEach(() => {
@@ -81,6 +114,15 @@ describe('ViewerPage (integration)', () => {
     await harness.fixture.whenStable();
     harness.detectChanges();
     return harness.routeNativeElement?.textContent ?? '';
+  }
+
+  function clickButton(includes: string): void {
+    const buttons = Array.from(
+      harness.routeNativeElement!.querySelectorAll<HTMLButtonElement>('button'),
+    );
+    const button = buttons.find((b) => (b.textContent ?? '').includes(includes));
+    if (!button) throw new Error(`No button containing "${includes}" found`);
+    button.click();
   }
 
   it('loads a repo from the URL and renders the tree', async () => {
@@ -101,10 +143,7 @@ describe('ViewerPage (integration)', () => {
       expect(await textOnScreen()).toContain('README.md');
     });
 
-    const buttons = Array.from(
-      harness.routeNativeElement!.querySelectorAll<HTMLButtonElement>('button'),
-    );
-    buttons.find((b) => b.textContent?.includes('README.md'))!.click();
+    clickButton('README.md');
 
     await vi.waitFor(async () => {
       const text = await textOnScreen();
@@ -119,7 +158,6 @@ describe('ViewerPage (integration)', () => {
     await vi.waitFor(async () => {
       const text = await textOnScreen();
       expect(text).toContain('export const thrust = 1;');
-      // The tree revealed the parent dir of the deep-linked file.
       expect(text).toContain('engine.ts');
     });
   });
@@ -132,5 +170,93 @@ describe('ViewerPage (integration)', () => {
       expect(text).toContain('Repository not found');
       expect(text).toContain('Try again');
     });
+  });
+
+  it('shows the commit history and travels to an old version and back', async () => {
+    await harness.navigateByUrl('/r/acme/rocket?path=README.md');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('# Rocket');
+    });
+
+    clickButton('History');
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('docs: update readme');
+      expect(text).toContain('docs: initial readme');
+      expect(text).toContain('Current version');
+    });
+
+    clickButton('docs: initial readme');
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('# Rocket v0');
+      expect(text).toContain('Viewing at');
+      expect(text).toContain(OLD_SHA.slice(0, 7));
+    });
+    expect(router.url).toContain(`at=${OLD_SHA}`);
+
+    clickButton('Back to main');
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).not.toContain('Viewing at');
+      expect(text).toContain('# Rocket');
+    });
+    expect(router.url).not.toContain('at=');
+  });
+
+  it('deep-links to a historical version and auto-opens the history panel', async () => {
+    await harness.navigateByUrl(`/r/acme/rocket?path=README.md&at=${OLD_SHA}`);
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('# Rocket v0');
+      expect(text).toContain('Viewing at');
+      // Panel auto-opened and resolved the commit metadata.
+      expect(text).toContain('docs: initial readme');
+      expect(text).toContain('Grace');
+    });
+  });
+
+  it('steps between commits with the older/newer controls', async () => {
+    await harness.navigateByUrl(`/r/acme/rocket?path=README.md&at=${NEW_SHA}`);
+    // The steppers need the loaded history to know their neighbours.
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('Viewing at');
+      expect(text).toContain('docs: initial readme');
+    });
+
+    clickButton('Older');
+    await vi.waitFor(async () => {
+      expect(router.url).toContain(`at=${OLD_SHA}`);
+    });
+
+    clickButton('Newer');
+    await vi.waitFor(async () => {
+      expect(router.url).toContain(`at=${NEW_SHA}`);
+    });
+  });
+
+  it('clears time travel when selecting a different file', async () => {
+    await harness.navigateByUrl(`/r/acme/rocket?path=README.md&at=${OLD_SHA}`);
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('# Rocket v0');
+    });
+
+    clickButton('src'); // expand the directory first
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('engine.ts');
+    });
+    clickButton('engine.ts');
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('export const thrust = 1;');
+      expect(text).not.toContain('Viewing at');
+    });
+    expect(router.url).not.toContain('at=');
   });
 });

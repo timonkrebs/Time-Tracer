@@ -23,11 +23,18 @@ commits and time travel (see `listCommits` on the provider interface).
 ## Current features
 
 - **Load a repo** from `owner/repo`, any `github.com` URL (`/tree/<ref>`, `/blob/<ref>/<path>`,
-  commit URLs, `.git`, SSH form) or a `raw.githubusercontent.com` URL.
+  commit URLs, `.git`, SSH form) or a `raw.githubusercontent.com` URL — including branch names
+  containing `/`, resolved against the repo's real refs.
 - **Desktop-first split-pane viewer**: resizable file tree (drag the divider, double-click to
   reset) next to a file view with a line-number gutter — the future home of blame annotations.
-- **Deep-linkable state**: `/r/:owner/:repo?ref=<ref>&path=<file>` — refresh, share, and use
-  browser back/forward to step through previously viewed files.
+- **Per-file commit history**: a History panel lists the commits that touched the selected file
+  (paginated), with author and relative date.
+- **Time travel**: click any commit (or use the Older/Newer steppers) to see the file exactly as
+  it was at that commit, with a banner showing where in time you are and a one-click way back to
+  the tip. Like `git log -- <path>`, history currently stops at renames — continuing past them is
+  the next milestone.
+- **Deep-linkable state**: `/r/:owner/:repo?ref=<ref>&path=<file>&at=<sha>` — refresh, share, and
+  use browser back/forward to step through previously viewed files *and historical versions*.
 - **Honest file handling**: UTF-8 decoding, binary detection (NUL-byte heuristic, like git),
   a 2 MB size guard with a link out to GitHub, and per-snapshot content caching.
 - **Specific error states**: not found, invalid ref, empty repository, network failure, and
@@ -35,8 +42,8 @@ commits and time travel (see `listCommits` on the provider interface).
 - **Recent repositories** remembered locally (localStorage).
 
 > GitHub's unauthenticated API allows **60 requests/hour per IP**. Time Tracer uses one request
-> for metadata, one for the full tree, and one per opened file (cached), so normal browsing stays
-> well within the budget.
+> for metadata, one for the full tree, one per opened file (cached), one per history page and one
+> per time-travel hop (cached per commit), so normal browsing stays well within the budget.
 
 ## Tech stack
 
@@ -57,20 +64,22 @@ src/app/
 │   │   ├── git-provider.ts  # GitProvider interface · GIT_PROVIDERS token · registry
 │   │   └── github/          # URL parser + unauthenticated REST implementation
 │   ├── store/
-│   │   ├── repo-store.ts    # signals store: load lifecycle, tree, selection, file cache
+│   │   ├── repo-store.ts    # signals store: load lifecycle, tree, selection, file +
+│   │   │                    # history caches, time-travel (viewAt) state
 │   │   └── recent-repos.ts  # localStorage-backed recents
-│   └── util/                # pure helpers: tree building, base64/UTF-8/binary detection
+│   └── util/                # pure helpers: tree building, decoding, relative time
 └── features/
     ├── loader/              # landing page with URL form, examples, recents
-    └── viewer/              # split pane: header, file tree, file view
+    └── viewer/              # split pane: header, file tree, file view, history panel
 ```
 
 Design decisions that matter for what's next:
 
 - `GitProvider` is an injection-token-based abstraction — GitLab/Bitbucket can be added without
-  touching the UI, and it already exposes `listCommits(slug, { ref, path })`.
-- All file content is addressed by **blob sha**, so identical content across commits will share
-  cache entries once the history view lands.
+  touching the UI. `listCommits` and `getFileAtRef` are the same primitives the blame milestone
+  will traverse with.
+- Historical file versions are fetched with **one request per hop** (the contents API at a commit
+  sha) and cached per `<sha, path>`, so walking back through time is cheap and revisits are free.
 - The `RepoStore` guards every async flow with a load sequence number — stale responses from
   abandoned navigations are dropped instead of clobbering state.
 
@@ -85,9 +94,11 @@ npm run build      # production build into dist/
 
 ## Roadmap
 
-1. **Commit timeline** — branch/ref switcher and a per-file commit list (`listCommits` is ready).
+1. ~~**Commit timeline** — per-file commit list with time travel to any version.~~ ✅ Done.
 2. **File diffs between commits** — compute hunks client-side from two blob versions.
 3. **Blame annotations** — per-line commit attribution in the existing line-number gutter.
 4. **Recursive time travel** — "blame previous revision" per hunk, IntelliJ-style.
 5. **Rename candidates** — when a file's history ends, rank similar blobs from the parent commit
    (size/content similarity) and offer them as places to continue the journey.
+6. **Branch/ref switcher** — pick branches and tags from the viewer header (any ref already works
+   via the `?ref=` query param).

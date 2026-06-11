@@ -50,6 +50,8 @@ class FakeProvider implements GitProvider {
   metadataCalls = 0;
   treeCalls = 0;
   fileCalls: string[] = [];
+  fileAtRefCalls: { path: string; ref: string }[] = [];
+  listCommitsCalls: { ref?: string; path?: string; perPage?: number; page?: number }[] = [];
   treeRefs: string[] = [];
 
   metadataResult: () => Promise<RepoMetadata> = () => Promise.resolve(metadata);
@@ -62,6 +64,15 @@ class FakeProvider implements GitProvider {
       size: entry.size ?? 0,
       text: 'content of ' + entry.path,
     });
+  fileAtRefResult: (path: string, ref: string) => Promise<RepoFile> = (path, ref) =>
+    Promise.resolve({
+      kind: 'text',
+      path,
+      sha: `blob-at-${ref}`,
+      size: 0,
+      text: `content of ${path} at ${ref}`,
+    });
+  listCommitsResult: () => Promise<CommitInfo[]> = () => Promise.resolve([]);
 
   canHandle(): boolean {
     return true;
@@ -82,12 +93,33 @@ class FakeProvider implements GitProvider {
     this.fileCalls.push(entry.path);
     return this.fileResult(entry);
   }
-  listCommits(): Promise<CommitInfo[]> {
-    return Promise.resolve([]);
+  getFileAtRef(_slug: RepoSlug, path: string, ref: string): Promise<RepoFile> {
+    this.fileAtRefCalls.push({ path, ref });
+    return this.fileAtRefResult(path, ref);
+  }
+  listCommits(
+    _slug: RepoSlug,
+    options: { ref?: string; path?: string; perPage?: number; page?: number } = {},
+  ): Promise<CommitInfo[]> {
+    this.listCommitsCalls.push(options);
+    return this.listCommitsResult();
   }
   webLinks(): RepoWebLinks {
     return { repoUrl: 'https://github.com/acme/rocket' };
   }
+}
+
+function commit(sha: string): CommitInfo {
+  return {
+    sha,
+    message: `commit ${sha}`,
+    summary: `commit ${sha}`,
+    authorName: 'Ada',
+    authorEmail: null,
+    authoredAt: '2026-01-01T00:00:00Z',
+    htmlUrl: `https://github.com/acme/rocket/commit/${sha}`,
+    parentShas: [],
+  };
 }
 
 describe('RepoStore', () => {
@@ -215,5 +247,127 @@ describe('RepoStore', () => {
     expect(store.expandedDirs().has('src')).toBe(true);
     store.toggleDir('src');
     expect(store.expandedDirs().has('src')).toBe(false);
+  });
+
+  describe('time travel (openFile at a commit)', () => {
+    beforeEach(async () => {
+      await store.loadRepo(slug);
+    });
+
+    it('fetches historical content via getFileAtRef and caches it separately', async () => {
+      await store.openFile('README.md');
+      await store.openFile('README.md', 'oldsha');
+
+      expect(provider.fileCalls).toEqual(['README.md']);
+      expect(provider.fileAtRefCalls).toEqual([{ path: 'README.md', ref: 'oldsha' }]);
+      expect(store.viewAt()).toBe('oldsha');
+      const state = store.selectedFile();
+      expect(state?.status === 'ready' && state.file.kind === 'text' && state.file.text).toBe(
+        'content of README.md at oldsha',
+      );
+    });
+
+    it('returns to the cached tip version without refetching', async () => {
+      await store.openFile('README.md');
+      await store.openFile('README.md', 'oldsha');
+      await store.openFile('README.md', null);
+
+      expect(provider.fileCalls).toEqual(['README.md']);
+      expect(store.viewAt()).toBeNull();
+      const state = store.selectedFile();
+      expect(state?.status === 'ready' && state.file.kind === 'text' && state.file.text).toBe(
+        'content of README.md',
+      );
+    });
+
+    it('surfaces a missing path at the commit as a file error', async () => {
+      provider.fileAtRefResult = () => Promise.reject(new RepoProviderError('gone', 'not-found'));
+
+      await store.openFile('README.md', 'oldsha');
+
+      expect(store.selectedFile()).toMatchObject({ status: 'error', message: 'gone' });
+    });
+
+    it('clearSelection resets the time-travel state', async () => {
+      await store.openFile('README.md', 'oldsha');
+      store.clearSelection();
+
+      expect(store.selectedPath()).toBeNull();
+      expect(store.viewAt()).toBeNull();
+    });
+  });
+
+  describe('file history', () => {
+    beforeEach(async () => {
+      await store.loadRepo(slug);
+    });
+
+    it('loads the first page for the snapshot ref', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c1'), commit('c2')]);
+
+      await store.loadHistory('README.md');
+
+      expect(provider.listCommitsCalls).toEqual([{ ref: 'main', path: 'README.md', perPage: 30 }]);
+      expect(store.historyStatus()).toBe('ready');
+      expect(store.history().map((c) => c.sha)).toEqual(['c1', 'c2']);
+      expect(store.historyHasMore()).toBe(false);
+    });
+
+    it('does not reload history for the same path', async () => {
+      await store.loadHistory('README.md');
+      await store.loadHistory('README.md');
+
+      expect(provider.listCommitsCalls).toHaveLength(1);
+    });
+
+    it('paginates and appends older commits', async () => {
+      const fullPage = Array.from({ length: 30 }, (_, i) => commit(`a${i}`));
+      provider.listCommitsResult = () => Promise.resolve(fullPage);
+      await store.loadHistory('README.md');
+      expect(store.historyHasMore()).toBe(true);
+
+      provider.listCommitsResult = () => Promise.resolve([commit('tail')]);
+      await store.loadMoreHistory();
+
+      expect(provider.listCommitsCalls[1]).toMatchObject({ page: 2 });
+      expect(store.history()).toHaveLength(31);
+      expect(store.history().at(-1)?.sha).toBe('tail');
+      expect(store.historyHasMore()).toBe(false);
+    });
+
+    it('exposes errors and recovers via retryHistory', async () => {
+      provider.listCommitsResult = () => Promise.reject(new RepoProviderError('boom', 'network'));
+      await store.loadHistory('README.md');
+      expect(store.historyStatus()).toBe('error');
+      expect(store.historyError()).toBe('boom');
+
+      provider.listCommitsResult = () => Promise.resolve([commit('c1')]);
+      store.retryHistory();
+      await vi.waitFor(() => expect(store.historyStatus()).toBe('ready'));
+      expect(store.history()).toHaveLength(1);
+    });
+
+    it('resolves viewAtCommit from the loaded history', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c1'), commit('c2')]);
+      await store.loadHistory('README.md');
+
+      await store.openFile('README.md', 'c2');
+      expect(store.viewAtCommit()?.sha).toBe('c2');
+
+      await store.openFile('README.md', 'unknown-sha');
+      expect(store.viewAtCommit()).toBeNull();
+    });
+
+    it('is reset by a new repository load', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c1')]);
+      await store.loadHistory('README.md');
+      await store.openFile('README.md', 'c1');
+
+      await store.loadRepo({ provider: 'github', owner: 'other', repo: 'repo' });
+
+      expect(store.historyStatus()).toBe('idle');
+      expect(store.history()).toEqual([]);
+      expect(store.viewAt()).toBeNull();
+    });
   });
 });

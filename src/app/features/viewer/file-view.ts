@@ -30,6 +30,34 @@ export function formatBytes(bytes: number): string {
           </span>
         }
         <span class="flex-1"></span>
+        <button
+          type="button"
+          class="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition"
+          [class]="
+            historyActive()
+              ? 'bg-indigo-500/20 text-indigo-200'
+              : 'text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200'
+          "
+          (click)="historyToggle.emit()"
+          aria-label="Toggle history panel"
+          title="Show the commits that changed this file"
+        >
+          <svg
+            class="size-3"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M3 12a9 9 0 1 0 3-6.7" />
+            <path d="M3 4v4h4" />
+            <path d="M12 7v5l3.5 2" />
+          </svg>
+          History
+        </button>
         @if (links()?.rawFileUrl; as rawUrl) {
           <a
             class="shrink-0 text-[11px] text-zinc-500 transition hover:text-zinc-200"
@@ -124,9 +152,12 @@ export function formatBytes(bytes: number): string {
 export class FileView {
   readonly state = input.required<FileState | null>();
   readonly links = input<RepoWebLinks | null>(null);
+  /** Highlights the History button while the panel is open. */
+  readonly historyActive = input(false);
 
   /** Emits the path when the user wants to retry a failed fetch. */
   readonly retry = output<string>();
+  readonly historyToggle = output<void>();
 
   protected readonly skeletonWidths = [62, 84, 45, 91, 73, 38, 80, 55, 67, 49, 88, 30];
 

@@ -277,4 +277,95 @@ describe('GithubProvider', () => {
     expect(provider.canHandle('a/b')).toBe(true);
     expect(provider.canHandle('https://example.com/a/b')).toBe(false);
   });
+
+  describe('getFileAtRef', () => {
+    it('fetches historical content through the contents API', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          type: 'file',
+          path: 'src/main.ts',
+          sha: 'old1',
+          size: 9,
+          content: btoa('old text\n'),
+          encoding: 'base64',
+        }),
+      );
+
+      const file = await provider.getFileAtRef(slug, 'src/main.ts', 'abc123');
+
+      expect(fetchMock.mock.calls[0][0]).toBe(
+        'https://api.github.com/repos/acme/rocket/contents/src/main.ts?ref=abc123',
+      );
+      expect(file).toEqual({
+        kind: 'text',
+        path: 'src/main.ts',
+        sha: 'old1',
+        size: 9,
+        text: 'old text\n',
+      });
+    });
+
+    it('falls back to the blob endpoint when inline content is omitted', async () => {
+      fetchMock
+        .mockResolvedValueOnce(
+          jsonResponse({
+            type: 'file',
+            path: 'big.txt',
+            sha: 'bigsha',
+            size: 1_500_000,
+            content: '',
+            encoding: 'none',
+          }),
+        )
+        .mockResolvedValueOnce(
+          jsonResponse({
+            sha: 'bigsha',
+            size: 12,
+            content: btoa('blob content'),
+            encoding: 'base64',
+          }),
+        );
+
+      const file = await provider.getFileAtRef(slug, 'big.txt', 'abc123');
+
+      expect(fetchMock.mock.calls[1][0]).toBe(
+        'https://api.github.com/repos/acme/rocket/git/blobs/bigsha',
+      );
+      expect(file).toMatchObject({ kind: 'text', text: 'blob content' });
+    });
+
+    it('short-circuits oversized historical files', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          type: 'file',
+          path: 'huge.bin',
+          sha: 'h1',
+          size: MAX_FILE_SIZE_BYTES + 1,
+          content: '',
+          encoding: 'none',
+        }),
+      );
+
+      const file = await provider.getFileAtRef(slug, 'huge.bin', 'abc123');
+
+      expect(file.kind).toBe('too-large');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('maps a missing path at the ref to not-found', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ message: 'Not Found' }, { status: 404 }));
+
+      await expect(provider.getFileAtRef(slug, 'gone.ts', 'abc123')).rejects.toMatchObject({
+        kind: 'not-found',
+      });
+    });
+
+    it('rejects when the path is a directory at the ref', async () => {
+      fetchMock.mockResolvedValue(jsonResponse([{ type: 'file', path: 'dir/a.ts' }]));
+
+      await expect(provider.getFileAtRef(slug, 'dir', 'abc123')).rejects.toMatchObject({
+        kind: 'unknown',
+      });
+    });
+  });
 });
