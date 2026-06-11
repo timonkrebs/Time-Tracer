@@ -1,7 +1,7 @@
 # Time Tracer
 
-Explore any public GitHub or GitLab repository — or a git repository on your own disk — and
-travel back through its history change by change.
+Explore any public GitHub, GitLab or Azure DevOps repository — or a git repository from your own
+disk or a .zip archive — and travel back through its history change by change.
 
 Time Tracer is a **client-only** Angular app: there is no backend. Hosted repositories are read
 through the GitHub/GitLab public REST APIs; local folders are read directly via the File System
@@ -26,11 +26,18 @@ commits and time travel (see `listCommits` on the provider interface).
 - **Load a repo** from `owner/repo`, any `github.com` URL (`/tree/<ref>`, `/blob/<ref>/<path>`,
   commit URLs, `.git`, SSH form), a `raw.githubusercontent.com` URL — including branch names
   containing `/`, resolved against the repo's real refs — or any `gitlab.com` URL
-  (`…/gitlab-org/gitlab.git`, `/-/tree/...`, `/-/blob/...`, nested groups included).
+  (`…/gitlab-org/gitlab.git`, `/-/tree/...`, `/-/blob/...`, nested groups included), or any
+  Azure DevOps URL (`dev.azure.com/{org}/{project}/_git/{repo}`, pull-request/commit pages,
+  `?path=…&version=GB…` state, `{org}.visualstudio.com`, SSH) — anonymous AZD access works for
+  public projects; private ones explain that sign-in is required.
 - **Open local repositories** like vscode.dev: pick a folder with the File System Access API and
   Time Tracer parses its `.git` directly in the browser with isomorphic-git — full tree, history,
   diffs, blame and rename candidates, completely offline and read-only. Folder handles persist
   across reloads (IndexedDB); a one-click "Reconnect folder" re-grants permission.
+- **Open .zip archives** (every browser): zips containing a `.git` folder keep their full
+  history; plain source archives (e.g. GitHub's "Download ZIP") get a single synthetic
+  "Imported from …" commit so browsing, diffing and annotating work uniformly. Wrapper folders
+  like `repo-main/` are stripped automatically.
 - **Desktop-first split-pane viewer**: resizable file tree (drag the divider, double-click to
   reset) next to a file view with a line-number gutter — the future home of blame annotations.
 - **Per-file commit history**: a History panel lists the commits that touched the selected file
@@ -97,7 +104,8 @@ src/app/
 │   │   ├── git-provider.ts  # GitProvider interface · GIT_PROVIDERS token · registry
 │   │   ├── github/          # URL parser + unauthenticated REST implementation
 │   │   ├── gitlab/          # gitlab.com URL parser + REST v4 implementation
-│   │   └── local/           # File System Access fs + isomorphic-git provider
+│   │   ├── azd/             # Azure DevOps URL parser + REST 7.1 implementation
+│   │   └── local/           # FS-Access/zip filesystems + isomorphic-git provider
 │   ├── store/
 │   │   ├── repo-store.ts    # signals store: load lifecycle, tree, selection, file +
 │   │   │                    # history caches, time-travel (viewAt) state

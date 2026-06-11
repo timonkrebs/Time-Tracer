@@ -85,6 +85,34 @@ interface SplitRow {
           type="button"
           class="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition"
           [class]="
+            historyActive()
+              ? 'bg-indigo-500/20 text-indigo-200'
+              : 'text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200'
+          "
+          (click)="historyToggle.emit()"
+          aria-label="Toggle history panel"
+          title="Show the commits that changed this file"
+        >
+          <svg
+            class="size-3"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M3 12a9 9 0 1 0 3-6.7" />
+            <path d="M3 4v4h4" />
+            <path d="M12 7v5l3.5 2" />
+          </svg>
+          History
+        </button>
+        <button
+          type="button"
+          class="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition"
+          [class]="
             blameActive()
               ? 'bg-indigo-500/20 text-indigo-200'
               : 'text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200'
@@ -109,13 +137,13 @@ interface SplitRow {
           </svg>
           Blame
         </button>
-        @if (s.status === 'ready') {
+        @if (s.status === 'ready' && s.commit.htmlUrl) {
           <a
             class="shrink-0 text-[11px] text-zinc-500 transition hover:text-zinc-200"
             [href]="s.commit.htmlUrl"
             target="_blank"
             rel="noopener noreferrer"
-            >Commit on GitHub ↗</a
+            >View commit ↗</a
           >
         }
       </header>
@@ -340,8 +368,11 @@ export class DiffView {
   readonly rightBlame = input<BlameState | null>(null);
   /** Highlights the Blame toggle. */
   readonly blameActive = input(false);
+  /** Highlights the History toggle while the panel is open. */
+  readonly historyActive = input(false);
 
   readonly retry = output<void>();
+  readonly historyToggle = output<void>();
   /** "Before this change": emits the hunk's first old-side line. */
   readonly before = output<number>();
   readonly blameToggle = output<void>();

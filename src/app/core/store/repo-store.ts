@@ -925,7 +925,10 @@ export class RepoStore {
   /** Commit metadata by sha, served from cache when already seen. */
   private async resolveCommit(slug: RepoSlug, sha: string): Promise<CommitInfo> {
     const cached = this._commitsBySha().get(sha);
-    if (cached) return cached;
+    // Some providers (Azure DevOps) omit parents in commit lists; an entry
+    // without parents could be a root commit or just unfilled — fetch the
+    // full commit once to disambiguate.
+    if (cached && cached.parentShas.length > 0) return cached;
     const commit = await this.registry.byId(slug.provider).getCommit(slug, sha);
     this.cacheCommits([commit]);
     return commit;

@@ -380,10 +380,12 @@ const HISTORY_OPEN_KEY = 'time-tracer.history-open';
                 [leftBlame]="leftBlame()"
                 [rightBlame]="store.selectedBlame()"
                 [blameActive]="blameOn()"
+                [historyActive]="historyOpen()"
                 (retry)="onDiffRetry()"
                 (before)="onHunkBefore($event)"
                 (blameToggle)="toggleBlame()"
                 (blameSelect)="onBlameSelect($event)"
+                (historyToggle)="toggleHistory()"
               />
             } @else {
               <app-file-view

@@ -506,6 +506,28 @@ describe('ViewerPage (integration)', () => {
     });
   });
 
+  it('reopens the history panel from the changes view at a historic commit', async () => {
+    await harness.navigateByUrl(`/r/acme/rocket?path=README.md&at=${NEW_SHA}&view=diff`);
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('@@ -1,1 +1,3 @@');
+      expect(text).toContain('docs: initial readme'); // panel auto-opened
+    });
+
+    // Close the panel, then reopen it from the diff header's History toggle.
+    harness
+      .routeNativeElement!.querySelector<HTMLButtonElement>('[aria-label="Close history panel"]')!
+      .click();
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).not.toContain('docs: initial readme');
+    });
+
+    clickButton('History');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('docs: initial readme');
+    });
+  });
+
   it('steps before a hunk into the annotated parent version', async () => {
     await harness.navigateByUrl(`/r/acme/rocket?path=README.md&at=${NEW_SHA}&view=diff`);
     await vi.waitFor(async () => {

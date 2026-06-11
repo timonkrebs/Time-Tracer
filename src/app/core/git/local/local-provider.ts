@@ -20,11 +20,11 @@ import { LocalRepos } from './local-repos';
 /** Files above this size are not decoded into the viewer. */
 const MAX_FILE_SIZE_BYTES = 2_000_000;
 
-type GitApi = typeof import('isomorphic-git').default;
+export type GitApi = typeof import('isomorphic-git').default;
 
 /** isomorphic-git is ~300 kB — load it only when a local repo is opened. */
 let gitModule: Promise<GitApi> | null = null;
-function loadGit(): Promise<GitApi> {
+export function loadGit(): Promise<GitApi> {
   gitModule ??= import('isomorphic-git').then(
     (m) => (m as { default?: GitApi }).default ?? (m as unknown as GitApi),
   );

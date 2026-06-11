@@ -21,6 +21,12 @@ export const routes: Routes = [
     title: 'Time Tracer',
   },
   {
+    path: 'azd/:owner/:repo',
+    loadComponent: () => import('./features/viewer/viewer-page').then((m) => m.ViewerPage),
+    data: { provider: 'azd' },
+    title: 'Time Tracer',
+  },
+  {
     path: 'local/:repo',
     loadComponent: () => import('./features/viewer/viewer-page').then((m) => m.ViewerPage),
     data: { provider: 'local', owner: 'local' },

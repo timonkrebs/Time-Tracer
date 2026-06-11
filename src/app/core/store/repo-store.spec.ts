@@ -457,6 +457,21 @@ describe('RepoStore', () => {
       expect(store.selectedDiff()).toMatchObject({ status: 'unavailable' });
     });
 
+    it('refetches cached commits that lack parents (Azure DevOps lists)', async () => {
+      // A history entry without parent ids must not be mistaken for a root.
+      provider.listCommitsResult = () => Promise.resolve([commit('child', [])]);
+      await store.loadHistory('README.md');
+      provider.commitResult = (sha) => Promise.resolve(commit(sha, ['parent']));
+
+      await store.openFile('README.md', 'child');
+      await store.loadDiff('README.md', 'child');
+
+      expect(provider.getCommitCalls).toEqual(['child']);
+      const state = store.selectedDiff();
+      expect(state?.status).toBe('ready');
+      if (state?.status === 'ready') expect(state.baseSha).toBe('parent');
+    });
+
     it('uses the history-populated commit cache instead of getCommit', async () => {
       provider.listCommitsResult = () => Promise.resolve([commit('child', ['parent'])]);
       await store.loadHistory('README.md');
