@@ -43,8 +43,8 @@ describe('ViewerPage (integration)', () => {
     },
     '/repos/acme/rocket/git/blobs/blob2': {
       sha: 'blob2',
-      size: 14,
-      content: btoa('# Rocket\n\nGo!\n'),
+      size: 17,
+      content: btoa('# Rocket v0\n\nGo!\n'),
       encoding: 'base64',
     },
     '/repos/acme/rocket/git/blobs/blob1': {
@@ -75,7 +75,8 @@ describe('ViewerPage (integration)', () => {
     ],
     '/repos/acme/rocket/contents/README.md': (url: URL) => {
       const ref = url.searchParams.get('ref');
-      const text = ref === NEW_SHA ? '# Rocket\n\nGo!\n' : ref === OLD_SHA ? '# Rocket v0\n' : null;
+      const text =
+        ref === NEW_SHA ? '# Rocket v0\n\nGo!\n' : ref === OLD_SHA ? '# Rocket v0\n' : null;
       if (text === null) return undefined;
       return {
         type: 'file',
@@ -323,6 +324,97 @@ describe('ViewerPage (integration)', () => {
       expect(text).toContain('initial commit — everything is new');
       expect(text).toContain('# Rocket v0');
       expect(text).toContain('@@ -0,0 +1,1 @@');
+    });
+  });
+
+  it('opens the changes view by default when picking a commit', async () => {
+    await harness.navigateByUrl('/r/acme/rocket?path=README.md');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('Go!');
+    });
+
+    clickButton('History');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('docs: update readme');
+    });
+    clickButton('docs: update readme');
+
+    await vi.waitFor(async () => {
+      expect(router.url).toContain('view=diff');
+      expect(await textOnScreen()).toContain('@@ -1,1 +1,3 @@');
+    });
+  });
+
+  it('remembers switching back to the file view for later commit picks', async () => {
+    await harness.navigateByUrl(`/r/acme/rocket?path=README.md&at=${NEW_SHA}`);
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('Viewing at');
+      expect(text).toContain('docs: initial readme'); // history loaded
+    });
+
+    clickButton('File');
+    await vi.waitFor(async () => {
+      expect(router.url).toContain('view=file');
+    });
+    expect(localStorage.getItem('time-tracer.view-mode')).toBe('file');
+
+    clickButton('docs: initial readme');
+
+    await vi.waitFor(async () => {
+      expect(router.url).toContain(`at=${OLD_SHA}`);
+      expect(router.url).toContain('view=file');
+      const text = await textOnScreen();
+      expect(text).toContain('# Rocket v0');
+      expect(text).not.toContain('@@');
+    });
+  });
+
+  it('shows the steppers at the tip and steps into the newest commit', async () => {
+    await harness.navigateByUrl('/r/acme/rocket?path=README.md');
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('Current version');
+      expect(text).toContain('Go!');
+    });
+
+    const buttons = Array.from(
+      harness.routeNativeElement!.querySelectorAll<HTMLButtonElement>('button'),
+    );
+    const newer = buttons.find((b) => (b.textContent ?? '').includes('Newer'))!;
+    const older = buttons.find((b) => (b.textContent ?? '').includes('Older'))!;
+    expect(newer.disabled).toBe(true);
+    expect(older.disabled).toBe(false);
+
+    older.click();
+
+    await vi.waitFor(async () => {
+      expect(router.url).toContain(`at=${NEW_SHA}`);
+      expect(await textOnScreen()).toContain('Viewing at');
+    });
+  });
+
+  it('annotates lines with blame and jumps to the introducing commit', async () => {
+    await harness.navigateByUrl('/r/acme/rocket?path=README.md');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('Go!');
+    });
+
+    clickButton('Blame');
+
+    await vi.waitFor(async () => {
+      expect(router.url).toContain('blame=1');
+      const text = await textOnScreen();
+      expect(text).toContain('Grace ·'); // line 1: introduced by the root commit
+      expect(text).toContain('Ada ·'); // lines 2-3: introduced by the newest commit
+    });
+
+    clickButton('Grace ·');
+
+    await vi.waitFor(async () => {
+      expect(router.url).toContain(`at=${OLD_SHA}`);
+      expect(router.url).toContain('view=diff');
+      expect(await textOnScreen()).toContain('initial commit — everything is new');
     });
   });
 });

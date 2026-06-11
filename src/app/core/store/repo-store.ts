@@ -12,7 +12,7 @@ import {
   TreeEntry,
   toRepoProviderError,
 } from '../models';
-import { FileDiff, computeFileDiff } from '../util/diff';
+import { FileDiff, computeFileDiff, diffLines, splitLines } from '../util/diff';
 import { ancestorsOf, buildTree } from '../util/tree';
 import { RecentRepos } from './recent-repos';
 
@@ -33,6 +33,30 @@ export type DiffState =
     }
   | { readonly status: 'unavailable'; readonly reason: string }
   | { readonly status: 'error'; readonly message: string };
+
+/**
+ * Who introduced a line: a commit, `'older'` (predates the loaded history
+ * pages) or null (attribution still being computed).
+ */
+export type BlameOwner = CommitInfo | 'older' | null;
+
+/** Async state of the blame annotations for one `<version, path>` pair. */
+export interface BlameState {
+  readonly status: 'computing' | 'ready' | 'unavailable' | 'error';
+  /** One owner per line of the blamed version (empty until computing). */
+  readonly lines: readonly BlameOwner[];
+  /** True when some lines predate the loaded history pages. */
+  readonly truncated: boolean;
+  /** History steps consumed so far — used to extend after loading more. */
+  readonly processed: number;
+  readonly message?: string;
+}
+
+interface HistorySnapshot {
+  commits: readonly CommitInfo[];
+  hasMore: boolean;
+  page: number;
+}
 
 /**
  * Single source of truth for the repository currently shown in the viewer:
@@ -69,6 +93,12 @@ export class RepoStore {
   private readonly _commitsBySha = signal<ReadonlyMap<string, CommitInfo>>(new Map());
   /** Diff states keyed by `<sha>::<path>`. */
   private readonly _diffs = signal<ReadonlyMap<string, DiffState>>(new Map());
+  /** Blame states keyed by `<sha|tip>::<path>`. */
+  private readonly _blames = signal<ReadonlyMap<string, BlameState>>(new Map());
+  /** Blame computations currently running, by the same key. */
+  private readonly blameRuns = new Set<string>();
+  /** Loaded history per path, so re-selecting a file does not refetch. */
+  private readonly historyCache = new Map<string, HistorySnapshot>();
 
   private readonly _historyPath = signal<string | null>(null);
   private readonly _history = signal<readonly CommitInfo[]>([]);
@@ -126,6 +156,13 @@ export class RepoStore {
     return this._diffs().get(fileKey(path, at)) ?? null;
   });
 
+  /** Blame of the selected file at the current view ref, if requested. */
+  readonly selectedBlame = computed<BlameState | null>(() => {
+    const path = this._selectedPath();
+    if (!path) return null;
+    return this._blames().get(fileKey(path, this._viewAt())) ?? null;
+  });
+
   /**
    * Loads a repository (metadata, then full tree). No-ops when the same
    * repo+ref is already loading or loaded, unless `force` is set.
@@ -152,6 +189,9 @@ export class RepoStore {
     this._expanded.set(new Set());
     this._commitsBySha.set(new Map());
     this._diffs.set(new Map());
+    this._blames.set(new Map());
+    this.blameRuns.clear();
+    this.historyCache.clear();
     this.inflight.clear();
     this._error.set(null);
     this.resetHistory();
@@ -282,6 +322,179 @@ export class RepoStore {
   }
 
   /**
+   * Attributes every line of `path` (at `at`, or the snapshot tip) to the
+   * commit that introduced it, by walking the file's history pairwise with
+   * the minimal line diff: lines added in `diff(version@older, version@newer)`
+   * belong to `newer`; surviving lines are traced further back.
+   *
+   * Progressive: attribution lands newest-commits-first and is published
+   * after every step. Costs one (cached) request per history step, so the
+   * walk stops early once every line is attributed. Lines older than the
+   * loaded history pages are marked `'older'` and resolved incrementally
+   * when more history is loaded.
+   */
+  async loadBlame(path: string, at?: string | null): Promise<void> {
+    const atRef = at ?? null;
+    const key = fileKey(path, atRef);
+    if (this.blameRuns.has(key)) return;
+
+    const existing = this._blames().get(key);
+    if (existing) {
+      if (existing.status === 'unavailable') return;
+      if (existing.status === 'ready' && !existing.truncated) return;
+      if (
+        existing.status === 'ready' &&
+        existing.truncated &&
+        !this.canExtendBlame(path, atRef, existing)
+      ) {
+        return;
+      }
+      // error / interrupted-computing / extendable: recompute (caches make
+      // already-walked steps free).
+    }
+    if (!this._slug() || this._phase() !== 'ready') return;
+
+    this.blameRuns.add(key);
+    try {
+      await this.runBlame(key, path, atRef);
+    } finally {
+      this.blameRuns.delete(key);
+    }
+  }
+
+  private canExtendBlame(path: string, at: string | null, state: BlameState): boolean {
+    if (this._historyPath() !== path || this._historyStatus() !== 'ready') return false;
+    const history = this._history();
+    const anchor = at ? history.findIndex((c) => c.sha === at) : 0;
+    if (anchor === -1) return false;
+    return history.length - anchor > state.processed;
+  }
+
+  private async runBlame(key: string, path: string, at: string | null): Promise<void> {
+    const seq = this.loadSeq;
+    const fail = (status: 'unavailable' | 'error', message: string): void =>
+      this.setBlameState(key, { status, lines: [], truncated: false, processed: 0, message });
+
+    await this.loadHistory(path);
+    if (seq !== this.loadSeq) return;
+    if (this._historyPath() !== path || this._historyStatus() !== 'ready') {
+      fail('error', this._historyError() ?? 'The file history could not be loaded.');
+      return;
+    }
+    const anchor = at ? this._history().findIndex((c) => c.sha === at) : 0;
+    if (this._history().length === 0) {
+      fail('unavailable', 'No commit history found for this file.');
+      return;
+    }
+    if (anchor === -1) {
+      fail('unavailable', 'This version is not part of the loaded history of the file.');
+      return;
+    }
+
+    const v0 = await this.ensureFile(path, at);
+    if (seq !== this.loadSeq) return;
+    if (v0.status !== 'ready') {
+      fail('error', v0.status === 'error' ? v0.message : 'The file content could not be loaded.');
+      return;
+    }
+    if (v0.file.kind !== 'text') {
+      fail('unavailable', 'Blame is only available for text files.');
+      return;
+    }
+
+    const blamedLines = splitLines(v0.file.text);
+    const owners: BlameOwner[] = new Array<BlameOwner>(blamedLines.length).fill(null);
+    /** Position of each blamed line in the version currently examined; -1 = done. */
+    const images = blamedLines.map((_, index) => index);
+    let pending = blamedLines.length;
+    let processed = 0;
+
+    const publish = (status: 'computing' | 'ready', truncated: boolean): void =>
+      this.setBlameState(key, { status, lines: [...owners], truncated, processed });
+
+    publish('computing', false);
+    let newerLines = blamedLines;
+
+    for (let i = anchor; pending > 0; i++) {
+      const newer = this._history()[i];
+      const older = this._history()[i + 1];
+
+      if (!older) {
+        if (this._historyHasMore()) {
+          // The trail continues past the loaded pages.
+          for (let j = 0; j < owners.length; j++) if (owners[j] === null) owners[j] = 'older';
+          publish('ready', true);
+          return;
+        }
+        // Complete history: the oldest commit created the file.
+        for (let j = 0; j < owners.length; j++) if (owners[j] === null) owners[j] = newer;
+        processed++;
+        publish('ready', false);
+        return;
+      }
+
+      // Soft-stop when the user navigated away; partial state stays cached
+      // and the walk resumes (cheaply) when the version is selected again.
+      if (this._selectedPath() !== path || this._viewAt() !== at) {
+        publish('computing', false);
+        return;
+      }
+
+      const olderState = await this.ensureFile(path, older.sha);
+      if (seq !== this.loadSeq) return;
+      if (olderState.status !== 'ready') {
+        fail(
+          'error',
+          olderState.status === 'error'
+            ? olderState.message
+            : 'A previous version could not be loaded.',
+        );
+        return;
+      }
+      if (olderState.file.kind !== 'text') {
+        // The file was binary before this point; everything left was
+        // (re)introduced as text at `newer`.
+        for (let j = 0; j < owners.length; j++) if (owners[j] === null) owners[j] = newer;
+        processed++;
+        publish('ready', false);
+        return;
+      }
+
+      const olderLines = splitLines(olderState.file.text);
+      const ops = diffLines(olderLines, newerLines);
+      const newToOld = new Map<number, number>();
+      const added = new Set<number>();
+      for (const op of ops) {
+        if (op.kind === 'equal') newToOld.set(op.newLine - 1, op.oldLine - 1);
+        else if (op.kind === 'add') added.add(op.newLine - 1);
+      }
+
+      for (let j = 0; j < blamedLines.length; j++) {
+        const position = images[j];
+        if (position < 0) continue;
+        if (added.has(position)) {
+          owners[j] = newer;
+          images[j] = -1;
+          pending--;
+        } else {
+          images[j] = newToOld.get(position) ?? -1;
+          if (images[j] === -1) {
+            // Defensive: a non-added line must map; attribute here if not.
+            owners[j] = newer;
+            pending--;
+          }
+        }
+      }
+
+      newerLines = olderLines;
+      processed++;
+      publish('computing', false);
+    }
+
+    publish('ready', false);
+  }
+
+  /**
    * Loads the commit history of `path` (commits reachable from the snapshot
    * ref that touched the path). No-ops when that history is already loaded.
    * Note: like `git log -- <path>`, the listing does not follow renames —
@@ -292,6 +505,17 @@ export class RepoStore {
     if (!slug || this._phase() !== 'ready') return;
     const status = this._historyStatus();
     if (this._historyPath() === path && status !== 'idle' && status !== 'error') return;
+
+    const cached = this.historyCache.get(path);
+    if (cached) {
+      this._historyPath.set(path);
+      this._history.set(cached.commits);
+      this._historyError.set(null);
+      this._historyHasMore.set(cached.hasMore);
+      this._historyStatus.set('ready');
+      this.historyPage = cached.page;
+      return;
+    }
 
     const seq = this.loadSeq;
     this._historyPath.set(path);
@@ -310,8 +534,10 @@ export class RepoStore {
       if (seq !== this.loadSeq || this._historyPath() !== path) return;
       this._history.set(commits);
       this.cacheCommits(commits);
-      this._historyHasMore.set(commits.length === HISTORY_PAGE_SIZE);
+      const hasMore = commits.length === HISTORY_PAGE_SIZE;
+      this._historyHasMore.set(hasMore);
       this._historyStatus.set('ready');
+      this.historyCache.set(path, { commits, hasMore, page: 1 });
     } catch (error) {
       if (seq !== this.loadSeq || this._historyPath() !== path) return;
       this._historyError.set(toRepoProviderError(error).message);
@@ -337,10 +563,13 @@ export class RepoStore {
       });
       if (seq !== this.loadSeq || this._historyPath() !== path) return;
       this.historyPage = page;
-      this._history.set([...this._history(), ...commits]);
+      const merged = [...this._history(), ...commits];
+      this._history.set(merged);
       this.cacheCommits(commits);
-      this._historyHasMore.set(commits.length === HISTORY_PAGE_SIZE);
+      const hasMore = commits.length === HISTORY_PAGE_SIZE;
+      this._historyHasMore.set(hasMore);
       this._historyStatus.set('ready');
+      this.historyCache.set(path, { commits: merged, hasMore, page });
     } catch (error) {
       if (seq !== this.loadSeq || this._historyPath() !== path) return;
       // Keep the already-loaded commits; just surface the failure.
@@ -494,6 +723,12 @@ export class RepoStore {
     const next = new Map(this._diffs());
     next.set(key, state);
     this._diffs.set(next);
+  }
+
+  private setBlameState(key: string, state: BlameState): void {
+    const next = new Map(this._blames());
+    next.set(key, state);
+    this._blames.set(next);
   }
 }
 

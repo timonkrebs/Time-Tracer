@@ -484,4 +484,105 @@ describe('RepoStore', () => {
       expect(store.selectedDiff()?.status).toBe('ready');
     });
   });
+
+  describe('blame (loadBlame)', () => {
+    beforeEach(async () => {
+      await store.loadRepo(slug);
+    });
+
+    function text(path: string, sha: string, content: string): Promise<RepoFile> {
+      return Promise.resolve({ kind: 'text', path, sha, size: content.length, text: content });
+    }
+
+    function ownerShas(): (string | null)[] {
+      const blame = store.selectedBlame();
+      return (blame?.lines ?? []).map((o) => (o && o !== 'older' ? o.sha : (o as string | null)));
+    }
+
+    it('attributes every line to the commit that introduced it', async () => {
+      provider.listCommitsResult = () =>
+        Promise.resolve([commit('c3'), commit('c2'), commit('c1')]);
+      provider.fileResult = (entry) => text(entry.path, entry.sha, 'A\nB2\nC3\n');
+      provider.fileAtRefResult = (path, ref) =>
+        text(path, `blob-${ref}`, ref === 'c2' ? 'A\nB2\n' : 'A\n');
+
+      await store.openFile('README.md');
+      await store.loadBlame('README.md');
+
+      const blame = store.selectedBlame();
+      expect(blame?.status).toBe('ready');
+      expect(blame?.truncated).toBe(false);
+      expect(ownerShas()).toEqual(['c1', 'c2', 'c3']);
+      // Only the two older versions needed fetching; the tip was cached.
+      expect(provider.fileAtRefCalls).toEqual([
+        { path: 'README.md', ref: 'c2' },
+        { path: 'README.md', ref: 'c1' },
+      ]);
+    });
+
+    it('blames a historical version from its anchor in the history', async () => {
+      provider.listCommitsResult = () =>
+        Promise.resolve([commit('c3'), commit('c2'), commit('c1')]);
+      provider.fileAtRefResult = (path, ref) =>
+        text(path, `blob-${ref}`, ref === 'c2' ? 'A\nB2\n' : 'A\n');
+
+      await store.openFile('README.md', 'c2');
+      await store.loadBlame('README.md', 'c2');
+
+      expect(store.selectedBlame()?.status).toBe('ready');
+      expect(ownerShas()).toEqual(['c1', 'c2']);
+    });
+
+    it('marks lines beyond the loaded pages as older and extends later', async () => {
+      // A full page of 30 commits ⇒ hasMore. Version at c_i = lines L_i…L_29.
+      const pageOne = Array.from({ length: 30 }, (_, i) => commit(`c${i}`));
+      const textFor = (i: number): string =>
+        Array.from({ length: 30 - i }, (_, k) => `L${i + k}`).join('\n') + '\n';
+      provider.listCommitsResult = () => Promise.resolve(pageOne);
+      provider.fileResult = (entry) => text(entry.path, entry.sha, textFor(0));
+      provider.fileAtRefResult = (path, ref) =>
+        text(path, `blob-${ref}`, ref === 'c30' ? textFor(29) : textFor(Number(ref.slice(1))));
+
+      await store.openFile('README.md');
+      await store.loadBlame('README.md');
+
+      let blame = store.selectedBlame();
+      expect(blame?.status).toBe('ready');
+      expect(blame?.truncated).toBe(true);
+      expect(ownerShas()[0]).toBe('c0');
+      expect(ownerShas()[28]).toBe('c28');
+      expect(ownerShas()[29]).toBe('older');
+
+      // The next page completes the history; blame extends incrementally.
+      provider.listCommitsResult = () => Promise.resolve([commit('c30')]);
+      await store.loadMoreHistory();
+      await store.loadBlame('README.md');
+
+      blame = store.selectedBlame();
+      expect(blame?.truncated).toBe(false);
+      expect(ownerShas()[29]).toBe('c30');
+      // Re-running reused every cached version: only c30 was newly fetched.
+      expect(provider.fileAtRefCalls).toHaveLength(30);
+    });
+
+    it('is unavailable for binary files', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c1')]);
+      provider.fileResult = (entry) =>
+        Promise.resolve({ kind: 'binary', path: entry.path, sha: entry.sha, size: 4 });
+
+      await store.openFile('README.md');
+      await store.loadBlame('README.md');
+
+      expect(store.selectedBlame()).toMatchObject({ status: 'unavailable' });
+    });
+
+    it('is unavailable when the viewed version is not in the history', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c1')]);
+
+      await store.openFile('README.md', 'ghost');
+      await store.loadBlame('README.md', 'ghost');
+
+      expect(store.selectedBlame()).toMatchObject({ status: 'unavailable' });
+    });
+  });
 });

@@ -29,17 +29,25 @@ commits and time travel (see `listCommits` on the provider interface).
   reset) next to a file view with a line-number gutter — the future home of blame annotations.
 - **Per-file commit history**: a History panel lists the commits that touched the selected file
   (paginated), with author and relative date.
-- **Time travel**: click any commit (or use the Older/Newer steppers) to see the file exactly as
-  it was at that commit, with a banner showing where in time you are and a one-click way back to
-  the tip. Like `git log -- <path>`, history currently stops at renames — continuing past them is
-  a later milestone.
-- **Changes view**: while viewing a file at a commit, switch the pane from *File* to *Changes* to
-  see exactly what that commit changed in the file — a unified diff against its first parent,
-  computed client-side with a minimal Myers diff (dual line-number gutter, hunk headers,
-  +added/−removed stats, root/merge commits handled).
-- **Deep-linkable state**: `/r/:owner/:repo?ref=<ref>&path=<file>&at=<sha>&view=diff` — refresh,
-  share, and use browser back/forward to step through previously viewed files, historical
-  versions, and diffs.
+- **Time travel**: pick any commit to see the file exactly as it was, with a banner showing where
+  in time you are and a one-click way back to the tip. The ← Older / Newer → steppers are always
+  visible (only the dead direction is disabled) and work straight from the current version,
+  auto-loading more history when you walk past the loaded pages. Like `git log -- <path>`,
+  history currently stops at renames — continuing past them is a later milestone.
+- **Changes view (default)**: picking a commit opens what that commit changed in the file — a
+  unified diff against its first parent, computed client-side with a minimal Myers diff (dual
+  line-number gutter, hunk headers, +added/−removed stats, root/merge commits handled). Switch to
+  *File* to read the full version instead; your last File/Changes choice is remembered.
+- **Blame annotations**: toggle *Blame* in the file view to annotate every line with the commit
+  that introduced it (author · age, colour-coded older→newer, IntelliJ-style block grouping).
+  Attribution is computed client-side by walking the file's history with the minimal diff,
+  streams in progressively, and works at any historical version — click an annotation to jump to
+  that commit's changes, then blame *that* version and keep digging: the first recursive
+  time-travel loop. Lines older than the loaded history pages are marked and resolve
+  incrementally as more pages load.
+- **Deep-linkable state**: `/r/:owner/:repo?ref=<ref>&path=<file>&at=<sha>&view=diff&blame=1` —
+  refresh, share, and use browser back/forward to step through previously viewed files,
+  historical versions, diffs and annotations.
 - **Honest file handling**: UTF-8 decoding, binary detection (NUL-byte heuristic, like git),
   a 2 MB size guard with a link out to GitHub, and per-snapshot content caching.
 - **Specific error states**: not found, invalid ref, empty repository, network failure, and
@@ -102,8 +110,10 @@ npm run build      # production build into dist/
 1. ~~**Commit timeline** — per-file commit list with time travel to any version.~~ ✅ Done.
 2. ~~**File diffs between commits** — compute hunks client-side from two blob versions.~~ ✅ Done
    (minimal Myers diff engine in `core/util/diff.ts`, surfaced as the *Changes* view).
-3. **Blame annotations** — per-line commit attribution in the existing line-number gutter.
-4. **Recursive time travel** — "blame previous revision" per hunk, IntelliJ-style.
+3. ~~**Blame annotations** — per-line commit attribution in the line-number gutter.~~ ✅ Done
+   (diff-walk attribution with progressive rendering; click an annotation to open the commit).
+4. **Recursive time travel polish** — blame → commit → blame already chains; next: per-hunk
+   "blame previous revision" shortcuts inside the changes view.
 5. **Rename candidates** — when a file's history ends, rank similar blobs from the parent commit
    (size/content similarity) and offer them as places to continue the journey.
 6. **Branch/ref switcher** — pick branches and tags from the viewer header (any ref already works
