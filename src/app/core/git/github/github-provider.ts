@@ -1,6 +1,7 @@
 import { Injectable } from '@angular/core';
 
 import {
+  CommitFileChange,
   CommitInfo,
   ParsedRepoUrl,
   RefResolution,
@@ -48,6 +49,16 @@ interface GithubBlobResponse {
   encoding: string;
 }
 
+interface GithubContentsResponse {
+  type: string;
+  path: string;
+  sha: string;
+  size: number;
+  /** Inline base64 content; omitted/empty for files between 1 MB and 100 MB. */
+  content?: string;
+  encoding?: string;
+}
+
 interface GithubMatchingRefResponse {
   /** Fully qualified ref name, e.g. `refs/heads/feature/foo`. */
   ref: string;
@@ -61,6 +72,12 @@ interface GithubCommitResponse {
     author: { name?: string; email?: string; date?: string } | null;
   };
   parents: { sha: string }[];
+  /** Only present on the single-commit endpoint. */
+  files?: {
+    filename: string;
+    status: string;
+    previous_filename?: string;
+  }[];
 }
 
 /**
@@ -152,27 +169,51 @@ export class GithubProvider implements GitProvider {
     if (size > MAX_FILE_SIZE_BYTES) {
       return { kind: 'too-large', path: entry.path, sha: entry.sha, size };
     }
+    return this.fetchBlob(slug, entry.path, entry.sha);
+  }
+
+  async getFileAtRef(slug: RepoSlug, path: string, ref: string): Promise<RepoFile> {
+    const encodedPath = path.split('/').map(encodeURIComponent).join('/');
+    const data = await this.request<GithubContentsResponse>(
+      `/repos/${enc(slug.owner)}/${enc(slug.repo)}/contents/${encodedPath}?ref=${enc(ref)}`,
+      {
+        notFound: `"${path}" does not exist at ${ref.slice(0, 7)} — it may have been added later or deleted by this commit.`,
+      },
+    );
+    if (Array.isArray(data) || data.type !== 'file') {
+      throw new RepoProviderError(`"${path}" is not a file at this commit.`, 'unknown');
+    }
+    if (data.size > MAX_FILE_SIZE_BYTES) {
+      return { kind: 'too-large', path, sha: data.sha, size: data.size };
+    }
+    if (data.encoding === 'base64' && data.content) {
+      return this.decodeBlob(path, data.sha, data.size, data.content);
+    }
+    // Between 1 MB and the size guard the contents API omits inline content;
+    // fall back to fetching the blob it points at.
+    return this.fetchBlob(slug, path, data.sha);
+  }
+
+  private async fetchBlob(slug: RepoSlug, path: string, sha: string): Promise<RepoFile> {
     const data = await this.request<GithubBlobResponse>(
-      `/repos/${enc(slug.owner)}/${enc(slug.repo)}/git/blobs/${enc(entry.sha)}`,
-      { notFound: `File "${entry.path}" was not found.` },
+      `/repos/${enc(slug.owner)}/${enc(slug.repo)}/git/blobs/${enc(sha)}`,
+      { notFound: `File "${path}" was not found.` },
     );
     if (data.encoding !== 'base64') {
       throw new RepoProviderError(
-        `Unexpected blob encoding "${data.encoding}" for ${entry.path}.`,
+        `Unexpected blob encoding "${data.encoding}" for ${path}.`,
         'unknown',
       );
     }
-    const bytes = base64ToBytes(data.content);
+    return this.decodeBlob(path, data.sha, data.size, data.content);
+  }
+
+  private decodeBlob(path: string, sha: string, size: number, base64: string): RepoFile {
+    const bytes = base64ToBytes(base64);
     if (isProbablyBinary(bytes)) {
-      return { kind: 'binary', path: entry.path, sha: data.sha, size: data.size };
+      return { kind: 'binary', path, sha, size };
     }
-    return {
-      kind: 'text',
-      path: entry.path,
-      sha: data.sha,
-      size: data.size,
-      text: bytesToUtf8(bytes),
-    };
+    return { kind: 'text', path, sha, size, text: bytesToUtf8(bytes) };
   }
 
   async listCommits(
@@ -189,15 +230,26 @@ export class GithubProvider implements GitProvider {
       `/repos/${enc(slug.owner)}/${enc(slug.repo)}/commits?${params}`,
       { notFound: 'No commit history found for this ref or path.' },
     );
-    return data.map((item) => ({
-      sha: item.sha,
-      message: item.commit.message,
-      summary: item.commit.message.split('\n', 1)[0],
-      authorName: item.commit.author?.name ?? 'Unknown',
-      authorEmail: item.commit.author?.email ?? null,
-      authoredAt: item.commit.author?.date ?? '',
-      htmlUrl: item.html_url,
-      parentShas: item.parents.map((p) => p.sha),
+    return data.map(mapCommit);
+  }
+
+  async getCommit(slug: RepoSlug, sha: string): Promise<CommitInfo> {
+    const data = await this.request<GithubCommitResponse>(
+      `/repos/${enc(slug.owner)}/${enc(slug.repo)}/commits/${enc(sha)}`,
+      { notFound: `Commit ${sha.slice(0, 7)} was not found in this repository.` },
+    );
+    return mapCommit(data);
+  }
+
+  async getCommitFiles(slug: RepoSlug, sha: string): Promise<CommitFileChange[]> {
+    const data = await this.request<GithubCommitResponse>(
+      `/repos/${enc(slug.owner)}/${enc(slug.repo)}/commits/${enc(sha)}`,
+      { notFound: `Commit ${sha.slice(0, 7)} was not found in this repository.` },
+    );
+    return (data.files ?? []).map((file) => ({
+      path: file.filename,
+      status: file.status,
+      ...(file.previous_filename ? { previousPath: file.previous_filename } : {}),
     }));
   }
 
@@ -272,4 +324,17 @@ function rateLimitReset(response: Response): Date | undefined {
 
 function enc(segment: string): string {
   return encodeURIComponent(segment);
+}
+
+function mapCommit(item: GithubCommitResponse): CommitInfo {
+  return {
+    sha: item.sha,
+    message: item.commit.message,
+    summary: item.commit.message.split('\n', 1)[0],
+    authorName: item.commit.author?.name ?? 'Unknown',
+    authorEmail: item.commit.author?.email ?? null,
+    authoredAt: item.commit.author?.date ?? '',
+    htmlUrl: item.html_url,
+    parentShas: item.parents.map((p) => p.sha),
+  };
 }

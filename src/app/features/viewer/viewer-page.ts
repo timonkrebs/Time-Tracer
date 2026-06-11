@@ -11,7 +11,11 @@ import {
 import { Title } from '@angular/platform-browser';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 
-import { RepoStore } from '../../core/store/repo-store';
+import { LocalRepos } from '../../core/git/local/local-repos';
+import { RenameCandidate, RepoStore } from '../../core/store/repo-store';
+import { relativeTime, shortSha } from '../../core/util/relative-time';
+import { DiffView } from './diff-view';
+import { FileHistory } from './file-history';
 import { FileTree } from './file-tree';
 import { FileView } from './file-view';
 
@@ -19,18 +23,23 @@ const TREE_WIDTH_KEY = 'time-tracer.tree-width';
 const TREE_WIDTH_DEFAULT = 300;
 const TREE_WIDTH_MIN = 200;
 const TREE_WIDTH_MAX = 600;
+const VIEW_MODE_KEY = 'time-tracer.view-mode';
+const HISTORY_OPEN_KEY = 'time-tracer.history-open';
 
 /**
- * `/r/:owner/:repo?ref=…&path=…` — the split-pane repository viewer.
+ * `/r/:owner/:repo?ref=…&path=…&at=…&view=…&blame=…` — the split-pane
+ * repository viewer.
  *
- * The route is the source of truth: owner/repo/ref drive `RepoStore.loadRepo`
- * and `path` drives file selection, so deep links, refreshes and browser
- * back/forward all behave like real navigation.
+ * The route is the source of truth: owner/repo/ref drive `RepoStore.loadRepo`,
+ * `path` drives file selection, `at` views that file at a historical commit,
+ * `view` picks file vs. changes mode and `blame` toggles line annotations —
+ * so deep links, refreshes and browser back/forward all behave like real
+ * navigation, including steps through time.
  */
 @Component({
   selector: 'app-viewer-page',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [RouterLink, FileTree, FileView],
+  imports: [RouterLink, FileTree, FileView, FileHistory, DiffView],
   host: { class: 'block h-full' },
   template: `
     <div class="flex h-full flex-col" [class.select-none]="dragging()">
@@ -109,7 +118,7 @@ const TREE_WIDTH_MAX = 600;
           @if (store.truncated()) {
             <span
               class="shrink-0 rounded-full border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 text-[11px] text-amber-300"
-              title="GitHub truncated the tree listing — some files may be missing."
+              title="The provider truncated the tree listing — some files may be missing."
             >
               partial tree
             </span>
@@ -151,13 +160,23 @@ const TREE_WIDTH_MAX = 600;
             <h2 class="text-base font-semibold text-zinc-100">{{ errorTitle() }}</h2>
             <p class="mt-2 text-sm leading-6 text-zinc-400">{{ store.error()?.message }}</p>
             <div class="mt-6 flex items-center justify-center gap-3">
-              <button
-                type="button"
-                class="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-400"
-                (click)="store.retry()"
-              >
-                Try again
-              </button>
+              @if (provider() === 'local') {
+                <button
+                  type="button"
+                  class="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-400"
+                  (click)="reconnectLocal()"
+                >
+                  Reconnect folder
+                </button>
+              } @else {
+                <button
+                  type="button"
+                  class="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-400"
+                  (click)="store.retry()"
+                >
+                  Try again
+                </button>
+              }
               <a
                 routerLink="/"
                 class="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 transition hover:border-zinc-500"
@@ -226,13 +245,186 @@ const TREE_WIDTH_MAX = 600;
             (dblclick)="resetTreeWidth()"
           ></div>
 
-          <section class="min-w-0 flex-1 bg-zinc-950">
-            <app-file-view
-              [state]="store.selectedFile()"
-              [links]="selectedFileLinks()"
-              (retry)="onFileRetry($event)"
-            />
+          <section class="flex min-w-0 flex-1 flex-col bg-zinc-950">
+            @if (store.selectedPath()) {
+              <div
+                class="flex shrink-0 items-center gap-2 border-b px-4 py-1.5 text-xs"
+                [class]="
+                  store.viewAt()
+                    ? 'border-amber-400/20 bg-amber-400/10 text-amber-200'
+                    : 'border-zinc-800 bg-zinc-900/40 text-zinc-400'
+                "
+              >
+                <svg
+                  class="size-3.5 shrink-0"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M3 12a9 9 0 1 0 3-6.7" />
+                  <path d="M3 4v4h4" />
+                  <path d="M12 7v5l3.5 2" />
+                </svg>
+                <span class="min-w-0 truncate">
+                  @if (store.viewAt(); as at) {
+                    Viewing at
+                    @if (store.viewAtCommit(); as commit) {
+                      <a
+                        class="font-mono underline-offset-2 hover:underline"
+                        [href]="commit.htmlUrl"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        >{{ abbrev(at) }}</a
+                      >
+                      — {{ commit.summary }}
+                      <span class="opacity-60">
+                        · {{ commit.authorName }} · {{ when(commit.authoredAt) }}</span
+                      >
+                    } @else {
+                      <span class="font-mono">{{ abbrev(at) }}</span>
+                    }
+                  } @else {
+                    Current version
+                    <span class="font-mono opacity-70">· {{ store.ref() }}</span>
+                  }
+                </span>
+                <span class="flex-1"></span>
+                <div
+                  class="flex shrink-0 overflow-hidden rounded border"
+                  [class]="store.viewAt() ? 'border-amber-300/30' : 'border-zinc-700'"
+                  role="group"
+                  aria-label="View mode"
+                >
+                  <button
+                    type="button"
+                    class="px-2 py-0.5 transition"
+                    [class]="
+                      !diffMode()
+                        ? store.viewAt()
+                          ? 'bg-amber-300/25 font-medium'
+                          : 'bg-zinc-700/60 font-medium text-zinc-200'
+                        : 'hover:bg-white/10'
+                    "
+                    (click)="setDiffMode(false)"
+                  >
+                    File
+                  </button>
+                  <button
+                    type="button"
+                    class="border-l px-2 py-0.5 transition disabled:cursor-not-allowed disabled:opacity-40"
+                    [class]="
+                      (store.viewAt() ? 'border-amber-300/30 ' : 'border-zinc-700 ') +
+                      (diffMode() ? 'bg-amber-300/25 font-medium' : 'enabled:hover:bg-white/10')
+                    "
+                    [disabled]="!store.viewAt()"
+                    [title]="
+                      store.viewAt()
+                        ? 'Show what this commit changed in the file'
+                        : 'Step to a commit to see its changes'
+                    "
+                    (click)="setDiffMode(true)"
+                  >
+                    Changes
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  class="shrink-0 rounded border px-2 py-0.5 transition disabled:cursor-not-allowed disabled:opacity-40"
+                  [class]="
+                    store.viewAt()
+                      ? 'border-amber-300/30 enabled:hover:bg-amber-300/10'
+                      : 'border-zinc-700 enabled:hover:bg-white/10'
+                  "
+                  [disabled]="olderDisabled()"
+                  (click)="stepOlder()"
+                  title="One commit older"
+                >
+                  ← Older
+                </button>
+                <button
+                  type="button"
+                  class="shrink-0 rounded border px-2 py-0.5 transition disabled:cursor-not-allowed disabled:opacity-40"
+                  [class]="
+                    store.viewAt()
+                      ? 'border-amber-300/30 enabled:hover:bg-amber-300/10'
+                      : 'border-zinc-700 enabled:hover:bg-white/10'
+                  "
+                  [disabled]="newerDisabled()"
+                  (click)="stepNewer()"
+                  [title]="store.viewAt() ? 'One commit newer' : 'Already at the newest version'"
+                >
+                  Newer →
+                </button>
+                @if (store.viewAt()) {
+                  <button
+                    type="button"
+                    class="shrink-0 rounded bg-amber-300/15 px-2 py-0.5 font-medium transition hover:bg-amber-300/25"
+                    (click)="goToCommit(null)"
+                  >
+                    Back to {{ store.ref() }}
+                  </button>
+                }
+              </div>
+            }
+            @if (diffMode()) {
+              <app-diff-view
+                class="min-h-0 flex-1"
+                [state]="store.selectedDiff()"
+                [path]="store.selectedPath()"
+                [highlightLine]="lineNumber()"
+                [splitMode]="blameOn()"
+                [leftBlame]="leftBlame()"
+                [rightBlame]="store.selectedBlame()"
+                [blameActive]="blameOn()"
+                [historyActive]="historyOpen()"
+                [beforeAvailable]="hunkBeforeAvailable()"
+                (retry)="onDiffRetry()"
+                (before)="onHunkBefore($event)"
+                (blameToggle)="toggleBlame()"
+                (blameSelect)="onBlameSelect($event)"
+                (historyToggle)="toggleHistory()"
+              />
+            } @else {
+              <app-file-view
+                class="min-h-0 flex-1"
+                [state]="store.selectedFile()"
+                [links]="selectedFileLinks()"
+                [historyActive]="historyOpen()"
+                [blameActive]="blameOn()"
+                [blame]="store.selectedBlame()"
+                [highlightLine]="lineNumber()"
+                (retry)="onFileRetry($event)"
+                (historyToggle)="toggleHistory()"
+                (blameToggle)="toggleBlame()"
+                (blameSelect)="onBlameSelect($event)"
+              />
+            }
           </section>
+
+          @if (historyOpen()) {
+            <aside class="w-80 shrink-0 border-l border-zinc-800 bg-zinc-950">
+              <app-file-history
+                [path]="store.selectedPath()"
+                [tipRef]="store.ref()"
+                [commits]="store.history()"
+                [status]="store.historyStatus()"
+                [error]="store.historyError()"
+                [hasMore]="store.historyHasMore()"
+                [selectedSha]="store.viewAt()"
+                [renames]="store.selectedRenames()"
+                (commitSelect)="goToCommit($event)"
+                (loadMore)="store.loadMoreHistory()"
+                (retry)="store.retryHistory()"
+                (closed)="toggleHistory()"
+                (findRenames)="onFindRenames()"
+                (candidateSelect)="onCandidateSelect($event)"
+              />
+            </aside>
+          }
         </div>
       }
     </div>
@@ -243,20 +435,111 @@ export class ViewerPage {
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
   private readonly title = inject(Title);
+  private readonly localRepos = inject(LocalRepos);
 
   /** Bound from the route by `withComponentInputBinding`. */
   readonly owner = input.required<string>();
   readonly repo = input.required<string>();
+  /** Provider id, bound from the route's data (github/gitlab/local). */
+  readonly provider = input('github');
   readonly ref = input<string | undefined>();
   readonly path = input<string | undefined>();
+  /** Commit sha the selected file is viewed at (time travel). */
+  readonly at = input<string | undefined>();
+  /** `diff` or `file`; absent falls back to the remembered preference. */
+  readonly view = input<string | undefined>();
+  /** Truthy enables blame annotations in the file view. */
+  readonly blame = input<string | undefined>();
+  /** 1-based line to highlight and scroll to (file or changes view). */
+  readonly line = input<string | undefined>();
 
   protected readonly treeWidth = signal(restoreTreeWidth());
   protected readonly dragging = signal(false);
+  /** Remembered across files and sessions: once opened, History stays open. */
+  protected readonly historyOpen = signal(restoreHistoryOpen());
+  /** Remembered File/Changes choice; Changes is the default. */
+  private readonly viewPref = signal<'file' | 'diff'>(restoreViewMode());
   private dragOrigin: { x: number; width: number } | null = null;
+  /** The panel auto-opens only for the first `at` deep link, not every hop. */
+  private historyAutoOpened = false;
+
+  protected readonly diffMode = computed(() => {
+    if (!this.store.viewAt()) return false;
+    const view = this.view();
+    return view ? view === 'diff' : this.viewPref() === 'diff';
+  });
+
+  /** Blame is available in both views: gutter in File, split in Changes. */
+  protected readonly blameOn = computed(() => !!this.blame());
+
+  protected readonly lineNumber = computed<number | null>(() => {
+    const parsed = Number(this.line());
+    return Number.isInteger(parsed) && parsed >= 1 ? parsed : null;
+  });
+
+  /**
+   * The history entry just before the viewed commit — the left side of the
+   * split changes view. Anchoring there (instead of the raw parent sha)
+   * keeps blame working: the parent itself may not have touched the path.
+   */
+  private readonly prevSha = computed<string | null>(() => {
+    if (!this.store.viewAt()) return null;
+    const idx = this.anchorIndex();
+    if (idx === -1) return null;
+    return this.store.history()[idx + 1]?.sha ?? null;
+  });
+
+  protected readonly leftBlame = computed(() => {
+    const prev = this.prevSha();
+    return prev ? this.store.blameFor(this.store.selectedPath(), prev) : null;
+  });
 
   protected readonly selectedFileLinks = computed(() => {
     const path = this.store.selectedPath();
-    return path ? this.store.linksFor(path) : null;
+    if (!path) return null;
+    return this.store.linksFor(path, this.store.viewAt());
+  });
+
+  /** Index of the viewed commit in the loaded history; -1 when unknown. */
+  private readonly anchorIndex = computed(() => {
+    const at = this.store.viewAt();
+    if (!at) return -1;
+    return this.store.history().findIndex((c) => c.sha === at);
+  });
+
+  private readonly historyReadyForPath = computed(
+    () =>
+      this.store.historyStatus() === 'ready' &&
+      this.store.historyPath() === this.store.selectedPath(),
+  );
+
+  protected readonly olderDisabled = computed(() => {
+    if (!this.historyReadyForPath()) {
+      // Unknown yet — stepping will load the history on demand.
+      return !this.store.viewAt() ? false : true;
+    }
+    const history = this.store.history();
+    if (!this.store.viewAt()) return history.length === 0;
+    const idx = this.anchorIndex();
+    if (idx === -1) return true;
+    return idx + 1 >= history.length && !this.store.historyHasMore();
+  });
+
+  protected readonly newerDisabled = computed(() => {
+    if (!this.store.viewAt()) return true; // already at the newest version
+    return this.historyReadyForPath() && this.anchorIndex() === -1;
+  });
+
+  /**
+   * Whether a hunk's "◂ Before" can lead anywhere: false once the loaded
+   * history shows the viewed commit created the file (nothing earlier).
+   */
+  protected readonly hunkBeforeAvailable = computed(() => {
+    if (!this.store.viewAt()) return false;
+    if (!this.historyReadyForPath()) return true; // unknown yet — the handler resolves it
+    const idx = this.anchorIndex();
+    if (idx === -1) return false;
+    return idx + 1 < this.store.history().length || this.store.historyHasMore();
   });
 
   protected readonly errorTitle = computed(() => {
@@ -278,22 +561,65 @@ export class ViewerPage {
 
   constructor() {
     effect(() => {
+      const provider = this.provider() || 'github';
       const owner = this.owner();
       const repo = this.repo();
       const ref = this.ref() || undefined;
-      untracked(() => void this.store.loadRepo({ provider: 'github', owner, repo }, ref));
+      untracked(() => void this.store.loadRepo({ provider, owner, repo }, ref));
     });
 
     effect(() => {
       const phase = this.store.phase();
       const path = this.path() || null;
+      const at = this.at() || null;
       untracked(() => {
         if (phase !== 'ready') return;
         if (path) {
-          void this.store.openFile(path);
+          void this.store.openFile(path, at);
+          if (at && !this.historyAutoOpened) {
+            this.historyAutoOpened = true;
+            this.historyOpen.set(true);
+          }
         } else {
           this.store.clearSelection();
         }
+      });
+    });
+
+    // History powers the steppers and blame, so load it for every selection.
+    effect(() => {
+      const phase = this.store.phase();
+      const path = this.store.selectedPath();
+      untracked(() => {
+        if (phase === 'ready' && path) void this.store.loadHistory(path);
+      });
+    });
+
+    effect(() => {
+      const phase = this.store.phase();
+      const diff = this.diffMode();
+      const path = this.path() || null;
+      const at = this.at() || null;
+      untracked(() => {
+        if (phase === 'ready' && diff && path && at) void this.store.loadDiff(path, at);
+      });
+    });
+
+    effect(() => {
+      const phase = this.store.phase();
+      const blame = this.blameOn();
+      const diff = this.diffMode();
+      const path = this.path() || null;
+      const at = this.at() || null;
+      // prevSha also re-runs this when more history pages arrive,
+      // extending truncated blames.
+      const prev = this.prevSha();
+      this.store.history();
+      untracked(() => {
+        if (phase !== 'ready' || !blame || !path) return;
+        void this.store.loadBlame(path, at);
+        // The split changes view also annotates the version before.
+        if (diff && prev) void this.store.loadBlame(path, prev);
       });
     });
 
@@ -304,15 +630,198 @@ export class ViewerPage {
   }
 
   protected onFileSelect(path: string): void {
+    // Switching files always returns to the snapshot tip: `at`, `view` and
+    // `line` belong to the previous file's timeline. Blame mode is sticky.
     void this.router.navigate([], {
       relativeTo: this.route,
-      queryParams: { path },
+      queryParams: { path, at: null, view: null, line: null },
+      queryParamsHandling: 'merge',
+    });
+  }
+
+  /**
+   * Navigates the selected file to `sha` (or back to the tip when null),
+   * applying the remembered File/Changes preference for commit views unless
+   * a target view/line is given (line-targeted jumps pick their own view).
+   */
+  protected goToCommit(
+    sha: string | null,
+    options?: { view?: 'file' | 'diff'; line?: number; blame?: '1' },
+  ): void {
+    const queryParams: Record<string, string | null> = {
+      at: sha,
+      view: sha ? (options?.view ?? this.viewPref()) : null,
+      line: options?.line ? String(options.line) : null,
+    };
+    if (options?.blame) queryParams['blame'] = options.blame;
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams,
+      queryParamsHandling: 'merge',
+    });
+  }
+
+  /** A blame annotation was clicked: show that commit's diff at the line. */
+  protected onBlameSelect(event: { sha: string; line: number }): void {
+    this.goToCommit(event.sha, { view: 'diff', line: event.line });
+  }
+
+  /**
+   * "◂ Before" on a hunk: annotate the previous version at the hunk's old
+   * position — one recursive step back in time. The target is the previous
+   * entry in the file's history rather than the commit's raw parent: the
+   * parent often never touched the file (blame could not anchor there) and,
+   * for files created by this commit, does not contain it at all. When
+   * nothing earlier exists, fall back to this version annotated instead of
+   * navigating into a void.
+   */
+  protected async onHunkBefore(target: { oldStart: number; newStart: number }): Promise<void> {
+    const path = this.store.selectedPath();
+    const at = this.store.viewAt();
+    if (!path || !at) return;
+    if (!this.historyReadyForPath()) await this.store.loadHistory(path);
+    let history = this.store.history();
+    let idx = history.findIndex((c) => c.sha === at);
+    if (idx !== -1 && idx + 1 >= history.length && this.store.historyHasMore()) {
+      await this.store.loadMoreHistory();
+      history = this.store.history();
+      idx = history.findIndex((c) => c.sha === at);
+    }
+    const previous = idx === -1 ? null : (history[idx + 1] ?? null);
+    if (!previous) {
+      this.goToCommit(at, { view: 'file', blame: '1', line: Math.max(1, target.newStart) });
+      return;
+    }
+    this.goToCommit(previous.sha, {
+      view: 'file',
+      blame: '1',
+      line: Math.max(1, target.oldStart),
+    });
+  }
+
+  protected onFindRenames(): void {
+    const path = this.store.selectedPath();
+    if (path) void this.store.loadRenameCandidates(path);
+  }
+
+  /**
+   * Continues the journey in a rename candidate: anchors at the last commit
+   * that touched the candidate before the rename point, so history, blame
+   * and the steppers all keep working in the predecessor's own timeline.
+   */
+  protected async onCandidateSelect(candidate: RenameCandidate): Promise<void> {
+    const renames = this.store.selectedRenames();
+    if (renames?.status !== 'ready') return;
+    const anchor = await this.store.lastTouch(candidate.path, renames.parentSha);
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: {
+        path: candidate.path,
+        at: anchor?.sha ?? renames.parentSha,
+        view: this.viewPref(),
+        line: null,
+      },
+      queryParamsHandling: 'merge',
+    });
+  }
+
+  /**
+   * Switches the content pane between file and changes mode (URL-driven)
+   * and remembers the choice for future commit views.
+   */
+  protected setDiffMode(enabled: boolean): void {
+    if (!this.store.viewAt()) return; // no commit selected — nothing to switch
+    const mode = enabled ? 'diff' : 'file';
+    this.viewPref.set(mode);
+    persistViewMode(mode);
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { view: mode },
+      queryParamsHandling: 'merge',
+    });
+  }
+
+  /** Steps to the next-older commit, loading history pages on demand. */
+  protected async stepOlder(): Promise<void> {
+    const path = this.store.selectedPath();
+    if (!path) return;
+    if (!this.historyReadyForPath()) await this.store.loadHistory(path);
+    const history = this.store.history();
+    const at = this.store.viewAt();
+    if (!at) {
+      if (history.length > 0) this.goToCommit(history[0].sha);
+      return;
+    }
+    const idx = history.findIndex((c) => c.sha === at);
+    if (idx === -1) return;
+    if (idx + 1 < history.length) {
+      this.goToCommit(history[idx + 1].sha);
+      return;
+    }
+    if (this.store.historyHasMore()) {
+      await this.store.loadMoreHistory();
+      const extended = this.store.history();
+      if (idx + 1 < extended.length) this.goToCommit(extended[idx + 1].sha);
+    }
+  }
+
+  /** Steps to the next-newer commit, ending at the tip. */
+  protected stepNewer(): void {
+    const at = this.store.viewAt();
+    if (!at) return;
+    const idx = this.anchorIndex();
+    if (idx === -1) return;
+    this.goToCommit(idx === 0 ? null : this.store.history()[idx - 1].sha);
+  }
+
+  /** Re-grants read permission to a persisted local folder (user gesture). */
+  protected async reconnectLocal(): Promise<void> {
+    const name = this.repo();
+    try {
+      const ok = await this.localRepos.reconnect(name);
+      if (ok) {
+        this.store.retry();
+      } else if (!(await this.localRepos.hasStoredHandle(name))) {
+        void this.router.navigate(['/']);
+      }
+    } catch {
+      void this.router.navigate(['/']);
+    }
+  }
+
+  protected toggleHistory(): void {
+    this.historyOpen.update((open) => !open);
+    try {
+      localStorage.setItem(HISTORY_OPEN_KEY, this.historyOpen() ? '1' : '0');
+    } catch {
+      // Best-effort only.
+    }
+  }
+
+  protected toggleBlame(): void {
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { blame: this.blame() ? null : '1' },
       queryParamsHandling: 'merge',
     });
   }
 
   protected onFileRetry(path: string): void {
-    void this.store.openFile(path);
+    void this.store.openFile(path, this.store.viewAt());
+  }
+
+  protected onDiffRetry(): void {
+    const path = this.store.selectedPath();
+    const at = this.store.viewAt();
+    if (path && at) void this.store.loadDiff(path, at);
+  }
+
+  protected abbrev(sha: string): string {
+    return shortSha(sha);
+  }
+
+  protected when(iso: string): string {
+    return relativeTime(iso);
   }
 
   protected onDragStart(event: PointerEvent): void {
@@ -358,5 +867,31 @@ function persistTreeWidth(width: number): void {
     localStorage.setItem(TREE_WIDTH_KEY, String(width));
   } catch {
     // Best-effort only.
+  }
+}
+
+function restoreViewMode(): 'file' | 'diff' {
+  try {
+    const stored = localStorage.getItem(VIEW_MODE_KEY);
+    if (stored === 'file' || stored === 'diff') return stored;
+  } catch {
+    // localStorage unavailable — fall through to the default.
+  }
+  return 'diff';
+}
+
+function persistViewMode(mode: 'file' | 'diff'): void {
+  try {
+    localStorage.setItem(VIEW_MODE_KEY, mode);
+  } catch {
+    // Best-effort only.
+  }
+}
+
+function restoreHistoryOpen(): boolean {
+  try {
+    return localStorage.getItem(HISTORY_OPEN_KEY) === '1';
+  } catch {
+    return false;
   }
 }

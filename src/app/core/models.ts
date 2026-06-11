@@ -113,6 +113,15 @@ export interface CommitInfo {
   readonly parentShas: readonly string[];
 }
 
+/** One file touched by a commit, as reported by the provider. */
+export interface CommitFileChange {
+  readonly path: string;
+  /** `added` | `removed` | `modified` | `renamed` | `copied` | … */
+  readonly status: string;
+  /** Previous path for renames/copies, when the provider detected one. */
+  readonly previousPath?: string;
+}
+
 /** Categorised provider failures so the UI can react specifically. */
 export type RepoErrorKind =
   | 'not-found'
@@ -151,4 +160,10 @@ export type RepoLoadPhase = 'idle' | 'metadata' | 'tree' | 'ready' | 'error';
 export type FileState =
   | { readonly status: 'loading'; readonly path: string }
   | { readonly status: 'ready'; readonly path: string; readonly file: RepoFile }
-  | { readonly status: 'error'; readonly path: string; readonly message: string };
+  | {
+      readonly status: 'error';
+      readonly path: string;
+      readonly message: string;
+      /** Error category, so callers can react (e.g. not-found ⇒ file absent). */
+      readonly kind: RepoErrorKind;
+    };

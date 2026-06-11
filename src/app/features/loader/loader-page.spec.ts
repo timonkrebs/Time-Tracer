@@ -4,6 +4,8 @@ import { Router, provideRouter } from '@angular/router';
 
 import { GIT_PROVIDERS } from '../../core/git/git-provider';
 import { GithubProvider } from '../../core/git/github/github-provider';
+import { GitlabProvider } from '../../core/git/gitlab/gitlab-provider';
+import { AzdProvider } from '../../core/git/azd/azd-provider';
 import { LoaderPage } from './loader-page';
 
 describe('LoaderPage', () => {
@@ -19,6 +21,8 @@ describe('LoaderPage', () => {
         provideZonelessChangeDetection(),
         provideRouter([]),
         { provide: GIT_PROVIDERS, useExisting: GithubProvider, multi: true },
+        { provide: GIT_PROVIDERS, useExisting: GitlabProvider, multi: true },
+        { provide: GIT_PROVIDERS, useExisting: AzdProvider, multi: true },
       ],
     }).compileComponents();
 
@@ -85,13 +89,31 @@ describe('LoaderPage', () => {
     });
   });
 
+  it('routes GitLab URLs to the GitLab viewer', async () => {
+    enter('https://gitlab.com/gitlab-org/gitlab.git');
+    await submit();
+
+    expect(navigateSpy).toHaveBeenCalledWith(['/gl', 'gitlab-org', 'gitlab'], {
+      queryParams: {},
+    });
+  });
+
+  it('routes Azure DevOps URLs to the AZD viewer', async () => {
+    enter('https://dev.azure.com/fhnw/Services/_git/A1418-CIT.IAM.EBC/pullrequest/13619');
+    await submit();
+
+    expect(navigateSpy).toHaveBeenCalledWith(['/azd', 'fhnw/Services', 'A1418-CIT.IAM.EBC'], {
+      queryParams: {},
+    });
+  });
+
   it('shows an error for unparseable input', async () => {
     enter('definitely not a repo');
     await submit();
 
     expect(navigateSpy).not.toHaveBeenCalled();
     expect((fixture.nativeElement as HTMLElement).textContent).toContain(
-      'does not look like a GitHub repository',
+      'does not look like a GitHub or GitLab repository',
     );
   });
 

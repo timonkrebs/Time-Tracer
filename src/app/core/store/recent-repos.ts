@@ -4,6 +4,8 @@ export interface RecentRepo {
   readonly owner: string;
   readonly repo: string;
   readonly description: string | null;
+  /** Provider id; entries persisted before this field existed are github. */
+  readonly provider?: string;
 }
 
 const STORAGE_KEY = 'time-tracer.recent-repos';
@@ -33,7 +35,9 @@ export class RecentRepos {
 
 function sameRepo(a: RecentRepo, b: RecentRepo): boolean {
   return (
-    a.owner.toLowerCase() === b.owner.toLowerCase() && a.repo.toLowerCase() === b.repo.toLowerCase()
+    (a.provider ?? 'github') === (b.provider ?? 'github') &&
+    a.owner.toLowerCase() === b.owner.toLowerCase() &&
+    a.repo.toLowerCase() === b.repo.toLowerCase()
   );
 }
 

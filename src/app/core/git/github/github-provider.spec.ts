@@ -277,4 +277,167 @@ describe('GithubProvider', () => {
     expect(provider.canHandle('a/b')).toBe(true);
     expect(provider.canHandle('https://example.com/a/b')).toBe(false);
   });
+
+  describe('getFileAtRef', () => {
+    it('fetches historical content through the contents API', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          type: 'file',
+          path: 'src/main.ts',
+          sha: 'old1',
+          size: 9,
+          content: btoa('old text\n'),
+          encoding: 'base64',
+        }),
+      );
+
+      const file = await provider.getFileAtRef(slug, 'src/main.ts', 'abc123');
+
+      expect(fetchMock.mock.calls[0][0]).toBe(
+        'https://api.github.com/repos/acme/rocket/contents/src/main.ts?ref=abc123',
+      );
+      expect(file).toEqual({
+        kind: 'text',
+        path: 'src/main.ts',
+        sha: 'old1',
+        size: 9,
+        text: 'old text\n',
+      });
+    });
+
+    it('falls back to the blob endpoint when inline content is omitted', async () => {
+      fetchMock
+        .mockResolvedValueOnce(
+          jsonResponse({
+            type: 'file',
+            path: 'big.txt',
+            sha: 'bigsha',
+            size: 1_500_000,
+            content: '',
+            encoding: 'none',
+          }),
+        )
+        .mockResolvedValueOnce(
+          jsonResponse({
+            sha: 'bigsha',
+            size: 12,
+            content: btoa('blob content'),
+            encoding: 'base64',
+          }),
+        );
+
+      const file = await provider.getFileAtRef(slug, 'big.txt', 'abc123');
+
+      expect(fetchMock.mock.calls[1][0]).toBe(
+        'https://api.github.com/repos/acme/rocket/git/blobs/bigsha',
+      );
+      expect(file).toMatchObject({ kind: 'text', text: 'blob content' });
+    });
+
+    it('short-circuits oversized historical files', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          type: 'file',
+          path: 'huge.bin',
+          sha: 'h1',
+          size: MAX_FILE_SIZE_BYTES + 1,
+          content: '',
+          encoding: 'none',
+        }),
+      );
+
+      const file = await provider.getFileAtRef(slug, 'huge.bin', 'abc123');
+
+      expect(file.kind).toBe('too-large');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('maps a missing path at the ref to not-found', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ message: 'Not Found' }, { status: 404 }));
+
+      await expect(provider.getFileAtRef(slug, 'gone.ts', 'abc123')).rejects.toMatchObject({
+        kind: 'not-found',
+      });
+    });
+
+    it('rejects when the path is a directory at the ref', async () => {
+      fetchMock.mockResolvedValue(jsonResponse([{ type: 'file', path: 'dir/a.ts' }]));
+
+      await expect(provider.getFileAtRef(slug, 'dir', 'abc123')).rejects.toMatchObject({
+        kind: 'unknown',
+      });
+    });
+  });
+
+  describe('getCommit', () => {
+    it('fetches and maps a single commit', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          sha: 'abc',
+          html_url: 'https://github.com/acme/rocket/commit/abc',
+          commit: {
+            message: 'fix: tighten bolts\n\nDetails.',
+            author: { name: 'Ada', email: 'ada@example.com', date: '2026-02-02T00:00:00Z' },
+          },
+          parents: [{ sha: 'p1' }],
+        }),
+      );
+
+      const commit = await provider.getCommit(slug, 'abc');
+
+      expect(fetchMock.mock.calls[0][0]).toBe(
+        'https://api.github.com/repos/acme/rocket/commits/abc',
+      );
+      expect(commit).toMatchObject({
+        sha: 'abc',
+        summary: 'fix: tighten bolts',
+        parentShas: ['p1'],
+      });
+    });
+
+    it('maps an unknown sha to not-found', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ message: 'Not Found' }, { status: 404 }));
+
+      await expect(provider.getCommit(slug, 'nope')).rejects.toMatchObject({
+        kind: 'not-found',
+      });
+    });
+  });
+
+  describe('getCommitFiles', () => {
+    it('maps touched files including rename detection', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          sha: 'abc',
+          html_url: 'https://github.com/acme/rocket/commit/abc',
+          commit: { message: 'refactor: move', author: null },
+          parents: [{ sha: 'p1' }],
+          files: [
+            { filename: 'src/engine.ts', status: 'renamed', previous_filename: 'src/thruster.ts' },
+            { filename: 'README.md', status: 'modified' },
+          ],
+        }),
+      );
+
+      const files = await provider.getCommitFiles(slug, 'abc');
+
+      expect(files).toEqual([
+        { path: 'src/engine.ts', status: 'renamed', previousPath: 'src/thruster.ts' },
+        { path: 'README.md', status: 'modified' },
+      ]);
+    });
+
+    it('returns an empty list when the response omits files', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          sha: 'abc',
+          html_url: 'https://github.com/acme/rocket/commit/abc',
+          commit: { message: 'x', author: null },
+          parents: [],
+        }),
+      );
+
+      await expect(provider.getCommitFiles(slug, 'abc')).resolves.toEqual([]);
+    });
+  });
 });

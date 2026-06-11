@@ -1,6 +1,7 @@
 import { InjectionToken, Injectable, inject } from '@angular/core';
 
 import {
+  CommitFileChange,
   CommitInfo,
   ParsedRepoUrl,
   RefResolution,
@@ -52,6 +53,13 @@ export interface GitProvider {
   getFile(slug: RepoSlug, entry: TreeEntry): Promise<RepoFile>;
 
   /**
+   * Content of `path` as it was at `ref` (typically a historical commit sha).
+   * Rejects with kind `not-found` when the path does not exist at that ref —
+   * e.g. before the file was added or after the commit that deleted it.
+   */
+  getFileAtRef(slug: RepoSlug, path: string, ref: string): Promise<RepoFile>;
+
+  /**
    * Commits reachable from `ref`, optionally limited to those touching `path`.
    * Primitive for the upcoming history/blame milestone.
    */
@@ -60,7 +68,18 @@ export interface GitProvider {
     options?: { ref?: string; path?: string; perPage?: number; page?: number },
   ): Promise<CommitInfo[]>;
 
-  webLinks(slug: RepoSlug, ref: string, path?: string): RepoWebLinks;
+  /** A single commit by sha — used to resolve parents for diffs/blame. */
+  getCommit(slug: RepoSlug, sha: string): Promise<CommitInfo>;
+
+  /**
+   * Files touched by a commit, including provider-side rename detection
+   * (`previousPath`). Powers the rename-candidate search where a file's
+   * history ends.
+   */
+  getCommitFiles(slug: RepoSlug, sha: string): Promise<CommitFileChange[]>;
+
+  /** Outbound web links, or null when the provider has no web pendant. */
+  webLinks(slug: RepoSlug, ref: string, path?: string): RepoWebLinks | null;
 }
 
 /** All registered git providers (multi token). */
