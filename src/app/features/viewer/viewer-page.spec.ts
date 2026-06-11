@@ -18,8 +18,11 @@ describe('ViewerPage (integration)', () => {
   let harness: RouterTestingHarness;
   let router: Router;
 
-  /** Fixtures keyed by API pathname; query strings are ignored for matching. */
-  const fixtures: Record<string, unknown> = {
+  /**
+   * Fixtures keyed by API pathname. Function values receive the full URL so
+   * a fixture can vary by query params (e.g. contents at different refs).
+   */
+  const fixtures: Record<string, unknown | ((url: URL) => unknown)> = {
     '/repos/acme/rocket': {
       name: 'rocket',
       full_name: 'acme/rocket',
@@ -70,13 +73,36 @@ describe('ViewerPage (integration)', () => {
         parents: [],
       },
     ],
-    '/repos/acme/rocket/contents/README.md': {
-      type: 'file',
-      path: 'README.md',
-      sha: 'oldblob',
-      size: 12,
-      content: btoa('# Rocket v0\n'),
-      encoding: 'base64',
+    '/repos/acme/rocket/contents/README.md': (url: URL) => {
+      const ref = url.searchParams.get('ref');
+      const text = ref === NEW_SHA ? '# Rocket\n\nGo!\n' : ref === OLD_SHA ? '# Rocket v0\n' : null;
+      if (text === null) return undefined;
+      return {
+        type: 'file',
+        path: 'README.md',
+        sha: `blob-at-${ref}`,
+        size: text.length,
+        content: btoa(text),
+        encoding: 'base64',
+      };
+    },
+    [`/repos/acme/rocket/commits/${NEW_SHA}`]: {
+      sha: NEW_SHA,
+      html_url: `https://github.com/acme/rocket/commit/${NEW_SHA}`,
+      commit: {
+        message: 'docs: update readme',
+        author: { name: 'Ada', email: 'ada@example.com', date: '2026-06-01T00:00:00Z' },
+      },
+      parents: [{ sha: OLD_SHA }],
+    },
+    [`/repos/acme/rocket/commits/${OLD_SHA}`]: {
+      sha: OLD_SHA,
+      html_url: `https://github.com/acme/rocket/commit/${OLD_SHA}`,
+      commit: {
+        message: 'docs: initial readme',
+        author: { name: 'Grace', email: 'grace@example.com', date: '2026-01-01T00:00:00Z' },
+      },
+      parents: [],
     },
   };
 
@@ -85,8 +111,9 @@ describe('ViewerPage (integration)', () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string) => {
-        const pathname = new URL(url).pathname;
-        const body = fixtures[pathname];
+        const parsed = new URL(url);
+        const fixture = fixtures[parsed.pathname];
+        const body = typeof fixture === 'function' ? fixture(parsed) : fixture;
         if (!body) return new Response(JSON.stringify({ message: 'Not Found' }), { status: 404 });
         return new Response(JSON.stringify(body), { status: 200 });
       }),
@@ -258,5 +285,44 @@ describe('ViewerPage (integration)', () => {
       expect(text).not.toContain('Viewing at');
     });
     expect(router.url).not.toContain('at=');
+  });
+
+  it('shows what a commit changed and switches back to the file view', async () => {
+    await harness.navigateByUrl(`/r/acme/rocket?path=README.md&at=${NEW_SHA}`);
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('Viewing at');
+    });
+
+    clickButton('Changes');
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('@@ -1,1 +1,3 @@');
+      // Removed old line and added new line are both visible.
+      expect(text).toContain('# Rocket v0');
+      expect(text).toContain('Go!');
+      expect(text).toContain(`vs ${OLD_SHA.slice(0, 7)}`);
+    });
+    expect(router.url).toContain('view=diff');
+
+    clickButton('File');
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).not.toContain('@@');
+      expect(text).toContain('Go!');
+    });
+    expect(router.url).not.toContain('view=diff');
+  });
+
+  it('deep-links to a root-commit diff and reports everything as new', async () => {
+    await harness.navigateByUrl(`/r/acme/rocket?path=README.md&at=${OLD_SHA}&view=diff`);
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('initial commit — everything is new');
+      expect(text).toContain('# Rocket v0');
+      expect(text).toContain('@@ -0,0 +1,1 @@');
+    });
   });
 });

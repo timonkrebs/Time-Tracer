@@ -368,4 +368,39 @@ describe('GithubProvider', () => {
       });
     });
   });
+
+  describe('getCommit', () => {
+    it('fetches and maps a single commit', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          sha: 'abc',
+          html_url: 'https://github.com/acme/rocket/commit/abc',
+          commit: {
+            message: 'fix: tighten bolts\n\nDetails.',
+            author: { name: 'Ada', email: 'ada@example.com', date: '2026-02-02T00:00:00Z' },
+          },
+          parents: [{ sha: 'p1' }],
+        }),
+      );
+
+      const commit = await provider.getCommit(slug, 'abc');
+
+      expect(fetchMock.mock.calls[0][0]).toBe(
+        'https://api.github.com/repos/acme/rocket/commits/abc',
+      );
+      expect(commit).toMatchObject({
+        sha: 'abc',
+        summary: 'fix: tighten bolts',
+        parentShas: ['p1'],
+      });
+    });
+
+    it('maps an unknown sha to not-found', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ message: 'Not Found' }, { status: 404 }));
+
+      await expect(provider.getCommit(slug, 'nope')).rejects.toMatchObject({
+        kind: 'not-found',
+      });
+    });
+  });
 });

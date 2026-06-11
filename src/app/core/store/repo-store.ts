@@ -12,6 +12,7 @@ import {
   TreeEntry,
   toRepoProviderError,
 } from '../models';
+import { FileDiff, computeFileDiff } from '../util/diff';
 import { ancestorsOf, buildTree } from '../util/tree';
 import { RecentRepos } from './recent-repos';
 
@@ -20,10 +21,24 @@ const HISTORY_PAGE_SIZE = 30;
 /** Lifecycle of the per-file commit history panel. */
 export type HistoryStatus = 'idle' | 'loading' | 'loading-more' | 'ready' | 'error';
 
+/** Async state of the changes view for one `<commit, path>` pair. */
+export type DiffState =
+  | { readonly status: 'loading' }
+  | {
+      readonly status: 'ready';
+      readonly diff: FileDiff;
+      readonly commit: CommitInfo;
+      /** Parent commit the diff is against; null for a root commit. */
+      readonly baseSha: string | null;
+    }
+  | { readonly status: 'unavailable'; readonly reason: string }
+  | { readonly status: 'error'; readonly message: string };
+
 /**
  * Single source of truth for the repository currently shown in the viewer:
  * load lifecycle, tree, expansion state, selection, per-file content cache,
- * per-file commit history and the "viewing at commit" time-travel state.
+ * per-file commit history, the "viewing at commit" time-travel state and
+ * per-commit file diffs.
  *
  * All async flows are guarded by a load sequence number so responses that
  * arrive after the user has already navigated elsewhere are dropped.
@@ -34,6 +49,8 @@ export class RepoStore {
   private readonly recents = inject(RecentRepos);
 
   private loadSeq = 0;
+  /** In-flight file fetches keyed like {@link fileKey}, to dedupe callers. */
+  private readonly inflight = new Map<string, Promise<FileState>>();
 
   private readonly _phase = signal<RepoLoadPhase>('idle');
   private readonly _error = signal<RepoProviderError | null>(null);
@@ -48,6 +65,10 @@ export class RepoStore {
   /** File contents keyed by `<sha|tip>::<path>` (see {@link fileKey}). */
   private readonly _files = signal<ReadonlyMap<string, FileState>>(new Map());
   private readonly _expanded = signal<ReadonlySet<string>>(new Set());
+  /** Every commit seen so far (history pages, single lookups), by sha. */
+  private readonly _commitsBySha = signal<ReadonlyMap<string, CommitInfo>>(new Map());
+  /** Diff states keyed by `<sha>::<path>`. */
+  private readonly _diffs = signal<ReadonlyMap<string, DiffState>>(new Map());
 
   private readonly _historyPath = signal<string | null>(null);
   private readonly _history = signal<readonly CommitInfo[]>([]);
@@ -91,11 +112,18 @@ export class RepoStore {
     return path ? (this._files().get(fileKey(path, this._viewAt())) ?? null) : null;
   });
 
-  /** The commit the file is viewed at, when it appears in the loaded history. */
+  /** The commit the file is viewed at, when its metadata is known. */
   readonly viewAtCommit = computed<CommitInfo | null>(() => {
     const at = this._viewAt();
-    if (!at) return null;
-    return this._history().find((c) => c.sha === at) ?? null;
+    return at ? (this._commitsBySha().get(at) ?? null) : null;
+  });
+
+  /** Diff of the selected file against its parent at the viewed commit. */
+  readonly selectedDiff = computed<DiffState | null>(() => {
+    const path = this._selectedPath();
+    const at = this._viewAt();
+    if (!path || !at) return null;
+    return this._diffs().get(fileKey(path, at)) ?? null;
   });
 
   /**
@@ -122,6 +150,9 @@ export class RepoStore {
     this._viewAt.set(null);
     this._files.set(new Map());
     this._expanded.set(new Set());
+    this._commitsBySha.set(new Map());
+    this._diffs.set(new Map());
+    this.inflight.clear();
     this._error.set(null);
     this.resetHistory();
     this._phase.set('metadata');
@@ -168,44 +199,85 @@ export class RepoStore {
     this._selectedPath.set(path);
     this._viewAt.set(atRef);
     this.revealPath(path);
+    await this.ensureFile(path, atRef);
+  }
 
-    const key = fileKey(path, atRef);
-    const existing = this._files().get(key);
+  /**
+   * Computes what the commit `at` changed in `path`: the file at the commit
+   * diffed against the same path at the commit's first parent. Cached per
+   * `<commit, path>`; reuses file-content caches for both sides.
+   */
+  async loadDiff(path: string, at: string): Promise<void> {
+    const key = fileKey(path, at);
+    const existing = this._diffs().get(key);
     if (existing && existing.status !== 'error') return;
-
     const slug = this._slug();
     if (!slug) return;
-    const provider = this.registry.byId(slug.provider);
 
-    let fetcher: () => Promise<RepoFile>;
-    if (atRef) {
-      fetcher = () => provider.getFileAtRef(slug, path, atRef);
-    } else {
-      const entry = this.entriesByPath().get(path);
-      if (!entry || entry.kind !== 'file') {
-        this.setFileState(key, {
+    const seq = this.loadSeq;
+    this.setDiffState(key, { status: 'loading' });
+    try {
+      const commit = await this.resolveCommit(slug, at);
+      if (seq !== this.loadSeq) return;
+      const baseSha = commit.parentShas[0] ?? null;
+
+      const [currentState, baseState] = await Promise.all([
+        this.ensureFile(path, at),
+        baseSha ? this.ensureFile(path, baseSha) : Promise.resolve(null),
+      ]);
+      if (seq !== this.loadSeq) return;
+
+      if (currentState.status !== 'ready') {
+        this.setDiffState(key, {
           status: 'error',
-          path,
-          message: 'This file does not exist at the current ref.',
+          message:
+            currentState.status === 'error'
+              ? currentState.message
+              : 'The file content could not be loaded.',
         });
         return;
       }
-      fetcher = () => provider.getFile(slug, entry);
-    }
+      if (currentState.file.kind !== 'text') {
+        this.setDiffState(key, {
+          status: 'unavailable',
+          reason:
+            currentState.file.kind === 'binary'
+              ? 'Binary file — no text diff.'
+              : 'The file is too large to diff here.',
+        });
+        return;
+      }
 
-    const seq = this.loadSeq;
-    this.setFileState(key, { status: 'loading', path });
-    try {
-      const file = await fetcher();
-      if (seq !== this.loadSeq) return;
-      this.setFileState(key, { status: 'ready', path, file });
+      let baseText = '';
+      if (baseState) {
+        if (baseState.status === 'error') {
+          if (baseState.kind !== 'not-found') {
+            this.setDiffState(key, { status: 'error', message: baseState.message });
+            return;
+          }
+          // Path absent at the parent: the commit added the file; diff vs empty.
+        } else if (baseState.status !== 'ready') {
+          this.setDiffState(key, {
+            status: 'error',
+            message: 'The previous version could not be loaded.',
+          });
+          return;
+        } else if (baseState.file.kind !== 'text') {
+          this.setDiffState(key, {
+            status: 'unavailable',
+            reason: 'The previous version is binary or too large to diff.',
+          });
+          return;
+        } else {
+          baseText = baseState.file.text;
+        }
+      }
+
+      const diff = computeFileDiff(baseText, currentState.file.text);
+      this.setDiffState(key, { status: 'ready', diff, commit, baseSha });
     } catch (error) {
       if (seq !== this.loadSeq) return;
-      this.setFileState(key, {
-        status: 'error',
-        path,
-        message: toRepoProviderError(error).message,
-      });
+      this.setDiffState(key, { status: 'error', message: toRepoProviderError(error).message });
     }
   }
 
@@ -237,6 +309,7 @@ export class RepoStore {
       });
       if (seq !== this.loadSeq || this._historyPath() !== path) return;
       this._history.set(commits);
+      this.cacheCommits(commits);
       this._historyHasMore.set(commits.length === HISTORY_PAGE_SIZE);
       this._historyStatus.set('ready');
     } catch (error) {
@@ -265,6 +338,7 @@ export class RepoStore {
       if (seq !== this.loadSeq || this._historyPath() !== path) return;
       this.historyPage = page;
       this._history.set([...this._history(), ...commits]);
+      this.cacheCommits(commits);
       this._historyHasMore.set(commits.length === HISTORY_PAGE_SIZE);
       this._historyStatus.set('ready');
     } catch (error) {
@@ -316,6 +390,80 @@ export class RepoStore {
     return this.registry.byId(slug.provider).webLinks(slug, ref, path);
   }
 
+  /**
+   * Returns the (cached) content state of `path` at `at`, fetching it if
+   * needed. Resolves with an error state instead of rejecting; concurrent
+   * callers share one request.
+   */
+  private ensureFile(path: string, at: string | null): Promise<FileState> {
+    const key = fileKey(path, at);
+    const existing = this._files().get(key);
+    if (existing && existing.status === 'ready') return Promise.resolve(existing);
+    const pending = this.inflight.get(key);
+    if (pending) return pending;
+
+    const promise = this.fetchFile(path, at, key);
+    this.inflight.set(key, promise);
+    void promise.finally(() => this.inflight.delete(key));
+    return promise;
+  }
+
+  private async fetchFile(path: string, at: string | null, key: string): Promise<FileState> {
+    const slug = this._slug();
+    if (!slug) {
+      return { status: 'error', path, message: 'No repository is loaded.', kind: 'unknown' };
+    }
+    const provider = this.registry.byId(slug.provider);
+
+    let fetcher: () => Promise<RepoFile>;
+    if (at) {
+      fetcher = () => provider.getFileAtRef(slug, path, at);
+    } else {
+      const entry = this.entriesByPath().get(path);
+      if (!entry || entry.kind !== 'file') {
+        const state: FileState = {
+          status: 'error',
+          path,
+          message: 'This file does not exist at the current ref.',
+          kind: 'not-found',
+        };
+        this.setFileState(key, state);
+        return state;
+      }
+      fetcher = () => provider.getFile(slug, entry);
+    }
+
+    const seq = this.loadSeq;
+    this.setFileState(key, { status: 'loading', path });
+    try {
+      const file = await fetcher();
+      const state: FileState = { status: 'ready', path, file };
+      if (seq === this.loadSeq) this.setFileState(key, state);
+      return state;
+    } catch (error) {
+      const err = toRepoProviderError(error);
+      const state: FileState = { status: 'error', path, message: err.message, kind: err.kind };
+      if (seq === this.loadSeq) this.setFileState(key, state);
+      return state;
+    }
+  }
+
+  /** Commit metadata by sha, served from cache when already seen. */
+  private async resolveCommit(slug: RepoSlug, sha: string): Promise<CommitInfo> {
+    const cached = this._commitsBySha().get(sha);
+    if (cached) return cached;
+    const commit = await this.registry.byId(slug.provider).getCommit(slug, sha);
+    this.cacheCommits([commit]);
+    return commit;
+  }
+
+  private cacheCommits(commits: readonly CommitInfo[]): void {
+    if (commits.length === 0) return;
+    const next = new Map(this._commitsBySha());
+    for (const commit of commits) next.set(commit.sha, commit);
+    this._commitsBySha.set(next);
+  }
+
   private resetHistory(): void {
     this._historyPath.set(null);
     this._history.set([]);
@@ -341,11 +489,18 @@ export class RepoStore {
     next.set(key, state);
     this._files.set(next);
   }
+
+  private setDiffState(key: string, state: DiffState): void {
+    const next = new Map(this._diffs());
+    next.set(key, state);
+    this._diffs.set(next);
+  }
 }
 
 /**
- * Cache key for file content. The prefix is either `tip` or a commit sha, so
- * paths (which can contain anything) cannot collide across refs.
+ * Cache key for file content and diffs. The prefix is either `tip` or a
+ * commit sha, so paths (which can contain anything) cannot collide across
+ * refs.
  */
 function fileKey(path: string, at: string | null): string {
   return `${at ?? 'tip'}::${path}`;

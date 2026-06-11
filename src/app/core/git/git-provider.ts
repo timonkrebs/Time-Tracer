@@ -67,6 +67,9 @@ export interface GitProvider {
     options?: { ref?: string; path?: string; perPage?: number; page?: number },
   ): Promise<CommitInfo[]>;
 
+  /** A single commit by sha — used to resolve parents for diffs/blame. */
+  getCommit(slug: RepoSlug, sha: string): Promise<CommitInfo>;
+
   webLinks(slug: RepoSlug, ref: string, path?: string): RepoWebLinks;
 }
 

@@ -13,6 +13,7 @@ import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 
 import { RepoStore } from '../../core/store/repo-store';
 import { relativeTime, shortSha } from '../../core/util/relative-time';
+import { DiffView } from './diff-view';
 import { FileHistory } from './file-history';
 import { FileTree } from './file-tree';
 import { FileView } from './file-view';
@@ -33,7 +34,7 @@ const TREE_WIDTH_MAX = 600;
 @Component({
   selector: 'app-viewer-page',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [RouterLink, FileTree, FileView, FileHistory],
+  imports: [RouterLink, FileTree, FileView, FileHistory, DiffView],
   host: { class: 'block h-full' },
   template: `
     <div class="flex h-full flex-col" [class.select-none]="dragging()">
@@ -267,6 +268,28 @@ const TREE_WIDTH_MAX = 600;
                   }
                 </span>
                 <span class="flex-1"></span>
+                <div
+                  class="flex shrink-0 overflow-hidden rounded border border-amber-300/30"
+                  role="group"
+                  aria-label="View mode"
+                >
+                  <button
+                    type="button"
+                    class="px-2 py-0.5 transition"
+                    [class]="!diffMode() ? 'bg-amber-300/25 font-medium' : 'hover:bg-amber-300/10'"
+                    (click)="setDiffMode(false)"
+                  >
+                    File
+                  </button>
+                  <button
+                    type="button"
+                    class="border-l border-amber-300/30 px-2 py-0.5 transition"
+                    [class]="diffMode() ? 'bg-amber-300/25 font-medium' : 'hover:bg-amber-300/10'"
+                    (click)="setDiffMode(true)"
+                  >
+                    Changes
+                  </button>
+                </div>
                 <button
                   type="button"
                   class="shrink-0 rounded border border-amber-300/30 px-2 py-0.5 transition enabled:hover:bg-amber-300/10 disabled:opacity-40"
@@ -294,14 +317,23 @@ const TREE_WIDTH_MAX = 600;
                 </button>
               </div>
             }
-            <app-file-view
-              class="min-h-0 flex-1"
-              [state]="store.selectedFile()"
-              [links]="selectedFileLinks()"
-              [historyActive]="historyOpen()"
-              (retry)="onFileRetry($event)"
-              (historyToggle)="toggleHistory()"
-            />
+            @if (diffMode()) {
+              <app-diff-view
+                class="min-h-0 flex-1"
+                [state]="store.selectedDiff()"
+                [path]="store.selectedPath()"
+                (retry)="onDiffRetry()"
+              />
+            } @else {
+              <app-file-view
+                class="min-h-0 flex-1"
+                [state]="store.selectedFile()"
+                [links]="selectedFileLinks()"
+                [historyActive]="historyOpen()"
+                (retry)="onFileRetry($event)"
+                (historyToggle)="toggleHistory()"
+              />
+            }
           </section>
 
           @if (historyOpen()) {
@@ -339,6 +371,8 @@ export class ViewerPage {
   readonly path = input<string | undefined>();
   /** Commit sha the selected file is viewed at (time travel). */
   readonly at = input<string | undefined>();
+  /** `diff` switches the content pane to the changes view (requires `at`). */
+  readonly view = input<string | undefined>();
 
   protected readonly treeWidth = signal(restoreTreeWidth());
   protected readonly dragging = signal(false);
@@ -346,6 +380,8 @@ export class ViewerPage {
   private dragOrigin: { x: number; width: number } | null = null;
   /** The panel auto-opens only for the first `at` deep link, not every hop. */
   private historyAutoOpened = false;
+
+  protected readonly diffMode = computed(() => this.view() === 'diff' && !!this.store.viewAt());
 
   protected readonly selectedFileLinks = computed(() => {
     const path = this.store.selectedPath();
@@ -426,19 +462,44 @@ export class ViewerPage {
     });
 
     effect(() => {
+      const phase = this.store.phase();
+      const diff = this.diffMode();
+      const path = this.path() || null;
+      const at = this.at() || null;
+      untracked(() => {
+        if (phase === 'ready' && diff && path && at) void this.store.loadDiff(path, at);
+      });
+    });
+
+    effect(() => {
       const fullName = this.store.metadata()?.fullName;
       if (fullName) this.title.setTitle(`${fullName} · Time Tracer`);
     });
   }
 
   protected onFileSelect(path: string): void {
-    // Switching files always returns to the snapshot tip: `at` belongs to the
-    // previous file's timeline.
+    // Switching files always returns to the snapshot tip: `at` and `view`
+    // belong to the previous file's timeline.
     void this.router.navigate([], {
       relativeTo: this.route,
-      queryParams: { path, at: null },
+      queryParams: { path, at: null, view: null },
       queryParamsHandling: 'merge',
     });
+  }
+
+  /** Switches the content pane between file and changes mode (URL-driven). */
+  protected setDiffMode(enabled: boolean): void {
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { view: enabled ? 'diff' : null },
+      queryParamsHandling: 'merge',
+    });
+  }
+
+  protected onDiffRetry(): void {
+    const path = this.store.selectedPath();
+    const at = this.store.viewAt();
+    if (path && at) void this.store.loadDiff(path, at);
   }
 
   /** Navigates the selected file to `sha`, or back to the tip when null. */

@@ -223,16 +223,15 @@ export class GithubProvider implements GitProvider {
       `/repos/${enc(slug.owner)}/${enc(slug.repo)}/commits?${params}`,
       { notFound: 'No commit history found for this ref or path.' },
     );
-    return data.map((item) => ({
-      sha: item.sha,
-      message: item.commit.message,
-      summary: item.commit.message.split('\n', 1)[0],
-      authorName: item.commit.author?.name ?? 'Unknown',
-      authorEmail: item.commit.author?.email ?? null,
-      authoredAt: item.commit.author?.date ?? '',
-      htmlUrl: item.html_url,
-      parentShas: item.parents.map((p) => p.sha),
-    }));
+    return data.map(mapCommit);
+  }
+
+  async getCommit(slug: RepoSlug, sha: string): Promise<CommitInfo> {
+    const data = await this.request<GithubCommitResponse>(
+      `/repos/${enc(slug.owner)}/${enc(slug.repo)}/commits/${enc(sha)}`,
+      { notFound: `Commit ${sha.slice(0, 7)} was not found in this repository.` },
+    );
+    return mapCommit(data);
   }
 
   webLinks(slug: RepoSlug, ref: string, path?: string): RepoWebLinks {
@@ -306,4 +305,17 @@ function rateLimitReset(response: Response): Date | undefined {
 
 function enc(segment: string): string {
   return encodeURIComponent(segment);
+}
+
+function mapCommit(item: GithubCommitResponse): CommitInfo {
+  return {
+    sha: item.sha,
+    message: item.commit.message,
+    summary: item.commit.message.split('\n', 1)[0],
+    authorName: item.commit.author?.name ?? 'Unknown',
+    authorEmail: item.commit.author?.email ?? null,
+    authoredAt: item.commit.author?.date ?? '',
+    htmlUrl: item.html_url,
+    parentShas: item.parents.map((p) => p.sha),
+  };
 }

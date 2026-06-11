@@ -151,4 +151,10 @@ export type RepoLoadPhase = 'idle' | 'metadata' | 'tree' | 'ready' | 'error';
 export type FileState =
   | { readonly status: 'loading'; readonly path: string }
   | { readonly status: 'ready'; readonly path: string; readonly file: RepoFile }
-  | { readonly status: 'error'; readonly path: string; readonly message: string };
+  | {
+      readonly status: 'error';
+      readonly path: string;
+      readonly message: string;
+      /** Error category, so callers can react (e.g. not-found ⇒ file absent). */
+      readonly kind: RepoErrorKind;
+    };

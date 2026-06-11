@@ -32,9 +32,14 @@ commits and time travel (see `listCommits` on the provider interface).
 - **Time travel**: click any commit (or use the Older/Newer steppers) to see the file exactly as
   it was at that commit, with a banner showing where in time you are and a one-click way back to
   the tip. Like `git log -- <path>`, history currently stops at renames — continuing past them is
-  the next milestone.
-- **Deep-linkable state**: `/r/:owner/:repo?ref=<ref>&path=<file>&at=<sha>` — refresh, share, and
-  use browser back/forward to step through previously viewed files *and historical versions*.
+  a later milestone.
+- **Changes view**: while viewing a file at a commit, switch the pane from *File* to *Changes* to
+  see exactly what that commit changed in the file — a unified diff against its first parent,
+  computed client-side with a minimal Myers diff (dual line-number gutter, hunk headers,
+  +added/−removed stats, root/merge commits handled).
+- **Deep-linkable state**: `/r/:owner/:repo?ref=<ref>&path=<file>&at=<sha>&view=diff` — refresh,
+  share, and use browser back/forward to step through previously viewed files, historical
+  versions, and diffs.
 - **Honest file handling**: UTF-8 decoding, binary detection (NUL-byte heuristic, like git),
   a 2 MB size guard with a link out to GitHub, and per-snapshot content caching.
 - **Specific error states**: not found, invalid ref, empty repository, network failure, and
@@ -95,7 +100,8 @@ npm run build      # production build into dist/
 ## Roadmap
 
 1. ~~**Commit timeline** — per-file commit list with time travel to any version.~~ ✅ Done.
-2. **File diffs between commits** — compute hunks client-side from two blob versions.
+2. ~~**File diffs between commits** — compute hunks client-side from two blob versions.~~ ✅ Done
+   (minimal Myers diff engine in `core/util/diff.ts`, surfaced as the *Changes* view).
 3. **Blame annotations** — per-line commit attribution in the existing line-number gutter.
 4. **Recursive time travel** — "blame previous revision" per hunk, IntelliJ-style.
 5. **Rename candidates** — when a file's history ends, rank similar blobs from the parent commit

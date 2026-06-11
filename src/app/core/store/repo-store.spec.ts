@@ -73,6 +73,7 @@ class FakeProvider implements GitProvider {
       text: `content of ${path} at ${ref}`,
     });
   listCommitsResult: () => Promise<CommitInfo[]> = () => Promise.resolve([]);
+  commitResult: (sha: string) => Promise<CommitInfo> = (sha) => Promise.resolve(commit(sha));
 
   canHandle(): boolean {
     return true;
@@ -104,12 +105,17 @@ class FakeProvider implements GitProvider {
     this.listCommitsCalls.push(options);
     return this.listCommitsResult();
   }
+  getCommit(_slug: RepoSlug, sha: string): Promise<CommitInfo> {
+    this.getCommitCalls.push(sha);
+    return this.commitResult(sha);
+  }
+  getCommitCalls: string[] = [];
   webLinks(): RepoWebLinks {
     return { repoUrl: 'https://github.com/acme/rocket' };
   }
 }
 
-function commit(sha: string): CommitInfo {
+function commit(sha: string, parents: string[] = []): CommitInfo {
   return {
     sha,
     message: `commit ${sha}`,
@@ -118,7 +124,7 @@ function commit(sha: string): CommitInfo {
     authorEmail: null,
     authoredAt: '2026-01-01T00:00:00Z',
     htmlUrl: `https://github.com/acme/rocket/commit/${sha}`,
-    parentShas: [],
+    parentShas: parents,
   };
 }
 
@@ -368,6 +374,114 @@ describe('RepoStore', () => {
       expect(store.historyStatus()).toBe('idle');
       expect(store.history()).toEqual([]);
       expect(store.viewAt()).toBeNull();
+    });
+  });
+
+  describe('diffs (loadDiff)', () => {
+    beforeEach(async () => {
+      await store.loadRepo(slug);
+    });
+
+    function textFile(path: string, ref: string, text: string): Promise<RepoFile> {
+      return Promise.resolve({ kind: 'text', path, sha: `blob-${ref}`, size: text.length, text });
+    }
+
+    it('diffs the commit version against its first parent', async () => {
+      provider.commitResult = (sha) => Promise.resolve(commit(sha, ['parent']));
+      provider.fileAtRefResult = (path, ref) =>
+        textFile(path, ref, ref === 'child' ? 'a\nNEW\nc\n' : 'a\nb\nc\n');
+
+      await store.openFile('README.md', 'child');
+      await store.loadDiff('README.md', 'child');
+
+      const state = store.selectedDiff();
+      expect(state?.status).toBe('ready');
+      if (state?.status !== 'ready') return;
+      expect(state.baseSha).toBe('parent');
+      expect(state.diff.added).toBe(1);
+      expect(state.diff.removed).toBe(1);
+      expect(provider.fileAtRefCalls).toEqual([
+        { path: 'README.md', ref: 'child' },
+        { path: 'README.md', ref: 'parent' },
+      ]);
+    });
+
+    it('treats a missing base as an added file (diff vs empty)', async () => {
+      provider.commitResult = (sha) => Promise.resolve(commit(sha, ['parent']));
+      provider.fileAtRefResult = (path, ref) =>
+        ref === 'parent'
+          ? Promise.reject(new RepoProviderError('absent', 'not-found'))
+          : textFile(path, ref, 'a\nb\n');
+
+      await store.openFile('README.md', 'child');
+      await store.loadDiff('README.md', 'child');
+
+      const state = store.selectedDiff();
+      expect(state?.status).toBe('ready');
+      if (state?.status !== 'ready') return;
+      expect(state.diff.added).toBe(2);
+      expect(state.diff.removed).toBe(0);
+    });
+
+    it('diffs a root commit against nothing without fetching a base', async () => {
+      provider.commitResult = (sha) => Promise.resolve(commit(sha, []));
+      provider.fileAtRefResult = (path, ref) => textFile(path, ref, 'only\n');
+
+      await store.openFile('README.md', 'child');
+      await store.loadDiff('README.md', 'child');
+
+      const state = store.selectedDiff();
+      expect(state?.status).toBe('ready');
+      if (state?.status !== 'ready') return;
+      expect(state.baseSha).toBeNull();
+      expect(state.diff.added).toBe(1);
+      expect(provider.fileAtRefCalls.filter((c) => c.ref !== 'child')).toEqual([]);
+    });
+
+    it('marks binary content as unavailable', async () => {
+      provider.commitResult = (sha) => Promise.resolve(commit(sha, ['parent']));
+      provider.fileAtRefResult = (path, ref) =>
+        ref === 'child'
+          ? Promise.resolve({ kind: 'binary', path, sha: 'b', size: 10 })
+          : textFile(path, ref, 'a\n');
+
+      await store.openFile('README.md', 'child');
+      await store.loadDiff('README.md', 'child');
+
+      expect(store.selectedDiff()).toMatchObject({ status: 'unavailable' });
+    });
+
+    it('uses the history-populated commit cache instead of getCommit', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('child', ['parent'])]);
+      await store.loadHistory('README.md');
+
+      await store.openFile('README.md', 'child');
+      await store.loadDiff('README.md', 'child');
+
+      expect(provider.getCommitCalls).toEqual([]);
+      expect(store.selectedDiff()?.status).toBe('ready');
+    });
+
+    it('caches the diff per commit and path', async () => {
+      provider.commitResult = (sha) => Promise.resolve(commit(sha, ['parent']));
+
+      await store.openFile('README.md', 'child');
+      await store.loadDiff('README.md', 'child');
+      await store.loadDiff('README.md', 'child');
+
+      expect(provider.getCommitCalls).toEqual(['child']);
+      expect(provider.fileAtRefCalls.filter((c) => c.ref === 'parent')).toHaveLength(1);
+    });
+
+    it('surfaces commit resolution failures and recovers on retry', async () => {
+      provider.commitResult = () => Promise.reject(new RepoProviderError('boom', 'network'));
+      await store.openFile('README.md', 'child');
+      await store.loadDiff('README.md', 'child');
+      expect(store.selectedDiff()).toMatchObject({ status: 'error', message: 'boom' });
+
+      provider.commitResult = (sha) => Promise.resolve(commit(sha, ['parent']));
+      await store.loadDiff('README.md', 'child');
+      expect(store.selectedDiff()?.status).toBe('ready');
     });
   });
 });
