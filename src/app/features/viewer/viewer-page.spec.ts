@@ -547,6 +547,26 @@ describe('ViewerPage (integration)', () => {
     });
   });
 
+  it('omits Before when the commit created the file and keeps blame working', async () => {
+    // engine.ts was created by the rename commit — there is nothing before.
+    await harness.navigateByUrl(`/r/acme/rocket?path=src%2Fengine.ts&at=${RENAME_SHA}&view=diff`);
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('export const thrust = 1;');
+      expect(text).toContain('refactor: rename thruster to engine'); // history loaded
+    });
+    // No dead-end button that would error with "does not exist at …".
+    expect(await textOnScreen()).not.toContain('◂ Before');
+
+    clickButton('Blame');
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('01.03.2026 Ada'); // annotated at this newest version
+      expect(text).not.toContain('does not exist at');
+    });
+    expect(router.url).toContain('blame=1');
+  });
+
   it('continues past a rename into the predecessor file', async () => {
     await harness.navigateByUrl('/r/acme/rocket?path=src%2Fengine.ts');
     await vi.waitFor(async () => {

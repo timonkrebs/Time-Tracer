@@ -381,6 +381,7 @@ const HISTORY_OPEN_KEY = 'time-tracer.history-open';
                 [rightBlame]="store.selectedBlame()"
                 [blameActive]="blameOn()"
                 [historyActive]="historyOpen()"
+                [beforeAvailable]="hunkBeforeAvailable()"
                 (retry)="onDiffRetry()"
                 (before)="onHunkBefore($event)"
                 (blameToggle)="toggleBlame()"
@@ -529,6 +530,18 @@ export class ViewerPage {
     return this.historyReadyForPath() && this.anchorIndex() === -1;
   });
 
+  /**
+   * Whether a hunk's "◂ Before" can lead anywhere: false once the loaded
+   * history shows the viewed commit created the file (nothing earlier).
+   */
+  protected readonly hunkBeforeAvailable = computed(() => {
+    if (!this.store.viewAt()) return false;
+    if (!this.historyReadyForPath()) return true; // unknown yet — the handler resolves it
+    const idx = this.anchorIndex();
+    if (idx === -1) return false;
+    return idx + 1 < this.store.history().length || this.store.historyHasMore();
+  });
+
   protected readonly errorTitle = computed(() => {
     switch (this.store.error()?.kind) {
       case 'rate-limited':
@@ -654,13 +667,36 @@ export class ViewerPage {
   }
 
   /**
-   * "◂ Before" on a hunk: annotate the parent version at the hunk's old
-   * position — one recursive step back in time.
+   * "◂ Before" on a hunk: annotate the previous version at the hunk's old
+   * position — one recursive step back in time. The target is the previous
+   * entry in the file's history rather than the commit's raw parent: the
+   * parent often never touched the file (blame could not anchor there) and,
+   * for files created by this commit, does not contain it at all. When
+   * nothing earlier exists, fall back to this version annotated instead of
+   * navigating into a void.
    */
-  protected onHunkBefore(oldStart: number): void {
-    const diff = this.store.selectedDiff();
-    if (diff?.status !== 'ready' || !diff.baseSha) return;
-    this.goToCommit(diff.baseSha, { view: 'file', blame: '1', line: Math.max(1, oldStart) });
+  protected async onHunkBefore(target: { oldStart: number; newStart: number }): Promise<void> {
+    const path = this.store.selectedPath();
+    const at = this.store.viewAt();
+    if (!path || !at) return;
+    if (!this.historyReadyForPath()) await this.store.loadHistory(path);
+    let history = this.store.history();
+    let idx = history.findIndex((c) => c.sha === at);
+    if (idx !== -1 && idx + 1 >= history.length && this.store.historyHasMore()) {
+      await this.store.loadMoreHistory();
+      history = this.store.history();
+      idx = history.findIndex((c) => c.sha === at);
+    }
+    const previous = idx === -1 ? null : (history[idx + 1] ?? null);
+    if (!previous) {
+      this.goToCommit(at, { view: 'file', blame: '1', line: Math.max(1, target.newStart) });
+      return;
+    }
+    this.goToCommit(previous.sha, {
+      view: 'file',
+      blame: '1',
+      line: Math.max(1, target.oldStart),
+    });
   }
 
   protected onFindRenames(): void {

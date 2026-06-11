@@ -22,8 +22,9 @@ interface DiffRow {
   readonly newNo: string;
   readonly marker: string;
   readonly text: string;
-  /** First old-side line of the hunk; only set for hunk header rows. */
+  /** First old/new-side lines of the hunk; only set for hunk header rows. */
   readonly hunkOldStart?: number;
+  readonly hunkNewStart?: number;
 }
 
 interface SplitCell {
@@ -36,6 +37,7 @@ interface SplitRow {
   readonly type: 'hunk' | 'line';
   readonly header?: string;
   readonly hunkOldStart?: number;
+  readonly hunkNewStart?: number;
   readonly left: SplitCell | null;
   readonly right: SplitCell | null;
 }
@@ -206,7 +208,12 @@ interface SplitRow {
                       type="button"
                       class="mr-4 ml-2 shrink-0 rounded border border-sky-300/30 px-1.5 text-[11px] leading-4 text-sky-200/90 transition hover:bg-sky-300/10"
                       title="Annotate the version before this change, at this hunk"
-                      (click)="before.emit(row.hunkOldStart || 1)"
+                      (click)="
+                        before.emit({
+                          oldStart: row.hunkOldStart || 1,
+                          newStart: row.hunkNewStart || 1,
+                        })
+                      "
                     >
                       ◂ Before
                     </button>
@@ -310,7 +317,12 @@ interface SplitRow {
                       type="button"
                       class="mr-4 ml-2 shrink-0 rounded border border-sky-300/30 px-1.5 text-[11px] leading-4 text-sky-200/90 transition hover:bg-sky-300/10"
                       title="Annotate the version before this change, at this hunk"
-                      (click)="before.emit(row.hunkOldStart || 1)"
+                      (click)="
+                        before.emit({
+                          oldStart: row.hunkOldStart || 1,
+                          newStart: row.hunkNewStart || 1,
+                        })
+                      "
                     >
                       ◂ Before
                     </button>
@@ -370,11 +382,13 @@ export class DiffView {
   readonly blameActive = input(false);
   /** Highlights the History toggle while the panel is open. */
   readonly historyActive = input(false);
+  /** False when the file has no earlier version (created by this commit). */
+  readonly beforeAvailable = input(true);
 
   readonly retry = output<void>();
   readonly historyToggle = output<void>();
-  /** "Before this change": emits the hunk's first old-side line. */
-  readonly before = output<number>();
+  /** "Before this change": the hunk's first old- and new-side lines. */
+  readonly before = output<{ oldStart: number; newStart: number }>();
   readonly blameToggle = output<void>();
   /** A clicked annotation: the commit plus the line's position at it. */
   readonly blameSelect = output<{ sha: string; line: number }>();
@@ -385,7 +399,7 @@ export class DiffView {
 
   protected readonly canStepBefore = computed(() => {
     const s = this.state();
-    return s?.status === 'ready' && s.baseSha !== null;
+    return s?.status === 'ready' && s.baseSha !== null && this.beforeAvailable();
   });
 
   protected readonly blameComputing = computed(
@@ -406,6 +420,7 @@ export class DiffView {
         marker: '',
         text: hunk.header,
         hunkOldStart: hunk.oldStart,
+        hunkNewStart: hunk.newStart,
       });
       for (const op of hunk.ops) {
         if (op.kind === 'equal') {
@@ -448,6 +463,7 @@ export class DiffView {
         type: 'hunk',
         header: hunk.header,
         hunkOldStart: hunk.oldStart,
+        hunkNewStart: hunk.newStart,
         left: null,
         right: null,
       });
