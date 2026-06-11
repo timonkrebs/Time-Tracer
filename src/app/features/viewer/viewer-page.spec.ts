@@ -464,6 +464,48 @@ describe('ViewerPage (integration)', () => {
     });
   });
 
+  it('splits the changes view with blame on both sides', async () => {
+    await harness.navigateByUrl(`/r/acme/rocket?path=README.md&at=${NEW_SHA}&view=diff`);
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('@@ -1,1 +1,3 @@');
+    });
+
+    // The Blame toggle is available in the changes view too.
+    clickButton('Blame');
+
+    await vi.waitFor(async () => {
+      expect(router.url).toContain('blame=1');
+      const text = await textOnScreen();
+      // Split header: parent on the left, the commit on the right.
+      expect(text).toContain('Before');
+      expect(text).toContain('After');
+      expect(text).toContain(OLD_SHA.slice(0, 7));
+      expect(text).toContain(NEW_SHA.slice(0, 7));
+      // Both sides carry annotations: the parent version is all Grace's,
+      // the commit's version adds Ada's lines.
+      expect(text).toContain('Grace ·');
+      expect(text).toContain('Ada ·');
+      // Content of both sides, aligned: the surviving line and the addition.
+      expect(text).toContain('# Rocket v0');
+      expect(text).toContain('Go!');
+    });
+
+    // Clicking an annotation still travels, targeting the line at the
+    // introducing commit — Ada's first block starts at line 2 of NEW.
+    clickButton('Ada ·');
+    await vi.waitFor(async () => {
+      expect(router.url).toContain(`at=${NEW_SHA}`);
+      expect(router.url).toContain('line=2');
+    });
+
+    // Turning blame off returns to the unified diff.
+    clickButton('Blame');
+    await vi.waitFor(async () => {
+      expect(router.url).not.toContain('blame=1');
+      expect(await textOnScreen()).toContain('@@ -1,1 +1,3 @@');
+    });
+  });
+
   it('steps before a hunk into the annotated parent version', async () => {
     await harness.navigateByUrl(`/r/acme/rocket?path=README.md&at=${NEW_SHA}&view=diff`);
     await vi.waitFor(async () => {

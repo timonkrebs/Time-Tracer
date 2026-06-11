@@ -198,6 +198,15 @@ export class RepoStore {
     return this._blames().get(fileKey(path, this._viewAt())) ?? null;
   });
 
+  /**
+   * Blame state of an arbitrary version (signal-backed, reactive in
+   * computeds) — the split changes view reads both sides through this.
+   */
+  blameFor(path: string | null, at: string | null): BlameState | null {
+    if (!path) return null;
+    return this._blames().get(fileKey(path, at)) ?? null;
+  }
+
   /** Rename-candidate search state for the selected file, if started. */
   readonly selectedRenames = computed<RenameState | null>(() => {
     const path = this._selectedPath();
@@ -478,9 +487,11 @@ export class RepoStore {
         return;
       }
 
-      // Soft-stop when the user navigated away; partial state stays cached
-      // and the walk resumes (cheaply) when the version is selected again.
-      if (this._selectedPath() !== path || this._viewAt() !== at) {
+      // Soft-stop when the user switched files; partial state stays cached
+      // and the walk resumes (cheaply) when the version is needed again.
+      // Note: only the path is checked — the split changes view blames the
+      // parent version while `viewAt` points at the commit itself.
+      if (this._selectedPath() !== path) {
         publish('computing', false);
         return;
       }

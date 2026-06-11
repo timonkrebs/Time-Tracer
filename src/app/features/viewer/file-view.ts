@@ -11,8 +11,8 @@ import {
 
 import { RepoWebLinks } from '../../core/git/git-provider';
 import { FileState } from '../../core/models';
-import { BlameOwner, BlameState } from '../../core/store/repo-store';
-import { relativeTime, shortSha } from '../../core/util/relative-time';
+import { BlameState } from '../../core/store/repo-store';
+import { AnnotationCell, buildAnnotationCells } from './blame-annotation';
 
 /** Line height of code rows (`leading-6`), used for scroll/highlight maths. */
 const LINE_HEIGHT_PX = 24;
@@ -23,26 +23,10 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** Annotation text colour by commit age — oldest first, newest last. */
-const AGE_CLASSES = [
-  'text-zinc-600',
-  'text-zinc-500',
-  'text-zinc-400',
-  'text-indigo-300/90',
-  'text-amber-300/90',
-];
-
 interface BlameRow {
   readonly lineNo: number;
   readonly text: string;
-  readonly sha: string | null;
-  /** Position of this line in the file as of the introducing commit. */
-  readonly lineAtCommit: number;
-  readonly label: string;
-  readonly title: string;
-  readonly colorClass: string;
-  readonly showLabel: boolean;
-  readonly pendingOwner: boolean;
+  readonly cell: AnnotationCell;
 }
 
 /**
@@ -183,22 +167,24 @@ interface BlameRow {
               @for (row of rows; track row.lineNo) {
                 <div class="flex hover:bg-white/[0.02]">
                   <span class="w-52 shrink-0 truncate pl-4 text-xs leading-6 select-none">
-                    @if (row.sha; as sha) {
-                      @if (row.showLabel) {
+                    @if (row.cell.sha; as sha) {
+                      @if (row.cell.showLabel) {
                         <button
                           type="button"
                           class="max-w-full cursor-pointer truncate align-top underline-offset-2 transition hover:underline"
-                          [class]="row.colorClass"
-                          [title]="row.title"
-                          (click)="blameSelect.emit({ sha, line: row.lineAtCommit })"
+                          [class]="row.cell.colorClass"
+                          [title]="row.cell.title"
+                          (click)="blameSelect.emit({ sha, line: row.cell.lineAtCommit })"
                         >
-                          {{ row.label }}
+                          {{ row.cell.label }}
                         </button>
                       }
-                    } @else if (row.pendingOwner) {
+                    } @else if (row.cell.pending) {
                       <span class="animate-pulse text-zinc-700">·</span>
-                    } @else if (row.showLabel) {
-                      <span class="text-zinc-700" [title]="row.title">{{ row.label }}</span>
+                    } @else if (row.cell.showLabel) {
+                      <span class="text-zinc-700" [title]="row.cell.title">{{
+                        row.cell.label
+                      }}</span>
                     }
                   </span>
                   <span
@@ -335,75 +321,9 @@ export class FileView {
     if (!this.blameActive()) return null;
     const info = this.textInfo();
     if (!info) return null;
-    const blame = this.blame();
-    const owners: readonly BlameOwner[] =
-      blame && (blame.status === 'computing' || blame.status === 'ready') ? blame.lines : [];
-
-    // Rank unique commit times so annotation colour reflects relative age.
-    const uniqueTimes = [
-      ...new Set(
-        owners
-          .filter((o): o is Exclude<BlameOwner, 'older' | null> => !!o && o !== 'older')
-          .map((o) => Date.parse(o.commit.authoredAt) || 0),
-      ),
-    ].sort((a, b) => a - b);
-    const colorFor = (time: number): string => {
-      if (uniqueTimes.length <= 1) return AGE_CLASSES[AGE_CLASSES.length - 1];
-      const rank = uniqueTimes.indexOf(time) / (uniqueTimes.length - 1);
-      return AGE_CLASSES[Math.round(rank * (AGE_CLASSES.length - 1))];
-    };
-
     const lines = info.text.split('\n');
-    return lines.map((text, index) => {
-      const owner = owners[index] ?? null;
-      const previous = index > 0 ? (owners[index - 1] ?? null) : undefined;
-      const sameAsPrevious =
-        owner !== null &&
-        previous !== undefined &&
-        previous !== null &&
-        (owner === 'older'
-          ? previous === 'older'
-          : previous !== 'older' && owner.commit.sha === previous.commit.sha);
-
-      if (owner === null) {
-        return {
-          lineNo: index + 1,
-          text,
-          sha: null,
-          lineAtCommit: 0,
-          label: '',
-          title: '',
-          colorClass: '',
-          showLabel: false,
-          pendingOwner: true,
-        };
-      }
-      if (owner === 'older') {
-        return {
-          lineNo: index + 1,
-          text,
-          sha: null,
-          lineAtCommit: 0,
-          label: '· · ·',
-          title: 'Older than the loaded history pages — load more commits in the History panel.',
-          colorClass: '',
-          showLabel: !sameAsPrevious,
-          pendingOwner: false,
-        };
-      }
-      const commit = owner.commit;
-      return {
-        lineNo: index + 1,
-        text,
-        sha: commit.sha,
-        lineAtCommit: owner.line,
-        label: `${commit.authorName} · ${relativeTime(commit.authoredAt)}`,
-        title: `${commit.summary}\n${shortSha(commit.sha)} · ${commit.authorName} · ${relativeTime(commit.authoredAt)}`,
-        colorClass: colorFor(Date.parse(commit.authoredAt) || 0),
-        showLabel: !sameAsPrevious,
-        pendingOwner: false,
-      };
-    });
+    const cells = buildAnnotationCells(this.blame(), lines.length);
+    return lines.map((text, index) => ({ lineNo: index + 1, text, cell: cells[index] }));
   });
 
   protected formattedSize(bytes: number): string {

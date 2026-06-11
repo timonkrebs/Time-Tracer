@@ -38,11 +38,14 @@ commits and time travel (see `listCommits` on the provider interface).
   unified diff against its first parent, computed client-side with a minimal Myers diff (dual
   line-number gutter, hunk headers, +added/−removed stats, root/merge commits handled). Switch to
   *File* to read the full version instead; your last File/Changes choice is remembered.
-- **Blame annotations**: toggle *Blame* in the file view to annotate every line with the commit
-  that introduced it (author · age, colour-coded older→newer, IntelliJ-style block grouping).
-  Attribution is computed client-side by walking the file's history with the minimal diff,
-  streams in progressively, and works at any historical version. Lines older than the loaded
-  history pages are marked and resolve incrementally as more pages load.
+- **Blame annotations everywhere**: the *Blame* toggle is available in both views. In the file
+  view it annotates every line with the commit that introduced it (author · age, colour-coded
+  older→newer, IntelliJ-style block grouping). In the changes view it switches to a **split
+  view** — the version *before* the commit on the left, *after* on the right, removes/adds
+  aligned side by side, and **both sides carry their own blame gutters**. Attribution is computed
+  client-side by walking the file's history with the minimal diff, streams in progressively, and
+  works at any historical version. Lines older than the loaded history pages are marked and
+  resolve incrementally as more pages load.
 - **Recursive time travel, hunk by hunk**: clicking a blame annotation opens the introducing
   commit's diff *scrolled to that exact line*; every hunk in a diff offers **◂ Before** — jump to
   the parent version, annotated, at the hunk's old position. Blame → commit → before → blame

@@ -364,8 +364,14 @@ const VIEW_MODE_KEY = 'time-tracer.view-mode';
                 [state]="store.selectedDiff()"
                 [path]="store.selectedPath()"
                 [highlightLine]="lineNumber()"
+                [splitMode]="blameOn()"
+                [leftBlame]="leftBlame()"
+                [rightBlame]="store.selectedBlame()"
+                [blameActive]="blameOn()"
                 (retry)="onDiffRetry()"
                 (before)="onHunkBefore($event)"
+                (blameToggle)="toggleBlame()"
+                (blameSelect)="onBlameSelect($event)"
               />
             } @else {
               <app-file-view
@@ -444,11 +450,29 @@ export class ViewerPage {
     return view ? view === 'diff' : this.viewPref() === 'diff';
   });
 
-  protected readonly blameOn = computed(() => !!this.blame() && !this.diffMode());
+  /** Blame is available in both views: gutter in File, split in Changes. */
+  protected readonly blameOn = computed(() => !!this.blame());
 
   protected readonly lineNumber = computed<number | null>(() => {
     const parsed = Number(this.line());
     return Number.isInteger(parsed) && parsed >= 1 ? parsed : null;
+  });
+
+  /**
+   * The history entry just before the viewed commit — the left side of the
+   * split changes view. Anchoring there (instead of the raw parent sha)
+   * keeps blame working: the parent itself may not have touched the path.
+   */
+  private readonly prevSha = computed<string | null>(() => {
+    if (!this.store.viewAt()) return null;
+    const idx = this.anchorIndex();
+    if (idx === -1) return null;
+    return this.store.history()[idx + 1]?.sha ?? null;
+  });
+
+  protected readonly leftBlame = computed(() => {
+    const prev = this.prevSha();
+    return prev ? this.store.blameFor(this.store.selectedPath(), prev) : null;
   });
 
   protected readonly selectedFileLinks = computed(() => {
@@ -552,12 +576,18 @@ export class ViewerPage {
     effect(() => {
       const phase = this.store.phase();
       const blame = this.blameOn();
+      const diff = this.diffMode();
       const path = this.path() || null;
       const at = this.at() || null;
-      // Re-runs when more history pages arrive, extending truncated blames.
+      // prevSha also re-runs this when more history pages arrive,
+      // extending truncated blames.
+      const prev = this.prevSha();
       this.store.history();
       untracked(() => {
-        if (phase === 'ready' && blame && path) void this.store.loadBlame(path, at);
+        if (phase !== 'ready' || !blame || !path) return;
+        void this.store.loadBlame(path, at);
+        // The split changes view also annotates the version before.
+        if (diff && prev) void this.store.loadBlame(path, prev);
       });
     });
 
