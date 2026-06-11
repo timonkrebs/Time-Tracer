@@ -22,12 +22,29 @@ const MAX_FILE_SIZE_BYTES = 2_000_000;
 
 export type GitApi = typeof import('isomorphic-git').default;
 
+/**
+ * isomorphic-git's hashing stack (sha.js/safe-buffer) expects Node's
+ * `Buffer` global, which browsers lack — install the polyfill before the
+ * library loads. No-ops in Node (tests) where Buffer already exists.
+ */
+async function ensureBuffer(): Promise<void> {
+  const g = globalThis as { Buffer?: unknown };
+  if (g.Buffer) return;
+  const mod = (await import('buffer')) as {
+    Buffer?: unknown;
+    default?: { Buffer?: unknown };
+  };
+  g.Buffer = mod.Buffer ?? mod.default?.Buffer;
+}
+
 /** isomorphic-git is ~300 kB — load it only when a local repo is opened. */
 let gitModule: Promise<GitApi> | null = null;
 export function loadGit(): Promise<GitApi> {
-  gitModule ??= import('isomorphic-git').then(
-    (m) => (m as { default?: GitApi }).default ?? (m as unknown as GitApi),
-  );
+  gitModule ??= (async () => {
+    await ensureBuffer();
+    const m = await import('isomorphic-git');
+    return (m as { default?: GitApi }).default ?? (m as unknown as GitApi);
+  })();
   return gitModule;
 }
 
