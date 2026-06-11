@@ -1,0 +1,235 @@
+import { Injectable } from '@angular/core';
+
+import {
+  CommitInfo,
+  ParsedRepoUrl,
+  RepoFile,
+  RepoMetadata,
+  RepoProviderError,
+  RepoSlug,
+  RepoTree,
+  TreeEntry,
+} from '../../models';
+import { base64ToBytes, bytesToUtf8, isProbablyBinary } from '../../util/decode';
+import { GitProvider, RepoWebLinks } from '../git-provider';
+import { parseGithubUrl } from './github-url';
+
+const API_BASE = 'https://api.github.com';
+
+/** Files above this size are not fetched; the UI links to GitHub instead. */
+export const MAX_FILE_SIZE_BYTES = 2_000_000;
+
+interface GithubRepoResponse {
+  name: string;
+  full_name: string;
+  description: string | null;
+  default_branch: string;
+  html_url: string;
+  stargazers_count: number;
+  fork: boolean;
+  owner: { login: string };
+}
+
+interface GithubTreeResponse {
+  truncated: boolean;
+  tree: {
+    path: string;
+    type: 'blob' | 'tree' | 'commit';
+    sha: string;
+    size?: number;
+  }[];
+}
+
+interface GithubBlobResponse {
+  sha: string;
+  size: number;
+  content: string;
+  encoding: string;
+}
+
+interface GithubCommitResponse {
+  sha: string;
+  html_url: string;
+  commit: {
+    message: string;
+    author: { name?: string; email?: string; date?: string } | null;
+  };
+  parents: { sha: string }[];
+}
+
+/**
+ * Reads public repositories through GitHub's unauthenticated REST API.
+ * Unauthenticated requests are limited to 60/hour per client IP; rate-limit
+ * responses are mapped to a dedicated error kind so the UI can explain them.
+ */
+@Injectable({ providedIn: 'root' })
+export class GithubProvider implements GitProvider {
+  readonly id = 'github';
+  readonly label = 'GitHub';
+
+  canHandle(input: string): boolean {
+    return this.parseUrl(input) !== null;
+  }
+
+  parseUrl(input: string): ParsedRepoUrl | null {
+    return parseGithubUrl(input);
+  }
+
+  async getMetadata(slug: RepoSlug): Promise<RepoMetadata> {
+    const data = await this.request<GithubRepoResponse>(
+      `/repos/${enc(slug.owner)}/${enc(slug.repo)}`,
+      { notFound: 'Repository not found — it may not exist or it may be private.' },
+    );
+    return {
+      owner: data.owner.login,
+      name: data.name,
+      fullName: data.full_name,
+      description: data.description,
+      defaultBranch: data.default_branch,
+      htmlUrl: data.html_url,
+      starCount: data.stargazers_count,
+      isFork: data.fork,
+    };
+  }
+
+  async getTree(slug: RepoSlug, ref: string): Promise<RepoTree> {
+    const data = await this.request<GithubTreeResponse>(
+      `/repos/${enc(slug.owner)}/${enc(slug.repo)}/git/trees/${enc(ref)}?recursive=1`,
+      { notFound: `Ref "${ref}" was not found in this repository.`, notFoundKind: 'invalid-ref' },
+    );
+    const entries: TreeEntry[] = data.tree.map((item) => ({
+      path: item.path,
+      name: item.path.slice(item.path.lastIndexOf('/') + 1),
+      kind: item.type === 'blob' ? 'file' : item.type === 'tree' ? 'dir' : 'submodule',
+      sha: item.sha,
+      ...(item.size !== undefined ? { size: item.size } : {}),
+    }));
+    return { entries, truncated: data.truncated };
+  }
+
+  async getFile(slug: RepoSlug, entry: TreeEntry): Promise<RepoFile> {
+    const size = entry.size ?? 0;
+    if (size > MAX_FILE_SIZE_BYTES) {
+      return { kind: 'too-large', path: entry.path, sha: entry.sha, size };
+    }
+    const data = await this.request<GithubBlobResponse>(
+      `/repos/${enc(slug.owner)}/${enc(slug.repo)}/git/blobs/${enc(entry.sha)}`,
+      { notFound: `File "${entry.path}" was not found.` },
+    );
+    if (data.encoding !== 'base64') {
+      throw new RepoProviderError(
+        `Unexpected blob encoding "${data.encoding}" for ${entry.path}.`,
+        'unknown',
+      );
+    }
+    const bytes = base64ToBytes(data.content);
+    if (isProbablyBinary(bytes)) {
+      return { kind: 'binary', path: entry.path, sha: data.sha, size: data.size };
+    }
+    return {
+      kind: 'text',
+      path: entry.path,
+      sha: data.sha,
+      size: data.size,
+      text: bytesToUtf8(bytes),
+    };
+  }
+
+  async listCommits(
+    slug: RepoSlug,
+    options: { ref?: string; path?: string; perPage?: number; page?: number } = {},
+  ): Promise<CommitInfo[]> {
+    const params = new URLSearchParams();
+    if (options.ref) params.set('sha', options.ref);
+    if (options.path) params.set('path', options.path);
+    params.set('per_page', String(options.perPage ?? 30));
+    if (options.page) params.set('page', String(options.page));
+
+    const data = await this.request<GithubCommitResponse[]>(
+      `/repos/${enc(slug.owner)}/${enc(slug.repo)}/commits?${params}`,
+      { notFound: 'No commit history found for this ref or path.' },
+    );
+    return data.map((item) => ({
+      sha: item.sha,
+      message: item.commit.message,
+      summary: item.commit.message.split('\n', 1)[0],
+      authorName: item.commit.author?.name ?? 'Unknown',
+      authorEmail: item.commit.author?.email ?? null,
+      authoredAt: item.commit.author?.date ?? '',
+      htmlUrl: item.html_url,
+      parentShas: item.parents.map((p) => p.sha),
+    }));
+  }
+
+  webLinks(slug: RepoSlug, ref: string, path?: string): RepoWebLinks {
+    const repoUrl = `https://github.com/${slug.owner}/${slug.repo}`;
+    if (!path) return { repoUrl };
+    const encodedPath = path.split('/').map(encodeURIComponent).join('/');
+    return {
+      repoUrl,
+      fileUrl: `${repoUrl}/blob/${enc(ref)}/${encodedPath}`,
+      rawFileUrl: `https://raw.githubusercontent.com/${slug.owner}/${slug.repo}/${enc(ref)}/${encodedPath}`,
+    };
+  }
+
+  private async request<T>(
+    apiPath: string,
+    messages: { notFound: string; notFoundKind?: 'not-found' | 'invalid-ref' },
+  ): Promise<T> {
+    let response: Response;
+    try {
+      response = await fetch(`${API_BASE}${apiPath}`, {
+        headers: {
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      });
+    } catch {
+      throw new RepoProviderError(
+        'Could not reach the GitHub API — check your connection and try again.',
+        'network',
+      );
+    }
+
+    if (response.ok) {
+      return (await response.json()) as T;
+    }
+
+    if (
+      (response.status === 403 || response.status === 429) &&
+      response.headers.get('x-ratelimit-remaining') === '0'
+    ) {
+      const resetAt = rateLimitReset(response);
+      const resetHint = resetAt
+        ? ` It resets at ${resetAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`
+        : '';
+      throw new RepoProviderError(
+        `GitHub's unauthenticated API rate limit (60 requests/hour per IP) is exhausted.${resetHint}`,
+        'rate-limited',
+        resetAt,
+      );
+    }
+
+    if (response.status === 404) {
+      throw new RepoProviderError(messages.notFound, messages.notFoundKind ?? 'not-found');
+    }
+
+    if (response.status === 409) {
+      throw new RepoProviderError('This repository is empty.', 'empty-repo');
+    }
+
+    throw new RepoProviderError(
+      `GitHub API request failed with status ${response.status}.`,
+      'unknown',
+    );
+  }
+}
+
+function rateLimitReset(response: Response): Date | undefined {
+  const reset = Number(response.headers.get('x-ratelimit-reset'));
+  return Number.isFinite(reset) && reset > 0 ? new Date(reset * 1000) : undefined;
+}
+
+function enc(segment: string): string {
+  return encodeURIComponent(segment);
+}

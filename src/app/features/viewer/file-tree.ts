@@ -1,0 +1,173 @@
+import { ChangeDetectionStrategy, Component, input, output } from '@angular/core';
+
+import { TreeNode } from '../../core/models';
+
+/** Maps a file name to a Tailwind text colour class for its icon. */
+function fileIconColor(name: string): string {
+  const ext = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1).toLowerCase() : '';
+  switch (ext) {
+    case 'ts':
+    case 'tsx':
+    case 'mts':
+      return 'text-sky-400';
+    case 'js':
+    case 'jsx':
+    case 'mjs':
+    case 'cjs':
+      return 'text-yellow-400';
+    case 'json':
+      return 'text-amber-300';
+    case 'md':
+    case 'mdx':
+      return 'text-emerald-400';
+    case 'css':
+    case 'scss':
+    case 'sass':
+    case 'less':
+      return 'text-pink-400';
+    case 'html':
+    case 'htm':
+      return 'text-orange-400';
+    case 'yml':
+    case 'yaml':
+    case 'toml':
+      return 'text-lime-400';
+    case 'png':
+    case 'jpg':
+    case 'jpeg':
+    case 'gif':
+    case 'svg':
+    case 'webp':
+    case 'ico':
+      return 'text-purple-400';
+    default:
+      return 'text-zinc-500';
+  }
+}
+
+/**
+ * One level of the repository tree; renders itself recursively for expanded
+ * directories. Expansion/selection state lives in the store and is passed
+ * down so every level stays in sync.
+ */
+@Component({
+  selector: 'app-file-tree',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [FileTree],
+  template: `
+    @for (node of nodes(); track node.path) {
+      @if (node.kind === 'dir') {
+        <button
+          type="button"
+          class="flex w-full items-center gap-1.5 rounded px-2 py-[3px] text-left text-[13px] text-zinc-300 transition-colors hover:bg-white/5"
+          [style.padding-left.px]="8 + depth() * 14"
+          (click)="dirToggle.emit(node.path)"
+        >
+          <svg
+            class="size-3 shrink-0 text-zinc-500 transition-transform"
+            [class.rotate-90]="expanded().has(node.path)"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="m9 6 6 6-6 6" />
+          </svg>
+          <svg
+            class="size-4 shrink-0 text-indigo-300/80"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            @if (expanded().has(node.path)) {
+              <path
+                d="M19.5 21a3 3 0 0 0 3-3v-4.5a3 3 0 0 0-3-3h-15a3 3 0 0 0-3 3V18a3 3 0 0 0 3 3h15ZM1.5 10.146V6a3 3 0 0 1 3-3h5.379a2.25 2.25 0 0 1 1.59.659l2.122 2.121c.14.141.331.22.53.22H19.5a3 3 0 0 1 3 3v1.146A4.483 4.483 0 0 0 19.5 9h-15a4.483 4.483 0 0 0-3 1.146Z"
+              />
+            } @else {
+              <path
+                d="M19.5 21a3 3 0 0 0 3-3V9a3 3 0 0 0-3-3h-5.379a.75.75 0 0 1-.53-.22L11.47 3.66A2.25 2.25 0 0 0 9.879 3H4.5a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3h15Z"
+              />
+            }
+          </svg>
+          <span class="truncate">{{ node.name }}</span>
+        </button>
+        @if (expanded().has(node.path)) {
+          <app-file-tree
+            [nodes]="node.children ?? []"
+            [depth]="depth() + 1"
+            [selectedPath]="selectedPath()"
+            [expanded]="expanded()"
+            (fileSelect)="fileSelect.emit($event)"
+            (dirToggle)="dirToggle.emit($event)"
+          />
+        }
+      } @else if (node.kind === 'file') {
+        <button
+          type="button"
+          class="flex w-full items-center gap-1.5 rounded px-2 py-[3px] text-left text-[13px] transition-colors"
+          [class]="
+            selectedPath() === node.path
+              ? 'bg-indigo-500/20 text-zinc-50'
+              : 'text-zinc-400 hover:bg-white/5 hover:text-zinc-200'
+          "
+          [style.padding-left.px]="8 + depth() * 14 + 18"
+          (click)="fileSelect.emit(node.path)"
+        >
+          <svg
+            class="size-4 shrink-0"
+            [class]="iconColor(node.name)"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <path d="M14 2v6h6" />
+          </svg>
+          <span class="truncate">{{ node.name }}</span>
+        </button>
+      } @else {
+        <div
+          class="flex w-full items-center gap-1.5 px-2 py-[3px] text-[13px] text-zinc-600"
+          [style.padding-left.px]="8 + depth() * 14 + 18"
+          title="Git submodule — not browsable here"
+        >
+          <svg
+            class="size-4 shrink-0"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <rect x="3" y="3" width="18" height="18" rx="3" />
+            <path d="M12 8v8M8 12h8" />
+          </svg>
+          <span class="truncate">{{ node.name }}</span>
+          <span class="ml-auto shrink-0 text-[10px] tracking-wide uppercase">submodule</span>
+        </div>
+      }
+    }
+  `,
+})
+export class FileTree {
+  readonly nodes = input.required<readonly TreeNode[]>();
+  readonly depth = input(0);
+  readonly selectedPath = input<string | null>(null);
+  readonly expanded = input.required<ReadonlySet<string>>();
+
+  readonly fileSelect = output<string>();
+  readonly dirToggle = output<string>();
+
+  protected iconColor(name: string): string {
+    return fileIconColor(name);
+  }
+}

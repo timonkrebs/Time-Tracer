@@ -1,12 +1,11 @@
-import { Component } from '@angular/core';
+import { ChangeDetectionStrategy, Component } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
 
 @Component({
   selector: 'app-root',
-  standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [RouterOutlet],
-  template: `<router-outlet></router-outlet>`
+  host: { class: 'block h-full' },
+  template: `<router-outlet />`,
 })
-export class AppComponent {
-  title = 'time-trace-repo-viewer';
-}
+export class App {}

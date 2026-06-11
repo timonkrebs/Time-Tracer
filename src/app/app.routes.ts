@@ -3,16 +3,17 @@ import { Routes } from '@angular/router';
 export const routes: Routes = [
   {
     path: '',
-    loadComponent: () => import('./features/repo-loader/repo-loader.page').then(m => m.RepoLoaderPage),
-    title: 'Load Repository'
+    loadComponent: () => import('./features/loader/loader-page').then((m) => m.LoaderPage),
+    title: 'Time Tracer',
   },
   {
-    path: 'repo',
-    loadComponent: () => import('./features/repo-viewer/repo-viewer.page').then(m => m.RepoViewerPage),
-    title: 'Repository Viewer'
+    // Query params: `ref` (branch/tag/sha) and `path` (selected file).
+    path: 'r/:owner/:repo',
+    loadComponent: () => import('./features/viewer/viewer-page').then((m) => m.ViewerPage),
+    title: 'Time Tracer',
   },
   {
     path: '**',
-    redirectTo: ''
-  }
+    redirectTo: '',
+  },
 ];
