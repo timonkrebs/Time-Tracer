@@ -1,0 +1,44 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-mono:
+    ui-monospace, 'JetBrains Mono', 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono',
+    monospace;
+}
+
+html {
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  @apply bg-zinc-950 text-zinc-200 antialiased;
+}
+
+/* Slim, desktop-style scrollbars for the tree and code panes. */
+.slim-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-zinc-700) transparent;
+}
+
+.slim-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.slim-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--color-zinc-700);
+  border-radius: 4px;
+}
+
+.slim-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: var(--color-zinc-600);
+}
+
+.slim-scrollbar::-webkit-scrollbar-corner {
+  background: transparent;
+}
