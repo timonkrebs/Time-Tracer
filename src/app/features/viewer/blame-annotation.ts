@@ -1,5 +1,5 @@
 import { BlameOwner, BlameState } from '../../core/store/repo-store';
-import { relativeTime, shortSha } from '../../core/util/relative-time';
+import { relativeTime, shortDate, shortSha } from '../../core/util/relative-time';
 
 /** Annotation text colour by commit age — oldest first, newest last. */
 const AGE_CLASSES = [
@@ -15,11 +15,11 @@ export interface AnnotationCell {
   readonly sha: string | null;
   /** Position of the line in the file as of the introducing commit. */
   readonly lineAtCommit: number;
+  /** `dd.mm.yyyy author`, shown on every line (IDE style); '' while pending. */
   readonly label: string;
   readonly title: string;
-  readonly colorClass: string;
-  /** False when the previous line shares the owner (block grouping). */
-  readonly showLabel: boolean;
+  /** Colour by age; continuation lines of a block render slightly dimmed. */
+  readonly labelClass: string;
   /** True while the attribution is still being computed. */
   readonly pending: boolean;
 }
@@ -29,15 +29,15 @@ const EMPTY_CELL: AnnotationCell = {
   lineAtCommit: 0,
   label: '',
   title: '',
-  colorClass: '',
-  showLabel: false,
+  labelClass: '',
   pending: false,
 };
 
 /**
- * Turns a blame state into per-line gutter cells (`count` of them), with
- * age-ranked colours and IntelliJ-style block grouping. Lines without an
- * owner render as pending while the blame is computing.
+ * Turns a blame state into per-line gutter cells (`count` of them): every
+ * line shows `date author` for the commit that introduced it, age-coloured,
+ * with continuation lines of a same-commit block slightly dimmed. Lines
+ * without an owner render as pending while the blame is computing.
  */
 export function buildAnnotationCells(
   blame: BlameState | null,
@@ -64,13 +64,14 @@ export function buildAnnotationCells(
   return Array.from({ length: count }, (_, index) => {
     const owner = owners[index] ?? null;
     const previous = index > 0 ? (owners[index - 1] ?? null) : undefined;
-    const sameAsPrevious =
+    const blockStart = !(
       owner !== null &&
       previous !== undefined &&
       previous !== null &&
       (owner === 'older'
         ? previous === 'older'
-        : previous !== 'older' && owner.commit.sha === previous.commit.sha);
+        : previous !== 'older' && owner.commit.sha === previous.commit.sha)
+    );
 
     if (owner === null) {
       return computing ? { ...EMPTY_CELL, pending: true } : EMPTY_CELL;
@@ -80,17 +81,18 @@ export function buildAnnotationCells(
         ...EMPTY_CELL,
         label: '· · ·',
         title: 'Older than the loaded history pages — load more commits in the History panel.',
-        showLabel: !sameAsPrevious,
+        labelClass: blockStart ? 'text-zinc-700' : 'text-zinc-700 opacity-60',
       };
     }
     const commit = owner.commit;
     return {
       sha: commit.sha,
       lineAtCommit: owner.line,
-      label: `${commit.authorName} · ${relativeTime(commit.authoredAt)}`,
-      title: `${commit.summary}\n${shortSha(commit.sha)} · ${commit.authorName} · ${relativeTime(commit.authoredAt)}`,
-      colorClass: colorFor(Date.parse(commit.authoredAt) || 0),
-      showLabel: !sameAsPrevious,
+      label: `${shortDate(commit.authoredAt)} ${commit.authorName}`,
+      title: `${commit.summary}\n${shortSha(commit.sha)} · ${commit.authorName} · ${shortDate(commit.authoredAt)} (${relativeTime(commit.authoredAt)})`,
+      labelClass: blockStart
+        ? colorFor(Date.parse(commit.authoredAt) || 0)
+        : `${colorFor(Date.parse(commit.authoredAt) || 0)} opacity-60`,
       pending: false,
     };
   });

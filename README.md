@@ -39,7 +39,7 @@ commits and time travel (see `listCommits` on the provider interface).
   line-number gutter, hunk headers, +added/−removed stats, root/merge commits handled). Switch to
   *File* to read the full version instead; your last File/Changes choice is remembered.
 - **Blame annotations everywhere**: the *Blame* toggle is available in both views. In the file
-  view it annotates every line with the commit that introduced it (author · age, colour-coded
+  view it annotates every line with the commit that introduced it (`dd.mm.yyyy author` on every line, IDE-style, colour-coded
   older→newer, IntelliJ-style block grouping). In the changes view it switches to a **split
   view** — the version *before* the commit on the left, *after* on the right, removes/adds
   aligned side by side, and **both sides carry their own blame gutters**. Attribution is computed

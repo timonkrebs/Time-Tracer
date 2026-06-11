@@ -195,21 +195,19 @@ interface SplitRow {
                       @let lc = leftCells()[cell.lineNo - 1];
                       <span class="w-40 shrink-0 truncate pl-3 text-xs leading-6 select-none">
                         @if (lc.sha; as sha) {
-                          @if (lc.showLabel) {
-                            <button
-                              type="button"
-                              class="max-w-full cursor-pointer truncate align-top underline-offset-2 transition hover:underline"
-                              [class]="lc.colorClass"
-                              [title]="lc.title"
-                              (click)="blameSelect.emit({ sha, line: lc.lineAtCommit })"
-                            >
-                              {{ lc.label }}
-                            </button>
-                          }
+                          <button
+                            type="button"
+                            class="max-w-full cursor-pointer truncate align-top underline-offset-2 transition hover:underline"
+                            [class]="lc.labelClass"
+                            [title]="lc.title"
+                            (click)="blameSelect.emit({ sha, line: lc.lineAtCommit })"
+                          >
+                            {{ lc.label }}
+                          </button>
                         } @else if (lc.pending) {
                           <span class="animate-pulse text-zinc-700">·</span>
-                        } @else if (lc.showLabel) {
-                          <span class="text-zinc-700" [title]="lc.title">{{ lc.label }}</span>
+                        } @else if (lc.label) {
+                          <span [class]="lc.labelClass" [title]="lc.title">{{ lc.label }}</span>
                         }
                       </span>
                       <span
@@ -233,21 +231,19 @@ interface SplitRow {
                       @let rc = rightCells()[cell.lineNo - 1];
                       <span class="w-40 shrink-0 truncate pl-3 text-xs leading-6 select-none">
                         @if (rc.sha; as sha) {
-                          @if (rc.showLabel) {
-                            <button
-                              type="button"
-                              class="max-w-full cursor-pointer truncate align-top underline-offset-2 transition hover:underline"
-                              [class]="rc.colorClass"
-                              [title]="rc.title"
-                              (click)="blameSelect.emit({ sha, line: rc.lineAtCommit })"
-                            >
-                              {{ rc.label }}
-                            </button>
-                          }
+                          <button
+                            type="button"
+                            class="max-w-full cursor-pointer truncate align-top underline-offset-2 transition hover:underline"
+                            [class]="rc.labelClass"
+                            [title]="rc.title"
+                            (click)="blameSelect.emit({ sha, line: rc.lineAtCommit })"
+                          >
+                            {{ rc.label }}
+                          </button>
                         } @else if (rc.pending) {
                           <span class="animate-pulse text-zinc-700">·</span>
-                        } @else if (rc.showLabel) {
-                          <span class="text-zinc-700" [title]="rc.title">{{ rc.label }}</span>
+                        } @else if (rc.label) {
+                          <span [class]="rc.labelClass" [title]="rc.title">{{ rc.label }}</span>
                         }
                       </span>
                       <span

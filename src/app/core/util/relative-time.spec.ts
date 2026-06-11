@@ -1,4 +1,4 @@
-import { relativeTime, shortSha } from './relative-time';
+import { relativeTime, shortDate, shortSha } from './relative-time';
 
 describe('relativeTime', () => {
   const now = new Date('2026-06-11T12:00:00Z');
@@ -27,5 +27,16 @@ describe('relativeTime', () => {
 describe('shortSha', () => {
   it('abbreviates to seven characters', () => {
     expect(shortSha('a1b2c3d4e5f60718293a4b5c6d7e8f9012345678')).toBe('a1b2c3d');
+  });
+});
+
+describe('shortDate', () => {
+  it('formats as dd.mm.yyyy in UTC', () => {
+    expect(shortDate('2022-07-08T15:30:00Z')).toBe('08.07.2022');
+    expect(shortDate('2026-12-01T00:00:00Z')).toBe('01.12.2026');
+  });
+
+  it('returns an empty string for invalid input', () => {
+    expect(shortDate('nope')).toBe('');
   });
 });

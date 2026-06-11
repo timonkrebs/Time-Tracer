@@ -24,3 +24,12 @@ export function relativeTime(iso: string, now: Date = new Date()): string {
 export function shortSha(sha: string): string {
   return sha.slice(0, 7);
 }
+
+/** Formats an ISO timestamp as `dd.mm.yyyy` (UTC), e.g. `08.07.2022`. */
+export function shortDate(iso: string): string {
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return '';
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  return `${day}.${month}.${date.getUTCFullYear()}`;
+}

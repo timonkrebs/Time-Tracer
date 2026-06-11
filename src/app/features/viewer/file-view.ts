@@ -168,21 +168,19 @@ interface BlameRow {
                 <div class="flex hover:bg-white/[0.02]">
                   <span class="w-52 shrink-0 truncate pl-4 text-xs leading-6 select-none">
                     @if (row.cell.sha; as sha) {
-                      @if (row.cell.showLabel) {
-                        <button
-                          type="button"
-                          class="max-w-full cursor-pointer truncate align-top underline-offset-2 transition hover:underline"
-                          [class]="row.cell.colorClass"
-                          [title]="row.cell.title"
-                          (click)="blameSelect.emit({ sha, line: row.cell.lineAtCommit })"
-                        >
-                          {{ row.cell.label }}
-                        </button>
-                      }
+                      <button
+                        type="button"
+                        class="max-w-full cursor-pointer truncate align-top underline-offset-2 transition hover:underline"
+                        [class]="row.cell.labelClass"
+                        [title]="row.cell.title"
+                        (click)="blameSelect.emit({ sha, line: row.cell.lineAtCommit })"
+                      >
+                        {{ row.cell.label }}
+                      </button>
                     } @else if (row.cell.pending) {
                       <span class="animate-pulse text-zinc-700">·</span>
-                    } @else if (row.cell.showLabel) {
-                      <span class="text-zinc-700" [title]="row.cell.title">{{
+                    } @else if (row.cell.label) {
+                      <span [class]="row.cell.labelClass" [title]="row.cell.title">{{
                         row.cell.label
                       }}</span>
                     }

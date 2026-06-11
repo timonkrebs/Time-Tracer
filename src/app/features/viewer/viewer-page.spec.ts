@@ -449,11 +449,11 @@ describe('ViewerPage (integration)', () => {
     await vi.waitFor(async () => {
       expect(router.url).toContain('blame=1');
       const text = await textOnScreen();
-      expect(text).toContain('Grace ·'); // line 1: introduced by the root commit
-      expect(text).toContain('Ada ·'); // lines 2-3: introduced by the newest commit
+      expect(text).toContain('01.01.2026 Grace'); // line 1: introduced by the root commit
+      expect(text).toContain('01.06.2026 Ada'); // lines 2-3: introduced by the newest commit
     });
 
-    clickButton('Grace ·');
+    clickButton('01.01.2026 Grace');
 
     await vi.waitFor(async () => {
       expect(router.url).toContain(`at=${OLD_SHA}`);
@@ -483,8 +483,8 @@ describe('ViewerPage (integration)', () => {
       expect(text).toContain(NEW_SHA.slice(0, 7));
       // Both sides carry annotations: the parent version is all Grace's,
       // the commit's version adds Ada's lines.
-      expect(text).toContain('Grace ·');
-      expect(text).toContain('Ada ·');
+      expect(text).toContain('01.01.2026 Grace');
+      expect(text).toContain('01.06.2026 Ada');
       // Content of both sides, aligned: the surviving line and the addition.
       expect(text).toContain('# Rocket v0');
       expect(text).toContain('Go!');
@@ -492,7 +492,7 @@ describe('ViewerPage (integration)', () => {
 
     // Clicking an annotation still travels, targeting the line at the
     // introducing commit — Ada's first block starts at line 2 of NEW.
-    clickButton('Ada ·');
+    clickButton('01.06.2026 Ada');
     await vi.waitFor(async () => {
       expect(router.url).toContain(`at=${NEW_SHA}`);
       expect(router.url).toContain('line=2');
@@ -521,7 +521,7 @@ describe('ViewerPage (integration)', () => {
       expect(router.url).toContain('line=1');
       const text = await textOnScreen();
       expect(text).toContain('# Rocket v0');
-      expect(text).toContain('Grace ·'); // blame gutter of the parent version
+      expect(text).toContain('01.01.2026 Grace'); // blame gutter of the parent version
     });
   });
 
