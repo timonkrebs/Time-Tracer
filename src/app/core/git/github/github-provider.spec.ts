@@ -403,4 +403,41 @@ describe('GithubProvider', () => {
       });
     });
   });
+
+  describe('getCommitFiles', () => {
+    it('maps touched files including rename detection', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          sha: 'abc',
+          html_url: 'https://github.com/acme/rocket/commit/abc',
+          commit: { message: 'refactor: move', author: null },
+          parents: [{ sha: 'p1' }],
+          files: [
+            { filename: 'src/engine.ts', status: 'renamed', previous_filename: 'src/thruster.ts' },
+            { filename: 'README.md', status: 'modified' },
+          ],
+        }),
+      );
+
+      const files = await provider.getCommitFiles(slug, 'abc');
+
+      expect(files).toEqual([
+        { path: 'src/engine.ts', status: 'renamed', previousPath: 'src/thruster.ts' },
+        { path: 'README.md', status: 'modified' },
+      ]);
+    });
+
+    it('returns an empty list when the response omits files', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          sha: 'abc',
+          html_url: 'https://github.com/acme/rocket/commit/abc',
+          commit: { message: 'x', author: null },
+          parents: [],
+        }),
+      );
+
+      await expect(provider.getCommitFiles(slug, 'abc')).resolves.toEqual([]);
+    });
+  });
 });

@@ -11,7 +11,7 @@ import {
 import { Title } from '@angular/platform-browser';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 
-import { RepoStore } from '../../core/store/repo-store';
+import { RenameCandidate, RepoStore } from '../../core/store/repo-store';
 import { relativeTime, shortSha } from '../../core/util/relative-time';
 import { DiffView } from './diff-view';
 import { FileHistory } from './file-history';
@@ -363,7 +363,9 @@ const VIEW_MODE_KEY = 'time-tracer.view-mode';
                 class="min-h-0 flex-1"
                 [state]="store.selectedDiff()"
                 [path]="store.selectedPath()"
+                [highlightLine]="lineNumber()"
                 (retry)="onDiffRetry()"
+                (before)="onHunkBefore($event)"
               />
             } @else {
               <app-file-view
@@ -373,10 +375,11 @@ const VIEW_MODE_KEY = 'time-tracer.view-mode';
                 [historyActive]="historyOpen()"
                 [blameActive]="blameOn()"
                 [blame]="store.selectedBlame()"
+                [highlightLine]="lineNumber()"
                 (retry)="onFileRetry($event)"
                 (historyToggle)="toggleHistory()"
                 (blameToggle)="toggleBlame()"
-                (blameSelect)="goToCommit($event)"
+                (blameSelect)="onBlameSelect($event)"
               />
             }
           </section>
@@ -391,10 +394,13 @@ const VIEW_MODE_KEY = 'time-tracer.view-mode';
                 [error]="store.historyError()"
                 [hasMore]="store.historyHasMore()"
                 [selectedSha]="store.viewAt()"
+                [renames]="store.selectedRenames()"
                 (commitSelect)="goToCommit($event)"
                 (loadMore)="store.loadMoreHistory()"
                 (retry)="store.retryHistory()"
                 (closed)="toggleHistory()"
+                (findRenames)="onFindRenames()"
+                (candidateSelect)="onCandidateSelect($event)"
               />
             </aside>
           }
@@ -420,6 +426,8 @@ export class ViewerPage {
   readonly view = input<string | undefined>();
   /** Truthy enables blame annotations in the file view. */
   readonly blame = input<string | undefined>();
+  /** 1-based line to highlight and scroll to (file or changes view). */
+  readonly line = input<string | undefined>();
 
   protected readonly treeWidth = signal(restoreTreeWidth());
   protected readonly dragging = signal(false);
@@ -437,6 +445,11 @@ export class ViewerPage {
   });
 
   protected readonly blameOn = computed(() => !!this.blame() && !this.diffMode());
+
+  protected readonly lineNumber = computed<number | null>(() => {
+    const parsed = Number(this.line());
+    return Number.isInteger(parsed) && parsed >= 1 ? parsed : null;
+  });
 
   protected readonly selectedFileLinks = computed(() => {
     const path = this.store.selectedPath();
@@ -555,23 +568,74 @@ export class ViewerPage {
   }
 
   protected onFileSelect(path: string): void {
-    // Switching files always returns to the snapshot tip: `at` and `view`
-    // belong to the previous file's timeline. Blame mode is sticky.
+    // Switching files always returns to the snapshot tip: `at`, `view` and
+    // `line` belong to the previous file's timeline. Blame mode is sticky.
     void this.router.navigate([], {
       relativeTo: this.route,
-      queryParams: { path, at: null, view: null },
+      queryParams: { path, at: null, view: null, line: null },
       queryParamsHandling: 'merge',
     });
   }
 
   /**
    * Navigates the selected file to `sha` (or back to the tip when null),
-   * applying the remembered File/Changes preference for commit views.
+   * applying the remembered File/Changes preference for commit views unless
+   * a target view/line is given (line-targeted jumps pick their own view).
    */
-  protected goToCommit(sha: string | null): void {
+  protected goToCommit(
+    sha: string | null,
+    options?: { view?: 'file' | 'diff'; line?: number; blame?: '1' },
+  ): void {
+    const queryParams: Record<string, string | null> = {
+      at: sha,
+      view: sha ? (options?.view ?? this.viewPref()) : null,
+      line: options?.line ? String(options.line) : null,
+    };
+    if (options?.blame) queryParams['blame'] = options.blame;
     void this.router.navigate([], {
       relativeTo: this.route,
-      queryParams: { at: sha, view: sha ? this.viewPref() : null },
+      queryParams,
+      queryParamsHandling: 'merge',
+    });
+  }
+
+  /** A blame annotation was clicked: show that commit's diff at the line. */
+  protected onBlameSelect(event: { sha: string; line: number }): void {
+    this.goToCommit(event.sha, { view: 'diff', line: event.line });
+  }
+
+  /**
+   * "◂ Before" on a hunk: annotate the parent version at the hunk's old
+   * position — one recursive step back in time.
+   */
+  protected onHunkBefore(oldStart: number): void {
+    const diff = this.store.selectedDiff();
+    if (diff?.status !== 'ready' || !diff.baseSha) return;
+    this.goToCommit(diff.baseSha, { view: 'file', blame: '1', line: Math.max(1, oldStart) });
+  }
+
+  protected onFindRenames(): void {
+    const path = this.store.selectedPath();
+    if (path) void this.store.loadRenameCandidates(path);
+  }
+
+  /**
+   * Continues the journey in a rename candidate: anchors at the last commit
+   * that touched the candidate before the rename point, so history, blame
+   * and the steppers all keep working in the predecessor's own timeline.
+   */
+  protected async onCandidateSelect(candidate: RenameCandidate): Promise<void> {
+    const renames = this.store.selectedRenames();
+    if (renames?.status !== 'ready') return;
+    const anchor = await this.store.lastTouch(candidate.path, renames.parentSha);
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: {
+        path: candidate.path,
+        at: anchor?.sha ?? renames.parentSha,
+        view: this.viewPref(),
+        line: null,
+      },
       queryParamsHandling: 'merge',
     });
   }

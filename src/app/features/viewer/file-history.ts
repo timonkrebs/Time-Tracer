@@ -1,7 +1,7 @@
 import { ChangeDetectionStrategy, Component, input, output } from '@angular/core';
 
 import { CommitInfo } from '../../core/models';
-import { HistoryStatus } from '../../core/store/repo-store';
+import { HistoryStatus, RenameCandidate, RenameState } from '../../core/store/repo-store';
 import { relativeTime, shortSha } from '../../core/util/relative-time';
 
 /**
@@ -134,12 +134,75 @@ import { relativeTime, shortSha } from '../../core/util/relative-time';
                 Load older commits
               </button>
             } @else if (commits().length > 0) {
-              <p
-                class="px-3 py-2 text-[11px] leading-4 text-zinc-600"
-                title="History stops where the file was added or renamed. Following renames is on the roadmap."
-              >
-                Start of this file's history (renames not followed yet).
-              </p>
+              <div class="border-t border-zinc-800/50 px-3 py-2">
+                <p class="text-[11px] leading-4 text-zinc-600">
+                  Start of this path's recorded history.
+                </p>
+                @if (!renames()) {
+                  <button
+                    type="button"
+                    class="mt-1.5 rounded border border-indigo-400/30 bg-indigo-500/10 px-2.5 py-1 text-[11px] text-indigo-200 transition hover:bg-indigo-500/20"
+                    title="Search the commit just before for files this one may have been renamed from"
+                    (click)="findRenames.emit()"
+                  >
+                    Continue past the rename?
+                  </button>
+                } @else {
+                  @switch (renames()!.status) {
+                    @case ('loading') {
+                      <p class="mt-1.5 animate-pulse text-[11px] text-zinc-500">
+                        Searching for predecessors…
+                      </p>
+                    }
+                    @case ('unavailable') {
+                      <p class="mt-1.5 text-[11px] leading-4 text-zinc-500">
+                        {{ unavailableReason() }}
+                      </p>
+                    }
+                    @case ('error') {
+                      <p class="mt-1.5 text-[11px] text-rose-400">{{ errorMessage() }}</p>
+                      <button
+                        type="button"
+                        class="mt-1 rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-300 transition hover:border-zinc-500"
+                        (click)="findRenames.emit()"
+                      >
+                        Try again
+                      </button>
+                    }
+                    @case ('ready') {
+                      @if (readyCandidates().length === 0) {
+                        <p class="mt-1.5 text-[11px] leading-4 text-zinc-500">
+                          No likely predecessors found in the parent commit.
+                        </p>
+                      } @else {
+                        <p class="mt-1.5 text-[11px] text-zinc-500">Continue in:</p>
+                        @for (candidate of readyCandidates(); track candidate.path) {
+                          <button
+                            type="button"
+                            class="mt-1 block w-full rounded border border-zinc-800 bg-zinc-900/60 px-2 py-1.5 text-left transition hover:border-indigo-400/40 hover:bg-indigo-500/10"
+                            (click)="candidateSelect.emit(candidate)"
+                          >
+                            <span class="block truncate font-mono text-[11px] text-zinc-200">{{
+                              candidate.path
+                            }}</span>
+                            <span class="mt-0.5 flex items-center gap-1.5 text-[10px]">
+                              <span class="text-indigo-300"
+                                >{{ percent(candidate.confidence) }} match</span
+                              >
+                              @for (reason of candidate.reasons; track reason) {
+                                <span
+                                  class="rounded-full border border-zinc-700 px-1.5 text-zinc-500"
+                                  >{{ reasonLabel(reason) }}</span
+                                >
+                              }
+                            </span>
+                          </button>
+                        }
+                      }
+                    }
+                  }
+                }
+              </div>
             }
           }
         }
@@ -156,11 +219,47 @@ export class FileHistory {
   readonly hasMore = input(false);
   /** Sha currently viewed, or null for the snapshot tip. */
   readonly selectedSha = input<string | null>(null);
+  /** Rename-candidate search state for the path, once started. */
+  readonly renames = input<RenameState | null>(null);
 
   readonly commitSelect = output<string | null>();
   readonly loadMore = output<void>();
   readonly retry = output<void>();
   readonly closed = output<void>();
+  readonly findRenames = output<void>();
+  readonly candidateSelect = output<RenameCandidate>();
+
+  protected unavailableReason(): string {
+    const state = this.renames();
+    return state?.status === 'unavailable' ? state.reason : '';
+  }
+
+  protected errorMessage(): string {
+    const state = this.renames();
+    return state?.status === 'error' ? state.message : '';
+  }
+
+  protected readyCandidates(): readonly RenameCandidate[] {
+    const state = this.renames();
+    return state?.status === 'ready' ? state.candidates : [];
+  }
+
+  protected percent(confidence: number): string {
+    return `${Math.round(confidence * 100)}%`;
+  }
+
+  protected reasonLabel(reason: RenameCandidate['reasons'][number]): string {
+    switch (reason) {
+      case 'github-rename':
+        return 'rename';
+      case 'identical-content':
+        return 'identical';
+      case 'similar-content':
+        return 'similar';
+      default:
+        return 'name/size';
+    }
+  }
 
   protected abbrev(sha: string): string {
     return shortSha(sha);

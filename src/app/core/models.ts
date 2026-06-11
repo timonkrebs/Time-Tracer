@@ -113,6 +113,15 @@ export interface CommitInfo {
   readonly parentShas: readonly string[];
 }
 
+/** One file touched by a commit, as reported by the provider. */
+export interface CommitFileChange {
+  readonly path: string;
+  /** `added` | `removed` | `modified` | `renamed` | `copied` | … */
+  readonly status: string;
+  /** Previous path for renames/copies, when the provider detected one. */
+  readonly previousPath?: string;
+}
+
 /** Categorised provider failures so the UI can react specifically. */
 export type RepoErrorKind =
   | 'not-found'

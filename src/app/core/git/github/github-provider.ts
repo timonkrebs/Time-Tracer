@@ -1,6 +1,7 @@
 import { Injectable } from '@angular/core';
 
 import {
+  CommitFileChange,
   CommitInfo,
   ParsedRepoUrl,
   RefResolution,
@@ -71,6 +72,12 @@ interface GithubCommitResponse {
     author: { name?: string; email?: string; date?: string } | null;
   };
   parents: { sha: string }[];
+  /** Only present on the single-commit endpoint. */
+  files?: {
+    filename: string;
+    status: string;
+    previous_filename?: string;
+  }[];
 }
 
 /**
@@ -232,6 +239,18 @@ export class GithubProvider implements GitProvider {
       { notFound: `Commit ${sha.slice(0, 7)} was not found in this repository.` },
     );
     return mapCommit(data);
+  }
+
+  async getCommitFiles(slug: RepoSlug, sha: string): Promise<CommitFileChange[]> {
+    const data = await this.request<GithubCommitResponse>(
+      `/repos/${enc(slug.owner)}/${enc(slug.repo)}/commits/${enc(sha)}`,
+      { notFound: `Commit ${sha.slice(0, 7)} was not found in this repository.` },
+    );
+    return (data.files ?? []).map((file) => ({
+      path: file.filename,
+      status: file.status,
+      ...(file.previous_filename ? { previousPath: file.previous_filename } : {}),
+    }));
   }
 
   webLinks(slug: RepoSlug, ref: string, path?: string): RepoWebLinks {

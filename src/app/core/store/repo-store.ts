@@ -12,7 +12,7 @@ import {
   TreeEntry,
   toRepoProviderError,
 } from '../models';
-import { FileDiff, computeFileDiff, diffLines, splitLines } from '../util/diff';
+import { FileDiff, computeFileDiff, diffLines, lineSimilarity, splitLines } from '../util/diff';
 import { ancestorsOf, buildTree } from '../util/tree';
 import { RecentRepos } from './recent-repos';
 
@@ -35,10 +35,41 @@ export type DiffState =
   | { readonly status: 'error'; readonly message: string };
 
 /**
- * Who introduced a line: a commit, `'older'` (predates the loaded history
- * pages) or null (attribution still being computed).
+ * Who introduced a line: a commit (with the line's position in the file as
+ * of that commit — the hook for hunk-targeted time travel), `'older'`
+ * (predates the loaded history pages) or null (still being computed).
  */
-export type BlameOwner = CommitInfo | 'older' | null;
+export type BlameOwner = { readonly commit: CommitInfo; readonly line: number } | 'older' | null;
+
+/** A possible predecessor of a file whose recorded history ended. */
+export interface RenameCandidate {
+  readonly path: string;
+  /** Blob sha of the candidate at the parent commit. */
+  readonly sha: string;
+  readonly size?: number;
+  /** 0..1 — how likely this is the same file under an earlier name. */
+  readonly confidence: number;
+  readonly reasons: readonly (
+    | 'github-rename'
+    | 'identical-content'
+    | 'similar-content'
+    | 'heuristic'
+  )[];
+}
+
+/** Async state of the rename-candidate search for one path. */
+export type RenameState =
+  | { readonly status: 'loading' }
+  | {
+      readonly status: 'ready';
+      readonly candidates: readonly RenameCandidate[];
+      /** Parent of the commit that created the path — where candidates live. */
+      readonly parentSha: string;
+      /** The oldest known commit of the path (its apparent creation). */
+      readonly endCommit: CommitInfo;
+    }
+  | { readonly status: 'unavailable'; readonly reason: string }
+  | { readonly status: 'error'; readonly message: string };
 
 /** Async state of the blame annotations for one `<version, path>` pair. */
 export interface BlameState {
@@ -99,6 +130,10 @@ export class RepoStore {
   private readonly blameRuns = new Set<string>();
   /** Loaded history per path, so re-selecting a file does not refetch. */
   private readonly historyCache = new Map<string, HistorySnapshot>();
+  /** Full trees by commit sha, for rename-candidate searches. */
+  private readonly treeCache = new Map<string, Promise<readonly TreeEntry[]>>();
+  /** Rename-candidate search states keyed by path. */
+  private readonly _renames = signal<ReadonlyMap<string, RenameState>>(new Map());
 
   private readonly _historyPath = signal<string | null>(null);
   private readonly _history = signal<readonly CommitInfo[]>([]);
@@ -163,6 +198,12 @@ export class RepoStore {
     return this._blames().get(fileKey(path, this._viewAt())) ?? null;
   });
 
+  /** Rename-candidate search state for the selected file, if started. */
+  readonly selectedRenames = computed<RenameState | null>(() => {
+    const path = this._selectedPath();
+    return path ? (this._renames().get(path) ?? null) : null;
+  });
+
   /**
    * Loads a repository (metadata, then full tree). No-ops when the same
    * repo+ref is already loading or loaded, unless `force` is set.
@@ -190,8 +231,10 @@ export class RepoStore {
     this._commitsBySha.set(new Map());
     this._diffs.set(new Map());
     this._blames.set(new Map());
+    this._renames.set(new Map());
     this.blameRuns.clear();
     this.historyCache.clear();
+    this.treeCache.clear();
     this.inflight.clear();
     this._error.set(null);
     this.resetHistory();
@@ -427,7 +470,9 @@ export class RepoStore {
           return;
         }
         // Complete history: the oldest commit created the file.
-        for (let j = 0; j < owners.length; j++) if (owners[j] === null) owners[j] = newer;
+        for (let j = 0; j < owners.length; j++) {
+          if (owners[j] === null) owners[j] = { commit: newer, line: images[j] + 1 };
+        }
         processed++;
         publish('ready', false);
         return;
@@ -454,7 +499,9 @@ export class RepoStore {
       if (olderState.file.kind !== 'text') {
         // The file was binary before this point; everything left was
         // (re)introduced as text at `newer`.
-        for (let j = 0; j < owners.length; j++) if (owners[j] === null) owners[j] = newer;
+        for (let j = 0; j < owners.length; j++) {
+          if (owners[j] === null) owners[j] = { commit: newer, line: images[j] + 1 };
+        }
         processed++;
         publish('ready', false);
         return;
@@ -473,14 +520,14 @@ export class RepoStore {
         const position = images[j];
         if (position < 0) continue;
         if (added.has(position)) {
-          owners[j] = newer;
+          owners[j] = { commit: newer, line: position + 1 };
           images[j] = -1;
           pending--;
         } else {
           images[j] = newToOld.get(position) ?? -1;
           if (images[j] === -1) {
             // Defensive: a non-added line must map; attribute here if not.
-            owners[j] = newer;
+            owners[j] = { commit: newer, line: position + 1 };
             pending--;
           }
         }
@@ -584,6 +631,192 @@ export class RepoStore {
     if (!path) return;
     this._historyStatus.set('idle');
     void this.loadHistory(path);
+  }
+
+  /**
+   * Searches for predecessor files where `path`'s recorded history ends:
+   * the provider's own rename detection at the creating commit, identical
+   * blobs in the parent commit's tree, and heuristically similar files
+   * refined by actual content similarity (top three, one request each).
+   * Requires the complete history of the path to be loaded.
+   */
+  async loadRenameCandidates(path: string): Promise<void> {
+    const existing = this._renames().get(path);
+    if (existing && existing.status !== 'error') return;
+    const slug = this._slug();
+    if (!slug || this._phase() !== 'ready') return;
+    if (
+      this._historyPath() !== path ||
+      this._historyStatus() !== 'ready' ||
+      this._historyHasMore() ||
+      this._history().length === 0
+    ) {
+      return;
+    }
+    const history = this._history();
+    const endCommit = history[history.length - 1];
+    const parentSha = endCommit.parentShas[0] ?? null;
+
+    const seq = this.loadSeq;
+    this.setRenameState(path, { status: 'loading' });
+    try {
+      if (!parentSha) {
+        this.setRenameState(path, {
+          status: 'unavailable',
+          reason:
+            "This file was created in the repository's first commit — there is nothing earlier.",
+        });
+        return;
+      }
+      const provider = this.registry.byId(slug.provider);
+
+      // 1. Provider-side rename detection at the creating commit.
+      const changes = await provider.getCommitFiles(slug, endCommit.sha);
+      if (seq !== this.loadSeq) return;
+      const renamedFrom =
+        changes.find((c) => c.path === path && c.previousPath)?.previousPath ?? null;
+
+      // 2. The file's own content at its creation, for sha/content matching.
+      const v0 = await this.ensureFile(path, endCommit.sha);
+      if (seq !== this.loadSeq) return;
+      const v0Sha = v0.status === 'ready' ? v0.file.sha : null;
+      const v0Size = v0.status === 'ready' ? v0.file.size : null;
+      const v0Text = v0.status === 'ready' && v0.file.kind === 'text' ? v0.file.text : null;
+
+      // 3. Everything that existed just before the path appeared.
+      const parentEntries = await this.treeAt(slug, parentSha);
+      if (seq !== this.loadSeq) return;
+      const files = parentEntries.filter((e) => e.kind === 'file' && e.path !== path);
+
+      const byPath = new Map<string, RenameCandidate>();
+      const add = (candidate: RenameCandidate): void => {
+        const prior = byPath.get(candidate.path);
+        if (!prior) {
+          byPath.set(candidate.path, candidate);
+          return;
+        }
+        byPath.set(candidate.path, {
+          ...prior,
+          confidence: Math.max(prior.confidence, candidate.confidence),
+          reasons: [...new Set([...prior.reasons, ...candidate.reasons])],
+        });
+      };
+
+      if (renamedFrom) {
+        const entry = files.find((e) => e.path === renamedFrom);
+        add({
+          path: renamedFrom,
+          sha: entry?.sha ?? '',
+          ...(entry?.size !== undefined ? { size: entry.size } : {}),
+          confidence: 0.99,
+          reasons: ['github-rename'],
+        });
+      }
+      if (v0Sha) {
+        for (const entry of files) {
+          if (entry.sha === v0Sha) {
+            add({
+              path: entry.path,
+              sha: entry.sha,
+              ...(entry.size !== undefined ? { size: entry.size } : {}),
+              confidence: 1,
+              reasons: ['identical-content'],
+            });
+          }
+        }
+      }
+
+      // 4. Heuristic candidates, refined by content similarity for the top few.
+      const name = path.slice(path.lastIndexOf('/') + 1);
+      const ext = name.includes('.') ? name.slice(name.lastIndexOf('.')) : '';
+      const dirSegments = path.split('/').slice(0, -1);
+      const scored = files
+        .filter((e) => !byPath.has(e.path))
+        .map((entry) => {
+          const entryExt = entry.name.includes('.')
+            ? entry.name.slice(entry.name.lastIndexOf('.'))
+            : '';
+          let score = 0;
+          if (entry.name === name) score += 0.45;
+          else if (ext && entryExt === ext) score += 0.1;
+          if (v0Size !== null && entry.size !== undefined) {
+            const max = Math.max(v0Size, entry.size, 1);
+            score += 0.2 * (1 - Math.abs(v0Size - entry.size) / max);
+          }
+          const entrySegments = entry.path.split('/').slice(0, -1);
+          const shared = sharedPrefixLength(dirSegments, entrySegments);
+          const maxSegments = Math.max(dirSegments.length, entrySegments.length);
+          score += 0.25 * (maxSegments === 0 ? 1 : shared / maxSegments);
+          return { entry, score };
+        })
+        .filter((c) => c.score >= 0.3)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 5);
+
+      for (const [index, { entry, score }] of scored.entries()) {
+        let confidence = Math.min(score, 0.75);
+        const reasons: ('similar-content' | 'heuristic')[] = ['heuristic'];
+        if (index < 3 && v0Text !== null) {
+          const candidateState = await this.ensureFile(entry.path, parentSha);
+          if (seq !== this.loadSeq) return;
+          if (candidateState.status === 'ready' && candidateState.file.kind === 'text') {
+            const similarity = lineSimilarity(candidateState.file.text, v0Text);
+            confidence = Math.max(confidence, similarity);
+            if (similarity >= 0.5) reasons.unshift('similar-content');
+          }
+        }
+        add({
+          path: entry.path,
+          sha: entry.sha,
+          ...(entry.size !== undefined ? { size: entry.size } : {}),
+          confidence,
+          reasons,
+        });
+      }
+
+      const candidates = [...byPath.values()]
+        .sort((a, b) => b.confidence - a.confidence)
+        .slice(0, 8);
+      this.setRenameState(path, { status: 'ready', candidates, parentSha, endCommit });
+    } catch (error) {
+      if (seq !== this.loadSeq) return;
+      this.setRenameState(path, {
+        status: 'error',
+        message: toRepoProviderError(error).message,
+      });
+    }
+  }
+
+  /**
+   * The most recent commit reachable from `ref` that touched `path` — used
+   * to anchor the jump into a rename candidate's own timeline.
+   */
+  async lastTouch(path: string, ref: string): Promise<CommitInfo | null> {
+    const slug = this._slug();
+    if (!slug) return null;
+    try {
+      const commits = await this.registry
+        .byId(slug.provider)
+        .listCommits(slug, { ref, path, perPage: 1 });
+      if (commits.length === 0) return null;
+      this.cacheCommits(commits);
+      return commits[0];
+    } catch {
+      return null;
+    }
+  }
+
+  /** Full tree entries at a commit, cached per sha (shared across searches). */
+  private treeAt(slug: RepoSlug, sha: string): Promise<readonly TreeEntry[]> {
+    const cached = this.treeCache.get(sha);
+    if (cached) return cached;
+    const promise = this.registry
+      .byId(slug.provider)
+      .getTree(slug, sha)
+      .then((tree) => tree.entries);
+    this.treeCache.set(sha, promise);
+    promise.catch(() => this.treeCache.delete(sha));
+    return promise;
   }
 
   clearSelection(): void {
@@ -730,6 +963,18 @@ export class RepoStore {
     next.set(key, state);
     this._blames.set(next);
   }
+
+  private setRenameState(path: string, state: RenameState): void {
+    const next = new Map(this._renames());
+    next.set(path, state);
+    this._renames.set(next);
+  }
+}
+
+function sharedPrefixLength(a: readonly string[], b: readonly string[]): number {
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  return i;
 }
 
 /**

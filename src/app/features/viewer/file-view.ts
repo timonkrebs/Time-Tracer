@@ -1,9 +1,21 @@
-import { ChangeDetectionStrategy, Component, computed, input, output } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  ElementRef,
+  afterRenderEffect,
+  computed,
+  input,
+  output,
+  viewChild,
+} from '@angular/core';
 
 import { RepoWebLinks } from '../../core/git/git-provider';
 import { FileState } from '../../core/models';
 import { BlameOwner, BlameState } from '../../core/store/repo-store';
 import { relativeTime, shortSha } from '../../core/util/relative-time';
+
+/** Line height of code rows (`leading-6`), used for scroll/highlight maths. */
+const LINE_HEIGHT_PX = 24;
 
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -24,6 +36,8 @@ interface BlameRow {
   readonly lineNo: number;
   readonly text: string;
   readonly sha: string | null;
+  /** Position of this line in the file as of the introducing commit. */
+  readonly lineAtCommit: number;
   readonly label: string;
   readonly title: string;
   readonly colorClass: string;
@@ -158,19 +172,25 @@ interface BlameRow {
           </div>
         }
         @if (blameRows(); as rows) {
-          <div class="slim-scrollbar min-h-0 flex-1 overflow-auto">
-            <div class="min-w-max font-mono text-[13px] leading-6">
+          <div #scroller class="slim-scrollbar min-h-0 flex-1 overflow-auto">
+            <div class="relative min-w-max font-mono text-[13px] leading-6">
+              @if (highlightLine(); as hl) {
+                <div
+                  class="pointer-events-none absolute inset-x-0 h-6 bg-indigo-500/10 ring-1 ring-indigo-400/40 ring-inset"
+                  [style.top.px]="(hl - 1) * 24"
+                ></div>
+              }
               @for (row of rows; track row.lineNo) {
                 <div class="flex hover:bg-white/[0.02]">
                   <span class="w-52 shrink-0 truncate pl-4 text-xs leading-6 select-none">
-                    @if (row.sha) {
+                    @if (row.sha; as sha) {
                       @if (row.showLabel) {
                         <button
                           type="button"
                           class="max-w-full cursor-pointer truncate align-top underline-offset-2 transition hover:underline"
                           [class]="row.colorClass"
                           [title]="row.title"
-                          (click)="blameSelect.emit(row.sha)"
+                          (click)="blameSelect.emit({ sha, line: row.lineAtCommit })"
                         >
                           {{ row.label }}
                         </button>
@@ -194,8 +214,14 @@ interface BlameRow {
             </div>
           </div>
         } @else if (textInfo(); as info) {
-          <div class="slim-scrollbar min-h-0 flex-1 overflow-auto">
-            <div class="flex min-w-max font-mono text-[13px] leading-6">
+          <div #scroller class="slim-scrollbar min-h-0 flex-1 overflow-auto">
+            <div class="relative flex min-w-max font-mono text-[13px] leading-6">
+              @if (highlightLine(); as hl) {
+                <div
+                  class="pointer-events-none absolute inset-x-0 h-6 bg-indigo-500/10 ring-1 ring-indigo-400/40 ring-inset"
+                  [style.top.px]="12 + (hl - 1) * 24"
+                ></div>
+              }
               <pre
                 class="sticky left-0 shrink-0 border-r border-zinc-800/80 bg-zinc-950 py-3 pr-3 pl-4 text-right text-zinc-600 select-none"
                 aria-hidden="true"
@@ -254,15 +280,29 @@ export class FileView {
   /** Renders per-line blame annotations in the gutter. */
   readonly blameActive = input(false);
   readonly blame = input<BlameState | null>(null);
+  /** 1-based line to highlight and scroll into view, if any. */
+  readonly highlightLine = input<number | null>(null);
 
   /** Emits the path when the user wants to retry a failed fetch. */
   readonly retry = output<string>();
   readonly historyToggle = output<void>();
   readonly blameToggle = output<void>();
-  /** Emits the sha of a clicked line annotation. */
-  readonly blameSelect = output<string>();
+  /** A clicked annotation: the commit plus the line's position at it. */
+  readonly blameSelect = output<{ sha: string; line: number }>();
+
+  private readonly scroller = viewChild<ElementRef<HTMLElement>>('scroller');
 
   protected readonly skeletonWidths = [62, 84, 45, 91, 73, 38, 80, 55, 67, 49, 88, 30];
+
+  constructor() {
+    afterRenderEffect(() => {
+      const line = this.highlightLine();
+      this.textInfo(); // re-scroll when a different file/version renders
+      const el = this.scroller()?.nativeElement;
+      if (!line || !el) return;
+      el.scrollTop = Math.max(0, (line - 1) * LINE_HEIGHT_PX - el.clientHeight / 3);
+    });
+  }
 
   protected readonly textInfo = computed(() => {
     const s = this.state();
@@ -304,7 +344,7 @@ export class FileView {
       ...new Set(
         owners
           .filter((o): o is Exclude<BlameOwner, 'older' | null> => !!o && o !== 'older')
-          .map((o) => Date.parse(o.authoredAt) || 0),
+          .map((o) => Date.parse(o.commit.authoredAt) || 0),
       ),
     ].sort((a, b) => a - b);
     const colorFor = (time: number): string => {
@@ -323,13 +363,14 @@ export class FileView {
         previous !== null &&
         (owner === 'older'
           ? previous === 'older'
-          : previous !== 'older' && owner.sha === previous.sha);
+          : previous !== 'older' && owner.commit.sha === previous.commit.sha);
 
       if (owner === null) {
         return {
           lineNo: index + 1,
           text,
           sha: null,
+          lineAtCommit: 0,
           label: '',
           title: '',
           colorClass: '',
@@ -342,20 +383,23 @@ export class FileView {
           lineNo: index + 1,
           text,
           sha: null,
+          lineAtCommit: 0,
           label: '· · ·',
-          title: 'Older than the loaded history pages.',
+          title: 'Older than the loaded history pages — load more commits in the History panel.',
           colorClass: '',
           showLabel: !sameAsPrevious,
           pendingOwner: false,
         };
       }
+      const commit = owner.commit;
       return {
         lineNo: index + 1,
         text,
-        sha: owner.sha,
-        label: `${owner.authorName} · ${relativeTime(owner.authoredAt)}`,
-        title: `${owner.summary}\n${shortSha(owner.sha)} · ${owner.authorName} · ${relativeTime(owner.authoredAt)}`,
-        colorClass: colorFor(Date.parse(owner.authoredAt) || 0),
+        sha: commit.sha,
+        lineAtCommit: owner.line,
+        label: `${commit.authorName} · ${relativeTime(commit.authoredAt)}`,
+        title: `${commit.summary}\n${shortSha(commit.sha)} · ${commit.authorName} · ${relativeTime(commit.authoredAt)}`,
+        colorClass: colorFor(Date.parse(commit.authoredAt) || 0),
         showLabel: !sameAsPrevious,
         pendingOwner: false,
       };

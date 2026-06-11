@@ -2,6 +2,7 @@ import { TestBed } from '@angular/core/testing';
 
 import { GIT_PROVIDERS, GitProvider, RepoWebLinks } from '../git/git-provider';
 import {
+  CommitFileChange,
   CommitInfo,
   ParsedRepoUrl,
   RepoFile,
@@ -55,7 +56,8 @@ class FakeProvider implements GitProvider {
   treeRefs: string[] = [];
 
   metadataResult: () => Promise<RepoMetadata> = () => Promise.resolve(metadata);
-  treeResult: () => Promise<RepoTree> = () => Promise.resolve({ entries, truncated: false });
+  treeResult: (ref: string) => Promise<RepoTree> = () =>
+    Promise.resolve({ entries, truncated: false });
   fileResult: (entry: TreeEntry) => Promise<RepoFile> = (entry) =>
     Promise.resolve({
       kind: 'text',
@@ -88,7 +90,7 @@ class FakeProvider implements GitProvider {
   getTree(_slug: RepoSlug, ref: string): Promise<RepoTree> {
     this.treeCalls++;
     this.treeRefs.push(ref);
-    return this.treeResult();
+    return this.treeResult(ref);
   }
   getFile(_slug: RepoSlug, entry: TreeEntry): Promise<RepoFile> {
     this.fileCalls.push(entry.path);
@@ -110,6 +112,10 @@ class FakeProvider implements GitProvider {
     return this.commitResult(sha);
   }
   getCommitCalls: string[] = [];
+  commitFilesResult: (sha: string) => Promise<CommitFileChange[]> = () => Promise.resolve([]);
+  getCommitFiles(_slug: RepoSlug, sha: string): Promise<CommitFileChange[]> {
+    return this.commitFilesResult(sha);
+  }
   webLinks(): RepoWebLinks {
     return { repoUrl: 'https://github.com/acme/rocket' };
   }
@@ -496,7 +502,14 @@ describe('RepoStore', () => {
 
     function ownerShas(): (string | null)[] {
       const blame = store.selectedBlame();
-      return (blame?.lines ?? []).map((o) => (o && o !== 'older' ? o.sha : (o as string | null)));
+      return (blame?.lines ?? []).map((o) =>
+        o && o !== 'older' ? o.commit.sha : (o as string | null),
+      );
+    }
+
+    function ownerLines(): (number | null)[] {
+      const blame = store.selectedBlame();
+      return (blame?.lines ?? []).map((o) => (o && o !== 'older' ? o.line : null));
     }
 
     it('attributes every line to the commit that introduced it', async () => {
@@ -513,6 +526,8 @@ describe('RepoStore', () => {
       expect(blame?.status).toBe('ready');
       expect(blame?.truncated).toBe(false);
       expect(ownerShas()).toEqual(['c1', 'c2', 'c3']);
+      // Each line's position as of its introducing commit.
+      expect(ownerLines()).toEqual([1, 2, 3]);
       // Only the two older versions needed fetching; the tip was cached.
       expect(provider.fileAtRefCalls).toEqual([
         { path: 'README.md', ref: 'c2' },
@@ -583,6 +598,131 @@ describe('RepoStore', () => {
       await store.loadBlame('README.md', 'ghost');
 
       expect(store.selectedBlame()).toMatchObject({ status: 'unavailable' });
+    });
+  });
+
+  describe('rename candidates (loadRenameCandidates)', () => {
+    function parentTree(): RepoTree {
+      return {
+        truncated: false,
+        entries: [
+          { path: 'docs', name: 'docs', kind: 'dir', sha: 'd1' },
+          // Same blob sha as README at its creation → identical content.
+          { path: 'docs/old-name.md', name: 'old-name.md', kind: 'file', sha: 'BLOB0', size: 12 },
+          // Reported by the provider's rename detection.
+          {
+            path: 'docs/renamed-from.md',
+            name: 'renamed-from.md',
+            kind: 'file',
+            sha: 'R1',
+            size: 12,
+          },
+          // Same extension + similar size + similar content at the root.
+          { path: 'SIMILAR.md', name: 'SIMILAR.md', kind: 'file', sha: 'S1', size: 13 },
+          // Should not surface: different in every respect.
+          { path: 'unrelated.bin', name: 'unrelated.bin', kind: 'file', sha: 'U1', size: 90000 },
+        ],
+      };
+    }
+
+    beforeEach(async () => {
+      await store.loadRepo(slug);
+      provider.listCommitsResult = () => Promise.resolve([commit('create', ['parent'])]);
+      provider.fileAtRefResult = (path, ref) =>
+        Promise.resolve({
+          kind: 'text',
+          path,
+          sha: path === 'README.md' ? 'BLOB0' : `c-${path}`,
+          size: 12,
+          text: path === 'SIMILAR.md' ? 'line1\nline2\nline3\n' : 'line1\nline2\n',
+        });
+      provider.treeResult = (ref) =>
+        ref === 'parent'
+          ? Promise.resolve(parentTree())
+          : Promise.resolve({ entries, truncated: false });
+      provider.commitFilesResult = () =>
+        Promise.resolve([
+          { path: 'README.md', status: 'renamed', previousPath: 'docs/renamed-from.md' },
+        ]);
+      await store.openFile('README.md');
+      await store.loadHistory('README.md');
+    });
+
+    it('ranks provider renames, identical blobs and similar files', async () => {
+      await store.loadRenameCandidates('README.md');
+
+      const state = store.selectedRenames();
+      expect(state?.status).toBe('ready');
+      if (state?.status !== 'ready') return;
+      expect(state.parentSha).toBe('parent');
+      expect(state.endCommit.sha).toBe('create');
+
+      const byPath = new Map(state.candidates.map((c) => [c.path, c]));
+      expect(byPath.get('docs/old-name.md')).toMatchObject({
+        confidence: 1,
+        reasons: ['identical-content'],
+      });
+      expect(byPath.get('docs/renamed-from.md')?.reasons).toContain('github-rename');
+      const similar = byPath.get('SIMILAR.md');
+      expect(similar?.reasons).toContain('similar-content');
+      expect(similar!.confidence).toBeGreaterThan(0.6);
+      expect(byPath.has('unrelated.bin')).toBe(false);
+      // Sorted by confidence, identical first.
+      expect(state.candidates[0].path).toBe('docs/old-name.md');
+    });
+
+    it('caches the result and does not rerun the search', async () => {
+      await store.loadRenameCandidates('README.md');
+      const treeCallsAfterFirst = provider.treeCalls;
+      await store.loadRenameCandidates('README.md');
+
+      expect(provider.treeCalls).toBe(treeCallsAfterFirst);
+    });
+
+    it('is unavailable when the file was created in the first commit', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('root', [])]);
+      await store.loadRepo(slug, undefined, { force: true });
+      await store.openFile('README.md');
+      await store.loadHistory('README.md');
+
+      await store.loadRenameCandidates('README.md');
+
+      expect(store.selectedRenames()).toMatchObject({ status: 'unavailable' });
+    });
+
+    it('does nothing while the history is incomplete', async () => {
+      const fullPage = Array.from({ length: 30 }, (_, i) => commit(`c${i}`, [`c${i + 1}`]));
+      provider.listCommitsResult = () => Promise.resolve(fullPage);
+      await store.loadRepo(slug, undefined, { force: true });
+      await store.openFile('README.md');
+      await store.loadHistory('README.md');
+
+      await store.loadRenameCandidates('README.md');
+
+      expect(store.selectedRenames()).toBeNull();
+    });
+  });
+
+  describe('lastTouch', () => {
+    it('returns the most recent commit touching a path before a ref', async () => {
+      await store.loadRepo(slug);
+      provider.listCommitsResult = () => Promise.resolve([commit('g1')]);
+
+      const result = await store.lastTouch('docs/renamed-from.md', 'parent');
+
+      expect(result?.sha).toBe('g1');
+      expect(provider.listCommitsCalls.at(-1)).toEqual({
+        ref: 'parent',
+        path: 'docs/renamed-from.md',
+        perPage: 1,
+      });
+    });
+
+    it('resolves null when nothing touched the path', async () => {
+      await store.loadRepo(slug);
+      provider.listCommitsResult = () => Promise.resolve([]);
+
+      await expect(store.lastTouch('nope.md', 'parent')).resolves.toBeNull();
     });
   });
 });

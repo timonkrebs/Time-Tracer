@@ -1,6 +1,7 @@
 import { InjectionToken, Injectable, inject } from '@angular/core';
 
 import {
+  CommitFileChange,
   CommitInfo,
   ParsedRepoUrl,
   RefResolution,
@@ -69,6 +70,13 @@ export interface GitProvider {
 
   /** A single commit by sha — used to resolve parents for diffs/blame. */
   getCommit(slug: RepoSlug, sha: string): Promise<CommitInfo>;
+
+  /**
+   * Files touched by a commit, including provider-side rename detection
+   * (`previousPath`). Powers the rename-candidate search where a file's
+   * history ends.
+   */
+  getCommitFiles(slug: RepoSlug, sha: string): Promise<CommitFileChange[]>;
 
   webLinks(slug: RepoSlug, ref: string, path?: string): RepoWebLinks;
 }

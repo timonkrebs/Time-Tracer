@@ -1,4 +1,4 @@
-import { DiffOp, buildHunks, computeFileDiff, diffLines, splitLines } from './diff';
+import { DiffOp, buildHunks, computeFileDiff, diffLines, lineSimilarity, splitLines } from './diff';
 
 /** Brute-force LCS length — reference for checking minimality of the script. */
 function lcsLength(a: readonly string[], b: readonly string[]): number {
@@ -191,5 +191,20 @@ describe('computeFileDiff / buildHunks', () => {
     expect(diff.added).toBe(2);
     expect(diff.removed).toBe(0);
     expect(diff.hunks[0].ops.every((op) => op.kind === 'add')).toBe(true);
+  });
+});
+
+describe('lineSimilarity', () => {
+  it('is 1 for identical content and for two empty files', () => {
+    expect(lineSimilarity('a\nb\n', 'a\nb\n')).toBe(1);
+    expect(lineSimilarity('', '')).toBe(1);
+  });
+
+  it('is 0 for entirely different content', () => {
+    expect(lineSimilarity('a\nb\n', 'x\ny\n')).toBe(0);
+  });
+
+  it('reflects the shared fraction of lines', () => {
+    expect(lineSimilarity('a\nb\n', 'a\nb\nc\n')).toBeCloseTo(2 / 3);
   });
 });

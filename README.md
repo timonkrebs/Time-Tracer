@@ -41,13 +41,21 @@ commits and time travel (see `listCommits` on the provider interface).
 - **Blame annotations**: toggle *Blame* in the file view to annotate every line with the commit
   that introduced it (author · age, colour-coded older→newer, IntelliJ-style block grouping).
   Attribution is computed client-side by walking the file's history with the minimal diff,
-  streams in progressively, and works at any historical version — click an annotation to jump to
-  that commit's changes, then blame *that* version and keep digging: the first recursive
-  time-travel loop. Lines older than the loaded history pages are marked and resolve
-  incrementally as more pages load.
-- **Deep-linkable state**: `/r/:owner/:repo?ref=<ref>&path=<file>&at=<sha>&view=diff&blame=1` —
-  refresh, share, and use browser back/forward to step through previously viewed files,
-  historical versions, diffs and annotations.
+  streams in progressively, and works at any historical version. Lines older than the loaded
+  history pages are marked and resolve incrementally as more pages load.
+- **Recursive time travel, hunk by hunk**: clicking a blame annotation opens the introducing
+  commit's diff *scrolled to that exact line*; every hunk in a diff offers **◂ Before** — jump to
+  the parent version, annotated, at the hunk's old position. Blame → commit → before → blame
+  chains indefinitely, each step deep-linked (`line=` highlights and scrolls).
+- **Rename candidates**: where a file's recorded history ends, the History panel can search the
+  commit just before it for likely predecessors — GitHub's own rename detection, identical blobs
+  in the parent tree, and name/size/content-similarity heuristics, each ranked with a confidence
+  score. Picking a candidate continues the journey in the predecessor's own timeline (anchored at
+  its last change before the rename), with history, blame and steppers all working there.
+- **Deep-linkable state**:
+  `/r/:owner/:repo?ref=<ref>&path=<file>&at=<sha>&view=diff&blame=1&line=42` — refresh, share,
+  and use browser back/forward to step through previously viewed files, historical versions,
+  diffs and annotations.
 - **Honest file handling**: UTF-8 decoding, binary detection (NUL-byte heuristic, like git),
   a 2 MB size guard with a link out to GitHub, and per-snapshot content caching.
 - **Specific error states**: not found, invalid ref, empty repository, network failure, and
@@ -112,9 +120,12 @@ npm run build      # production build into dist/
    (minimal Myers diff engine in `core/util/diff.ts`, surfaced as the *Changes* view).
 3. ~~**Blame annotations** — per-line commit attribution in the line-number gutter.~~ ✅ Done
    (diff-walk attribution with progressive rendering; click an annotation to open the commit).
-4. **Recursive time travel polish** — blame → commit → blame already chains; next: per-hunk
-   "blame previous revision" shortcuts inside the changes view.
-5. **Rename candidates** — when a file's history ends, rank similar blobs from the parent commit
-   (size/content similarity) and offer them as places to continue the journey.
+4. ~~**Recursive time travel** — "blame previous revision" per hunk, IntelliJ-style.~~ ✅ Done
+   (line-targeted blame jumps + per-hunk ◂ Before).
+5. ~~**Rename candidates** — rank likely predecessors where a file's history ends.~~ ✅ Done
+   (provider rename detection + identical blobs + similarity heuristics, journey continues in the
+   predecessor's timeline).
 6. **Branch/ref switcher** — pick branches and tags from the viewer header (any ref already works
    via the `?ref=` query param).
+7. **Quality of life** — syntax highlighting, optional personal-access-token input for a higher
+   API budget, and GitLab/Bitbucket providers behind the existing `GitProvider` interface.

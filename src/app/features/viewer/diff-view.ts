@@ -1,7 +1,19 @@
-import { ChangeDetectionStrategy, Component, computed, input, output } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  ElementRef,
+  afterRenderEffect,
+  computed,
+  input,
+  output,
+  viewChild,
+} from '@angular/core';
 
 import { DiffState } from '../../core/store/repo-store';
 import { shortSha } from '../../core/util/relative-time';
+
+/** Line height of diff rows (`leading-6`), used for scroll/highlight maths. */
+const LINE_HEIGHT_PX = 24;
 
 interface DiffRow {
   readonly type: 'hunk' | 'add' | 'remove' | 'ctx';
@@ -9,12 +21,15 @@ interface DiffRow {
   readonly newNo: string;
   readonly marker: string;
   readonly text: string;
+  /** First old-side line of the hunk; only set for hunk header rows. */
+  readonly hunkOldStart?: number;
 }
 
 /**
  * Unified diff of what one commit changed in the selected file: dual line
- * number gutter, +/− markers, hunk headers. This rendering is the visual
- * primitive the blame view will reuse for "what did this commit introduce".
+ * number gutter, +/− markers, hunk headers. Each hunk offers "◂ Before" —
+ * jump to the parent version, annotated, at the hunk's old position — which
+ * is the per-hunk step of the recursive time travel.
  */
 @Component({
   selector: 'app-diff-view',
@@ -82,13 +97,29 @@ interface DiffRow {
           </p>
         </div>
       } @else {
-        <div class="slim-scrollbar min-h-0 flex-1 overflow-auto">
-          <div class="min-w-max font-mono text-[13px] leading-6">
+        <div #scroller class="slim-scrollbar min-h-0 flex-1 overflow-auto">
+          <div class="relative min-w-max font-mono text-[13px] leading-6">
+            @if (highlightRowIndex(); as hl) {
+              <div
+                class="pointer-events-none absolute inset-x-0 h-6 bg-indigo-500/10 ring-1 ring-indigo-400/40 ring-inset"
+                [style.top.px]="hl * 24"
+              ></div>
+            }
             @for (row of rows(); track $index) {
               @if (row.type === 'hunk') {
-                <div class="flex bg-sky-500/10 text-sky-300/80">
+                <div class="flex items-center bg-sky-500/10 text-sky-300/80">
                   <span class="w-24 shrink-0 select-none"></span>
                   <span class="px-4 whitespace-pre">{{ row.text }}</span>
+                  @if (canStepBefore()) {
+                    <button
+                      type="button"
+                      class="mr-4 ml-2 shrink-0 rounded border border-sky-300/30 px-1.5 text-[11px] leading-4 text-sky-200/90 transition hover:bg-sky-300/10"
+                      title="Annotate the version before this change, at this hunk"
+                      (click)="before.emit(row.hunkOldStart || 1)"
+                    >
+                      ◂ Before
+                    </button>
+                  }
                 </div>
               } @else {
                 <div
@@ -132,17 +163,35 @@ interface DiffRow {
 export class DiffView {
   readonly state = input.required<DiffState | null>();
   readonly path = input.required<string | null>();
+  /** 1-based new-side line to highlight and scroll to, if any. */
+  readonly highlightLine = input<number | null>(null);
 
   readonly retry = output<void>();
+  /** "Before this change": emits the hunk's first old-side line. */
+  readonly before = output<number>();
+
+  private readonly scroller = viewChild<ElementRef<HTMLElement>>('scroller');
 
   protected readonly skeletonWidths = [70, 45, 88, 60, 35, 78, 52];
+
+  protected readonly canStepBefore = computed(() => {
+    const s = this.state();
+    return s?.status === 'ready' && s.baseSha !== null;
+  });
 
   protected readonly rows = computed<DiffRow[]>(() => {
     const s = this.state();
     if (!s || s.status !== 'ready') return [];
     const rows: DiffRow[] = [];
     for (const hunk of s.diff.hunks) {
-      rows.push({ type: 'hunk', oldNo: '', newNo: '', marker: '', text: hunk.header });
+      rows.push({
+        type: 'hunk',
+        oldNo: '',
+        newNo: '',
+        marker: '',
+        text: hunk.header,
+        hunkOldStart: hunk.oldStart,
+      });
       for (const op of hunk.ops) {
         if (op.kind === 'equal') {
           rows.push({
@@ -173,6 +222,24 @@ export class DiffView {
     }
     return rows;
   });
+
+  /** Index of the row carrying the highlighted new-side line, if visible. */
+  protected readonly highlightRowIndex = computed<number | null>(() => {
+    const line = this.highlightLine();
+    if (!line) return null;
+    const target = String(line);
+    const index = this.rows().findIndex((row) => row.type !== 'remove' && row.newNo === target);
+    return index === -1 ? null : index;
+  });
+
+  constructor() {
+    afterRenderEffect(() => {
+      const index = this.highlightRowIndex();
+      const el = this.scroller()?.nativeElement;
+      if (index === null || !el) return;
+      el.scrollTop = Math.max(0, index * LINE_HEIGHT_PX - el.clientHeight / 3);
+    });
+  }
 
   protected abbrev(sha: string): string {
     return shortSha(sha);

@@ -9,6 +9,37 @@ import { ViewerPage } from './viewer-page';
 
 const NEW_SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
 const OLD_SHA = 'ffeeddccbbaa99887766554433221100ffeeddcc';
+const RENAME_SHA = 'beadfeedbeadfeedbeadfeedbeadfeedbeadfeed';
+
+const NEW_COMMIT = {
+  sha: NEW_SHA,
+  html_url: `https://github.com/acme/rocket/commit/${NEW_SHA}`,
+  commit: {
+    message: 'docs: update readme',
+    author: { name: 'Ada', email: 'ada@example.com', date: '2026-06-01T00:00:00Z' },
+  },
+  parents: [{ sha: OLD_SHA }],
+};
+
+const OLD_COMMIT = {
+  sha: OLD_SHA,
+  html_url: `https://github.com/acme/rocket/commit/${OLD_SHA}`,
+  commit: {
+    message: 'docs: initial readme',
+    author: { name: 'Grace', email: 'grace@example.com', date: '2026-01-01T00:00:00Z' },
+  },
+  parents: [],
+};
+
+const RENAME_COMMIT = {
+  sha: RENAME_SHA,
+  html_url: `https://github.com/acme/rocket/commit/${RENAME_SHA}`,
+  commit: {
+    message: 'refactor: rename thruster to engine',
+    author: { name: 'Ada', email: 'ada@example.com', date: '2026-03-01T00:00:00Z' },
+  },
+  parents: [{ sha: OLD_SHA }],
+};
 
 /**
  * Integration tests of the full viewer pipeline: route → input binding →
@@ -53,26 +84,14 @@ describe('ViewerPage (integration)', () => {
       content: btoa('export const thrust = 1;'),
       encoding: 'base64',
     },
-    '/repos/acme/rocket/commits': [
-      {
-        sha: NEW_SHA,
-        html_url: `https://github.com/acme/rocket/commit/${NEW_SHA}`,
-        commit: {
-          message: 'docs: update readme',
-          author: { name: 'Ada', email: 'ada@example.com', date: '2026-06-01T00:00:00Z' },
-        },
-        parents: [{ sha: OLD_SHA }],
-      },
-      {
-        sha: OLD_SHA,
-        html_url: `https://github.com/acme/rocket/commit/${OLD_SHA}`,
-        commit: {
-          message: 'docs: initial readme',
-          author: { name: 'Grace', email: 'grace@example.com', date: '2026-01-01T00:00:00Z' },
-        },
-        parents: [],
-      },
-    ],
+    // Per-path histories: engine.ts was created by a rename; thruster.ts is
+    // its predecessor, last touched at the root commit.
+    '/repos/acme/rocket/commits': (url: URL) => {
+      const path = url.searchParams.get('path');
+      if (path === 'src/engine.ts') return [RENAME_COMMIT];
+      if (path === 'src/thruster.ts') return [OLD_COMMIT];
+      return [NEW_COMMIT, OLD_COMMIT];
+    },
     '/repos/acme/rocket/contents/README.md': (url: URL) => {
       const ref = url.searchParams.get('ref');
       const text =
@@ -87,23 +106,48 @@ describe('ViewerPage (integration)', () => {
         encoding: 'base64',
       };
     },
-    [`/repos/acme/rocket/commits/${NEW_SHA}`]: {
-      sha: NEW_SHA,
-      html_url: `https://github.com/acme/rocket/commit/${NEW_SHA}`,
-      commit: {
-        message: 'docs: update readme',
-        author: { name: 'Ada', email: 'ada@example.com', date: '2026-06-01T00:00:00Z' },
-      },
-      parents: [{ sha: OLD_SHA }],
+    '/repos/acme/rocket/contents/src/engine.ts': (url: URL) => {
+      if (url.searchParams.get('ref') !== RENAME_SHA) return undefined;
+      return {
+        type: 'file',
+        path: 'src/engine.ts',
+        sha: 'blob1',
+        size: 24,
+        content: btoa('export const thrust = 1;'),
+        encoding: 'base64',
+      };
     },
-    [`/repos/acme/rocket/commits/${OLD_SHA}`]: {
-      sha: OLD_SHA,
-      html_url: `https://github.com/acme/rocket/commit/${OLD_SHA}`,
-      commit: {
-        message: 'docs: initial readme',
-        author: { name: 'Grace', email: 'grace@example.com', date: '2026-01-01T00:00:00Z' },
-      },
-      parents: [],
+    '/repos/acme/rocket/contents/src/thruster.ts': (url: URL) => {
+      if (url.searchParams.get('ref') !== OLD_SHA) return undefined;
+      return {
+        type: 'file',
+        path: 'src/thruster.ts',
+        sha: 'blob1',
+        size: 24,
+        content: btoa('export const thrust = 1;'),
+        encoding: 'base64',
+      };
+    },
+    [`/repos/acme/rocket/commits/${NEW_SHA}`]: NEW_COMMIT,
+    [`/repos/acme/rocket/commits/${OLD_SHA}`]: OLD_COMMIT,
+    [`/repos/acme/rocket/commits/${RENAME_SHA}`]: {
+      ...RENAME_COMMIT,
+      files: [
+        {
+          filename: 'src/engine.ts',
+          status: 'renamed',
+          previous_filename: 'src/thruster.ts',
+        },
+      ],
+    },
+    // The world just before engine.ts appeared.
+    [`/repos/acme/rocket/git/trees/${OLD_SHA}`]: {
+      truncated: false,
+      tree: [
+        { path: 'src', type: 'tree', sha: 'tree0' },
+        { path: 'src/thruster.ts', type: 'blob', sha: 'blob1', size: 24 },
+        { path: 'README.md', type: 'blob', sha: 'blob2', size: 17 },
+      ],
     },
   };
 
@@ -414,6 +458,60 @@ describe('ViewerPage (integration)', () => {
     await vi.waitFor(async () => {
       expect(router.url).toContain(`at=${OLD_SHA}`);
       expect(router.url).toContain('view=diff');
+      // The jump targets the line's position at the introducing commit.
+      expect(router.url).toContain('line=1');
+      expect(await textOnScreen()).toContain('initial commit — everything is new');
+    });
+  });
+
+  it('steps before a hunk into the annotated parent version', async () => {
+    await harness.navigateByUrl(`/r/acme/rocket?path=README.md&at=${NEW_SHA}&view=diff`);
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('@@ -1,1 +1,3 @@');
+    });
+
+    clickButton('◂ Before');
+
+    await vi.waitFor(async () => {
+      expect(router.url).toContain(`at=${OLD_SHA}`);
+      expect(router.url).toContain('view=file');
+      expect(router.url).toContain('blame=1');
+      expect(router.url).toContain('line=1');
+      const text = await textOnScreen();
+      expect(text).toContain('# Rocket v0');
+      expect(text).toContain('Grace ·'); // blame gutter of the parent version
+    });
+  });
+
+  it('continues past a rename into the predecessor file', async () => {
+    await harness.navigateByUrl('/r/acme/rocket?path=src%2Fengine.ts');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('export const thrust = 1;');
+    });
+
+    clickButton('History');
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('refactor: rename thruster to engine');
+      expect(text).toContain('Continue past the rename?');
+    });
+
+    clickButton('Continue past the rename?');
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('src/thruster.ts');
+      expect(text).toContain('100% match');
+      expect(text).toContain('rename');
+      expect(text).toContain('identical');
+    });
+
+    clickButton('src/thruster.ts');
+
+    await vi.waitFor(async () => {
+      expect(router.url).toContain('path=src%2Fthruster.ts');
+      expect(router.url).toContain(`at=${OLD_SHA}`);
+      // The predecessor's own timeline: a root commit, everything new.
       expect(await textOnScreen()).toContain('initial commit — everything is new');
     });
   });

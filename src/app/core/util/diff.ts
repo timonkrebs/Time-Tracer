@@ -266,3 +266,17 @@ export function buildHunks(ops: readonly DiffOp[], context: number): DiffHunk[] 
     return { oldStart, oldCount, newStart, newCount, header, ops: slice };
   });
 }
+
+/**
+ * Fraction of lines two texts share (0..1), based on the minimal diff.
+ * Used to rank rename candidates by content similarity.
+ */
+export function lineSimilarity(oldText: string, newText: string): number {
+  const oldLines = splitLines(oldText);
+  const newLines = splitLines(newText);
+  if (oldLines.length === 0 && newLines.length === 0) return 1;
+  const ops = diffLines(oldLines, newLines);
+  let equal = 0;
+  for (const op of ops) if (op.kind === 'equal') equal++;
+  return equal / Math.max(oldLines.length, newLines.length);
+}
