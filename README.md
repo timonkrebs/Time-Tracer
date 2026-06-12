@@ -1,5 +1,3 @@
-mkdir -p ~/.npm-global && npm config set prefix '~/.npm-global' && echo 'export PATH=~/.npm-global/bin:$PATH' >> ~/.bashrc && source ~/.bashrc
-
 # Time Tracer
 
 **Try it live: [gittimetracer.netlify.app](https://gittimetracer.netlify.app/)**
