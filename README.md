@@ -98,9 +98,15 @@ renames — see the feature list and roadmap below for what's done and what's ne
   a 2 MB size guard with a link out to GitHub, and per-snapshot content caching.
 - **Specific error states**: not found, invalid ref, empty repository, network failure, and
   GitHub's unauthenticated rate limit (with its reset time).
+- **Personal access tokens (optional)**: a collapsible section on the start page stores a GitHub
+  token (raises the API budget from 60 to 5,000 requests/hour and opens private repos with the
+  `repo` scope) and an Azure DevOps token (opens private projects, `Code (Read)` scope, sent as
+  Basic auth). Tokens live only in this browser's localStorage and go only to the matching
+  provider's API; rate-limit and access errors say when adding — or fixing — a token would help.
 - **Recent repositories** remembered locally (localStorage).
 
-> GitHub's unauthenticated API allows **60 requests/hour per IP**. Time Tracer uses one request
+> GitHub's unauthenticated API allows **60 requests/hour per IP** (5,000/hour with a personal
+> access token). Time Tracer uses one request
 > for metadata, one for the full tree, one per opened file (cached), one per history page and one
 > per time-travel hop (cached per commit), so normal browsing stays well within the budget. Blame
 > and Trace walk the same per-version cache, so annotating and filtering revisit versions for free.
@@ -176,5 +182,6 @@ npm run build      # production build into dist/
    via the `?ref=` query param).
 8. ~~**More sources** — GitLab provider and local folders behind the `GitProvider` interface.~~
    ✅ Done.
-9. **Quality of life** — syntax highlighting and an optional personal-access-token input for a
-   higher hosted-API budget.
+9. ~~**Access tokens** — an optional personal-access-token input for a higher hosted-API
+   budget.~~ ✅ Done (GitHub + Azure DevOps, stored locally, private repositories included).
+10. **Quality of life** — syntax highlighting.

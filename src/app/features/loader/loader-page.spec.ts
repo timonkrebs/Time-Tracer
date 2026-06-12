@@ -2,6 +2,7 @@ import { provideZonelessChangeDetection } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 
+import { AccessTokens } from '../../core/git/access-tokens';
 import { GIT_PROVIDERS } from '../../core/git/git-provider';
 import { GithubProvider } from '../../core/git/github/github-provider';
 import { GitlabProvider } from '../../core/git/gitlab/gitlab-provider';
@@ -122,5 +123,31 @@ describe('LoaderPage', () => {
 
     expect(navigateSpy).not.toHaveBeenCalled();
     expect((fixture.nativeElement as HTMLElement).textContent).toContain('Paste a repository URL');
+  });
+
+  it('stores personal access tokens typed into the tokens section', async () => {
+    const element = fixture.nativeElement as HTMLElement;
+    const toggle = Array.from(element.querySelectorAll('button')).find((b) =>
+      (b.textContent ?? '').includes('Personal access tokens'),
+    )!;
+    toggle.click();
+    await fixture.whenStable();
+
+    const githubInput = element.querySelector<HTMLInputElement>('#github-token')!;
+    githubInput.value = ' ghp_secret ';
+    githubInput.dispatchEvent(new Event('input'));
+    const azdInput = element.querySelector<HTMLInputElement>('#azd-token')!;
+    azdInput.value = 'azd-pat';
+    azdInput.dispatchEvent(new Event('input'));
+
+    const tokens = TestBed.inject(AccessTokens);
+    expect(tokens.tokenFor('github')).toBe('ghp_secret');
+    expect(tokens.tokenFor('azd')).toBe('azd-pat');
+    expect(localStorage.getItem('time-tracer.token.github')).toBe('ghp_secret');
+
+    // Clearing the field removes the stored token.
+    githubInput.value = '';
+    githubInput.dispatchEvent(new Event('input'));
+    expect(localStorage.getItem('time-tracer.token.github')).toBeNull();
   });
 });
