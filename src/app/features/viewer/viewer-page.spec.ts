@@ -547,6 +547,36 @@ describe('ViewerPage (integration)', () => {
     });
   });
 
+  it('traces a hunk to only the commits that changed its lines', async () => {
+    await harness.navigateByUrl(`/r/acme/rocket?path=README.md&at=${NEW_SHA}&view=diff`);
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('@@ -1,1 +1,3 @@');
+      expect(text).toContain('docs: initial readme'); // full history in the panel
+    });
+
+    clickButton('Trace');
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      // The hunk added lines 2–3; only the commit that introduced them stays.
+      expect(text).toContain('Tracing lines 2–3');
+      expect(text).toContain('docs: update readme');
+      expect(text).not.toContain('docs: initial readme');
+      expect(text).toContain('The oldest commit above introduced these lines.');
+    });
+
+    harness
+      .routeNativeElement!.querySelector<HTMLButtonElement>('[aria-label="Stop tracing"]')!
+      .click();
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).not.toContain('Tracing lines');
+      expect(text).toContain('docs: initial readme'); // full history is back
+    });
+  });
+
   it('omits Before when the commit created the file and keeps blame working', async () => {
     // engine.ts was created by the rename commit — there is nothing before.
     await harness.navigateByUrl(`/r/acme/rocket?path=src%2Fengine.ts&at=${RENAME_SHA}&view=diff`);

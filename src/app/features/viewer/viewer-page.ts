@@ -13,6 +13,7 @@ import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 
 import { LocalRepos } from '../../core/git/local/local-repos';
 import { RenameCandidate, RepoStore } from '../../core/store/repo-store';
+import { LineRange } from '../../core/util/line-range';
 import { relativeTime, shortSha } from '../../core/util/relative-time';
 import { DiffView } from './diff-view';
 import { FileHistory } from './file-history';
@@ -384,6 +385,7 @@ const HISTORY_OPEN_KEY = 'time-tracer.history-open';
                 [beforeAvailable]="hunkBeforeAvailable()"
                 (retry)="onDiffRetry()"
                 (before)="onHunkBefore($event)"
+                (trace)="onHunkTrace($event)"
                 (blameToggle)="toggleBlame()"
                 (blameSelect)="onBlameSelect($event)"
                 (historyToggle)="toggleHistory()"
@@ -416,12 +418,15 @@ const HISTORY_OPEN_KEY = 'time-tracer.history-open';
                 [hasMore]="store.historyHasMore()"
                 [selectedSha]="store.viewAt()"
                 [renames]="store.selectedRenames()"
+                [trace]="store.lineTrace()"
                 (commitSelect)="goToCommit($event)"
                 (loadMore)="store.loadMoreHistory()"
                 (retry)="store.retryHistory()"
                 (closed)="toggleHistory()"
                 (findRenames)="onFindRenames()"
                 (candidateSelect)="onCandidateSelect($event)"
+                (traceClear)="store.clearLineTrace()"
+                (traceOlder)="store.extendLineTrace()"
               />
             </aside>
           }
@@ -697,6 +702,19 @@ export class ViewerPage {
       blame: '1',
       line: Math.max(1, target.oldStart),
     });
+  }
+
+  /**
+   * "Trace" on a hunk: filter the history panel to the commits that changed
+   * the hunk's lines, anchored at the viewed commit. Opens the panel so the
+   * filtered list is visible right away.
+   */
+  protected onHunkTrace(range: LineRange): void {
+    const path = this.store.selectedPath();
+    const at = this.store.viewAt();
+    if (!path || !at) return;
+    if (!this.historyOpen()) this.toggleHistory();
+    void this.store.startLineTrace(path, at, range);
   }
 
   protected onFindRenames(): void {

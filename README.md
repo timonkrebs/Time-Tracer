@@ -1,3 +1,5 @@
+mkdir -p ~/.npm-global     && npm config set prefix '~/.npm-global'     && echo 'export PATH=~/.npm-global/bin:$PATH' >> ~/.bashrc && source ~/.bashrc
+
 # Time Tracer
 
 Explore any public GitHub, GitLab or Azure DevOps repository — or a git repository from your own
@@ -17,9 +19,9 @@ The end goal is an interactive **git blame explorer** in the spirit of IntelliJ'
   Tracer will present a ranked list of **candidate predecessor files** so the journey back in time
   can continue across renames and code moves.
 
-The current milestone is the foundation for that: loading a repository, resolving refs, browsing
-the tree and reading file contents — with domain models and provider APIs already shaped around
-commits and time travel (see `listCommits` on the provider interface).
+Both halves of that vision are now in place: hunk-level time travel (◂ Before, blame chains and
+the per-hunk *Trace* history filter) and rename candidates that continue the journey across
+renames — see the feature list and roadmap below for what's done and what's next.
 
 ## Current features
 
@@ -39,7 +41,7 @@ commits and time travel (see `listCommits` on the provider interface).
   "Imported from …" commit so browsing, diffing and annotating work uniformly. Wrapper folders
   like `repo-main/` are stripped automatically.
 - **Desktop-first split-pane viewer**: resizable file tree (drag the divider, double-click to
-  reset) next to a file view with a line-number gutter — the future home of blame annotations.
+  reset) next to a file view with a line-number gutter that carries the blame annotations.
 - **Per-file commit history**: a History panel lists the commits that touched the selected file
   (paginated), with author and relative date. Its open/closed state is remembered, so it can stay
   open permanently across files and sessions.
@@ -64,6 +66,15 @@ commits and time travel (see `listCommits` on the provider interface).
   commit's diff *scrolled to that exact line*; every hunk in a diff offers **◂ Before** — jump to
   the parent version, annotated, at the hunk's old position. Blame → commit → before → blame
   chains indefinitely, each step deep-linked (`line=` highlights and scrolls).
+- **Per-hunk history filter ("Trace")**: every hunk also offers **Trace** — the History panel
+  narrows to only the commits that ever changed that hunk's lines, `git log -L` in the browser.
+  The hunk's line range is followed backwards through every version with the same minimal diff
+  blame uses (client-side, so it works for all providers): edits above shift the range,
+  replacements expand it over the replaced block, and the walk stops at the commit that
+  introduced the lines. Matches stream in as they are found, the walk pauses at the end of the
+  loaded history pages ("Search older commits" continues it), and a banner shows the traced
+  range with a one-click way back to the full history. Clicking a filtered commit time-travels
+  as usual — stepping through exactly the commits that shaped those lines.
 - **Rename candidates**: where a file's recorded history ends, the History panel can search the
   commit just before it for likely predecessors — GitHub's own rename detection, identical blobs
   in the parent tree, and name/size/content-similarity heuristics, each ranked with a confidence
@@ -81,7 +92,8 @@ commits and time travel (see `listCommits` on the provider interface).
 
 > GitHub's unauthenticated API allows **60 requests/hour per IP**. Time Tracer uses one request
 > for metadata, one for the full tree, one per opened file (cached), one per history page and one
-> per time-travel hop (cached per commit), so normal browsing stays well within the budget.
+> per time-travel hop (cached per commit), so normal browsing stays well within the budget. Blame
+> and Trace walk the same per-version cache, so annotating and filtering revisit versions for free.
 
 ## Tech stack
 
@@ -110,7 +122,7 @@ src/app/
 │   │   ├── repo-store.ts    # signals store: load lifecycle, tree, selection, file +
 │   │   │                    # history caches, time-travel (viewAt) state
 │   │   └── recent-repos.ts  # localStorage-backed recents
-│   └── util/                # pure helpers: tree building, decoding, relative time
+│   └── util/                # pure helpers: tree building, decoding, diffing, line-range tracking
 └── features/
     ├── loader/              # landing page with URL form, examples, recents
     └── viewer/              # split pane: header, file tree, file view, history panel
@@ -147,9 +159,11 @@ npm run build      # production build into dist/
 5. ~~**Rename candidates** — rank likely predecessors where a file's history ends.~~ ✅ Done
    (provider rename detection + identical blobs + similarity heuristics, journey continues in the
    predecessor's timeline).
-6. **Branch/ref switcher** — pick branches and tags from the viewer header (any ref already works
+6. ~~**Per-hunk history filter** — trace a hunk's lines through time, `git log -L`-style.~~
+   ✅ Done (range-tracking walk in `core/util/line-range.ts`, surfaced as *Trace* on every hunk).
+7. **Branch/ref switcher** — pick branches and tags from the viewer header (any ref already works
    via the `?ref=` query param).
-7. ~~**More sources** — GitLab provider and local folders behind the `GitProvider` interface.~~
+8. ~~**More sources** — GitLab provider and local folders behind the `GitProvider` interface.~~
    ✅ Done.
-8. **Quality of life** — syntax highlighting and an optional personal-access-token input for a
+9. **Quality of life** — syntax highlighting and an optional personal-access-token input for a
    higher hosted-API budget.

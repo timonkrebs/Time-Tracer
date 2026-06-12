@@ -13,6 +13,7 @@ import {
   toRepoProviderError,
 } from '../models';
 import { FileDiff, computeFileDiff, diffLines, lineSimilarity, splitLines } from '../util/diff';
+import { LineRange, changeRegions, mapRangeToParent, regionTouchesRange } from '../util/line-range';
 import { ancestorsOf, buildTree } from '../util/tree';
 import { RecentRepos } from './recent-repos';
 
@@ -83,6 +84,28 @@ export interface BlameState {
   readonly message?: string;
 }
 
+/**
+ * Async state of the per-hunk history filter: a line range anchored at one
+ * version, followed backwards through the file's history (the moral
+ * equivalent of `git log -L`). Only commits whose diff touched the tracked
+ * range are collected.
+ */
+export interface LineTraceState {
+  readonly status: 'computing' | 'ready' | 'error';
+  readonly path: string;
+  /** Commit whose version the range coordinates refer to. */
+  readonly anchorSha: string;
+  /** 1-based inclusive line range at the anchor version. */
+  readonly range: LineRange;
+  /** Commits that changed lines inside the tracked range, newest first. */
+  readonly commits: readonly CommitInfo[];
+  /** History steps examined so far — progress feedback while computing. */
+  readonly scanned: number;
+  /** True when the walk paused at the end of the loaded history pages. */
+  readonly truncated: boolean;
+  readonly message?: string;
+}
+
 interface HistorySnapshot {
   commits: readonly CommitInfo[];
   hasMore: boolean;
@@ -142,6 +165,13 @@ export class RepoStore {
   private readonly _historyHasMore = signal(false);
   private historyPage = 1;
 
+  /** The active per-hunk history filter, if any (one at a time). */
+  private readonly _lineTrace = signal<LineTraceState | null>(null);
+  /** Bumped to cancel a superseded or cleared trace walk. */
+  private traceRun = 0;
+  /** Where a truncated trace walk continues once more history is loaded. */
+  private traceResume: { index: number; range: LineRange } | null = null;
+
   readonly phase = this._phase.asReadonly();
   readonly error = this._error.asReadonly();
   readonly slug = this._slug.asReadonly();
@@ -156,6 +186,7 @@ export class RepoStore {
   readonly historyStatus = this._historyStatus.asReadonly();
   readonly historyError = this._historyError.asReadonly();
   readonly historyHasMore = this._historyHasMore.asReadonly();
+  readonly lineTrace = this._lineTrace.asReadonly();
 
   /** Ref shown in the viewer: the requested one, or the default branch. */
   readonly ref = computed(() => this._requestedRef() ?? this._metadata()?.defaultBranch ?? null);
@@ -247,6 +278,7 @@ export class RepoStore {
     this.inflight.clear();
     this._error.set(null);
     this.resetHistory();
+    this.clearLineTrace();
     this._phase.set('metadata');
 
     try {
@@ -289,6 +321,9 @@ export class RepoStore {
    */
   async openFile(path: string, at?: string | null): Promise<void> {
     const atRef = at ?? null;
+    // The hunk filter belongs to one file's timeline; switching files ends it.
+    const trace = this._lineTrace();
+    if (trace && trace.path !== path) this.clearLineTrace();
     this._selectedPath.set(path);
     this._viewAt.set(atRef);
     this.revealPath(path);
@@ -646,6 +681,189 @@ export class RepoStore {
   }
 
   /**
+   * Filters the history panel to the commits that changed a line range:
+   * starting at `anchorSha` (whose version the range refers to), the file's
+   * history is walked pairwise with the minimal diff — `git log -L` in
+   * spirit. A commit is kept when its step touched the tracked range; the
+   * range is then remapped onto the older version and followed further.
+   * The walk ends where the range was introduced, or pauses at the end of
+   * the loaded history pages ({@link extendLineTrace} continues it).
+   */
+  async startLineTrace(path: string, anchorSha: string, range: LineRange): Promise<void> {
+    if (!this._slug() || this._phase() !== 'ready') return;
+    const active = this._lineTrace();
+    if (
+      active &&
+      active.status !== 'error' &&
+      active.path === path &&
+      active.anchorSha === anchorSha &&
+      active.range.start === range.start &&
+      active.range.end === range.end
+    ) {
+      return;
+    }
+
+    const run = ++this.traceRun;
+    this.traceResume = null;
+    this._lineTrace.set({
+      status: 'computing',
+      path,
+      anchorSha,
+      range,
+      commits: [],
+      scanned: 0,
+      truncated: false,
+    });
+    const fail = (message: string): void =>
+      this._lineTrace.set({ ...this._lineTrace()!, status: 'error', message });
+
+    const seq = this.loadSeq;
+    await this.loadHistory(path);
+    if (seq !== this.loadSeq || run !== this.traceRun) return;
+    if (this._historyPath() !== path || this._historyStatus() !== 'ready') {
+      fail(this._historyError() ?? 'The file history could not be loaded.');
+      return;
+    }
+    const anchor = this._history().findIndex((c) => c.sha === anchorSha);
+    if (anchor === -1) {
+      fail('This version is not part of the loaded history of the file.');
+      return;
+    }
+    await this.walkLineTrace(run, path, anchor, range);
+  }
+
+  /** Continues a trace that paused at the end of the loaded history pages. */
+  async extendLineTrace(): Promise<void> {
+    const state = this._lineTrace();
+    const resume = this.traceResume;
+    if (!state || state.status !== 'ready' || !state.truncated || !resume) return;
+
+    const run = ++this.traceRun;
+    this._lineTrace.set({ ...state, status: 'computing', truncated: false });
+    const seq = this.loadSeq;
+    await this.loadMoreHistory();
+    if (seq !== this.loadSeq || run !== this.traceRun || !this._lineTrace()) return;
+    if (this._historyStatus() !== 'ready') {
+      this._lineTrace.set({
+        ...this._lineTrace()!,
+        status: 'error',
+        message: this._historyError() ?? 'More history could not be loaded.',
+      });
+      return;
+    }
+    await this.walkLineTrace(run, state.path, resume.index, resume.range);
+  }
+
+  /** Drops the per-hunk history filter and any walk still running. */
+  clearLineTrace(): void {
+    this.traceRun++;
+    this.traceResume = null;
+    this._lineTrace.set(null);
+  }
+
+  /**
+   * The trace walk itself: examines pairs `(history[i], history[i+1])` from
+   * `index` on, collecting touching commits and publishing after every step
+   * so matches appear as they are found. One (cached) file request per step,
+   * shared with blame and the diff views.
+   */
+  private async walkLineTrace(
+    run: number,
+    path: string,
+    index: number,
+    range: LineRange,
+  ): Promise<void> {
+    const seq = this.loadSeq;
+    const live = (): boolean =>
+      seq === this.loadSeq && run === this.traceRun && this._lineTrace() !== null;
+
+    const state = this._lineTrace()!;
+    const commits = [...state.commits];
+    let scanned = state.scanned;
+    const publish = (patch: Partial<LineTraceState>): void =>
+      this._lineTrace.set({ ...this._lineTrace()!, commits: [...commits], scanned, ...patch });
+    const finish = (): void => {
+      this.traceResume = null;
+      publish({ status: 'ready', truncated: false });
+    };
+
+    let newerLines: readonly string[] | null = null;
+    let r = range;
+    for (let i = index; ; i++) {
+      const newer = this._history()[i];
+      const older = this._history()[i + 1];
+
+      if (!older) {
+        if (this._historyHasMore()) {
+          this.traceResume = { index: i, range: r };
+          publish({ status: 'ready', truncated: true });
+          return;
+        }
+        // Complete history: the oldest commit introduced the tracked lines.
+        commits.push(newer);
+        finish();
+        return;
+      }
+
+      if (newerLines === null) {
+        const newerFile = await this.ensureFile(path, newer.sha);
+        if (!live()) return;
+        if (newerFile.status !== 'ready') {
+          publish({
+            status: 'error',
+            message:
+              newerFile.status === 'error'
+                ? newerFile.message
+                : 'The file content could not be loaded.',
+          });
+          return;
+        }
+        if (newerFile.file.kind !== 'text') {
+          publish({ status: 'error', message: 'Tracing is only available for text files.' });
+          return;
+        }
+        newerLines = splitLines(newerFile.file.text);
+      }
+
+      const olderFile = await this.ensureFile(path, older.sha);
+      if (!live()) return;
+      if (olderFile.status !== 'ready') {
+        publish({
+          status: 'error',
+          message:
+            olderFile.status === 'error'
+              ? olderFile.message
+              : 'A previous version could not be loaded.',
+        });
+        return;
+      }
+      if (olderFile.file.kind !== 'text') {
+        // The file was binary before this point; `newer` (re)introduced the
+        // text lines, so the trail ends with it.
+        commits.push(newer);
+        scanned++;
+        finish();
+        return;
+      }
+
+      const olderLines = splitLines(olderFile.file.text);
+      const regions = changeRegions(diffLines(olderLines, newerLines));
+      if (regions.some((region) => regionTouchesRange(region, r))) commits.push(newer);
+      scanned++;
+
+      const mapped = mapRangeToParent(regions, r);
+      if (!mapped) {
+        // The whole range was introduced by `newer` — nothing older to follow.
+        finish();
+        return;
+      }
+      r = mapped;
+      newerLines = olderLines;
+      publish({ status: 'computing' });
+    }
+  }
+
+  /**
    * Searches for predecessor files where `path`'s recorded history ends:
    * the provider's own rename detection at the creating commit, identical
    * blobs in the parent commit's tree, and heuristically similar files
@@ -834,6 +1052,7 @@ export class RepoStore {
   clearSelection(): void {
     this._selectedPath.set(null);
     this._viewAt.set(null);
+    this.clearLineTrace();
   }
 
   toggleDir(path: string): void {

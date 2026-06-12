@@ -616,6 +616,125 @@ describe('RepoStore', () => {
     });
   });
 
+  describe('line trace (startLineTrace)', () => {
+    beforeEach(async () => {
+      await store.loadRepo(slug);
+    });
+
+    function text(path: string, sha: string, content: string): Promise<RepoFile> {
+      return Promise.resolve({ kind: 'text', path, sha, size: content.length, text: content });
+    }
+
+    function traceShas(): string[] {
+      return (store.lineTrace()?.commits ?? []).map((c) => c.sha);
+    }
+
+    it('keeps only the commits that changed the traced lines', async () => {
+      provider.listCommitsResult = () =>
+        Promise.resolve([commit('c3'), commit('c2'), commit('c1')]);
+      // c1: A B C — c2 appends D (line 2 untouched) — c3 rewrites line 2.
+      provider.fileAtRefResult = (path, ref) =>
+        text(
+          path,
+          `blob-${ref}`,
+          ref === 'c3' ? 'A\nX\nC\nD\n' : ref === 'c2' ? 'A\nB\nC\nD\n' : 'A\nB\nC\n',
+        );
+
+      await store.openFile('README.md', 'c3');
+      await store.startLineTrace('README.md', 'c3', { start: 2, end: 2 });
+
+      const state = store.lineTrace();
+      expect(state?.status).toBe('ready');
+      expect(state?.truncated).toBe(false);
+      // c2 only appended a line below the range — filtered out; c1 (the
+      // oldest known commit) introduced the file and with it the range.
+      expect(traceShas()).toEqual(['c3', 'c1']);
+    });
+
+    it('ends the walk where the traced lines were introduced', async () => {
+      provider.listCommitsResult = () =>
+        Promise.resolve([commit('c3'), commit('c2'), commit('c1')]);
+      // c2 inserted lines 2–3; c3 edited line 2. c1 never contained them.
+      provider.fileAtRefResult = (path, ref) =>
+        text(
+          path,
+          `blob-${ref}`,
+          ref === 'c3' ? 'A\nN1x\nN2\n' : ref === 'c2' ? 'A\nN1\nN2\n' : 'A\n',
+        );
+
+      await store.openFile('README.md', 'c3');
+      await store.startLineTrace('README.md', 'c3', { start: 2, end: 2 });
+
+      const state = store.lineTrace();
+      expect(state?.status).toBe('ready');
+      expect(state?.truncated).toBe(false);
+      expect(traceShas()).toEqual(['c3', 'c2']);
+    });
+
+    it('pauses at the end of the loaded pages and continues on demand', async () => {
+      // One full page ⇒ hasMore. Nothing in it touches line 1.
+      const pageOne = Array.from({ length: 30 }, (_, i) => commit(`c${i}`));
+      provider.listCommitsResult = () => Promise.resolve(pageOne);
+      provider.fileAtRefResult = (path, ref) =>
+        text(path, `blob-${ref}`, ref === 'c30' ? 'A\n' : 'A\nB\n');
+
+      await store.openFile('README.md', 'c0');
+      await store.startLineTrace('README.md', 'c0', { start: 1, end: 1 });
+
+      let state = store.lineTrace();
+      expect(state?.status).toBe('ready');
+      expect(state?.truncated).toBe(true);
+      expect(state?.commits).toEqual([]);
+
+      // The next page ends the history; the walk resumes and finds that
+      // c30 created the file (and so introduced line 1). c29's step only
+      // added line 2 — still filtered out.
+      provider.listCommitsResult = () => Promise.resolve([commit('c30')]);
+      await store.extendLineTrace();
+
+      state = store.lineTrace();
+      expect(state?.status).toBe('ready');
+      expect(state?.truncated).toBe(false);
+      expect(traceShas()).toEqual(['c30']);
+    });
+
+    it('errors when the anchor is not part of the loaded history', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c1')]);
+
+      await store.openFile('README.md', 'ghost');
+      await store.startLineTrace('README.md', 'ghost', { start: 1, end: 1 });
+
+      expect(store.lineTrace()).toMatchObject({ status: 'error' });
+    });
+
+    it('survives time travel within the file but not a file switch', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c2'), commit('c1')]);
+      provider.fileAtRefResult = (path, ref) =>
+        text(path, `blob-${ref}`, ref === 'c2' ? 'A\nB\n' : 'A\n');
+
+      await store.openFile('README.md', 'c2');
+      await store.startLineTrace('README.md', 'c2', { start: 1, end: 1 });
+      expect(store.lineTrace()?.status).toBe('ready');
+
+      await store.openFile('README.md', 'c1');
+      expect(store.lineTrace()).not.toBeNull();
+
+      await store.openFile('src/deep/main.ts');
+      expect(store.lineTrace()).toBeNull();
+    });
+
+    it('is cleared by a new repository load', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c1')]);
+      await store.openFile('README.md', 'c1');
+      await store.startLineTrace('README.md', 'c1', { start: 1, end: 1 });
+      expect(store.lineTrace()).not.toBeNull();
+
+      await store.loadRepo({ provider: 'github', owner: 'other', repo: 'repo' });
+
+      expect(store.lineTrace()).toBeNull();
+    });
+  });
+
   describe('rename candidates (loadRenameCandidates)', () => {
     function parentTree(): RepoTree {
       return {

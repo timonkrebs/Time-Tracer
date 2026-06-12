@@ -10,6 +10,7 @@ import {
 } from '@angular/core';
 
 import { BlameState, DiffState } from '../../core/store/repo-store';
+import { LineRange, hunkChangedRange } from '../../core/util/line-range';
 import { shortSha } from '../../core/util/relative-time';
 import { AnnotationCell, buildAnnotationCells } from './blame-annotation';
 
@@ -25,6 +26,8 @@ interface DiffRow {
   /** First old/new-side lines of the hunk; only set for hunk header rows. */
   readonly hunkOldStart?: number;
   readonly hunkNewStart?: number;
+  /** New-side range of the hunk's actual changes; only on hunk header rows. */
+  readonly hunkRange?: LineRange | null;
 }
 
 interface SplitCell {
@@ -38,6 +41,8 @@ interface SplitRow {
   readonly header?: string;
   readonly hunkOldStart?: number;
   readonly hunkNewStart?: number;
+  /** New-side range of the hunk's actual changes; only on hunk header rows. */
+  readonly hunkRange?: LineRange | null;
   readonly left: SplitCell | null;
   readonly right: SplitCell | null;
 }
@@ -52,6 +57,8 @@ interface SplitRow {
  *
  * Each hunk offers "◂ Before" — jump to the parent version, annotated, at
  * the hunk's old position — the per-hunk step of the recursive time travel.
+ * "Trace" filters the history panel to the commits that changed the hunk's
+ * lines, following the range backwards through every version.
  */
 @Component({
   selector: 'app-diff-view',
@@ -206,7 +213,7 @@ interface SplitRow {
                   @if (canStepBefore()) {
                     <button
                       type="button"
-                      class="mr-4 ml-2 shrink-0 rounded border border-sky-300/30 px-1.5 text-[11px] leading-4 text-sky-200/90 transition hover:bg-sky-300/10"
+                      class="ml-2 shrink-0 rounded border border-sky-300/30 px-1.5 text-[11px] leading-4 text-sky-200/90 transition hover:bg-sky-300/10"
                       title="Annotate the version before this change, at this hunk"
                       (click)="
                         before.emit({
@@ -216,6 +223,16 @@ interface SplitRow {
                       "
                     >
                       ◂ Before
+                    </button>
+                  }
+                  @if (row.hunkRange; as range) {
+                    <button
+                      type="button"
+                      class="mr-4 ml-2 shrink-0 rounded border border-sky-300/30 px-1.5 text-[11px] leading-4 text-sky-200/90 transition hover:bg-sky-300/10"
+                      title="Filter the history to the commits that changed these lines"
+                      (click)="trace.emit(range)"
+                    >
+                      Trace
                     </button>
                   }
                 </div>
@@ -315,7 +332,7 @@ interface SplitRow {
                   @if (canStepBefore()) {
                     <button
                       type="button"
-                      class="mr-4 ml-2 shrink-0 rounded border border-sky-300/30 px-1.5 text-[11px] leading-4 text-sky-200/90 transition hover:bg-sky-300/10"
+                      class="ml-2 shrink-0 rounded border border-sky-300/30 px-1.5 text-[11px] leading-4 text-sky-200/90 transition hover:bg-sky-300/10"
                       title="Annotate the version before this change, at this hunk"
                       (click)="
                         before.emit({
@@ -325,6 +342,16 @@ interface SplitRow {
                       "
                     >
                       ◂ Before
+                    </button>
+                  }
+                  @if (row.hunkRange; as range) {
+                    <button
+                      type="button"
+                      class="mr-4 ml-2 shrink-0 rounded border border-sky-300/30 px-1.5 text-[11px] leading-4 text-sky-200/90 transition hover:bg-sky-300/10"
+                      title="Filter the history to the commits that changed these lines"
+                      (click)="trace.emit(range)"
+                    >
+                      Trace
                     </button>
                   }
                 </div>
@@ -389,6 +416,8 @@ export class DiffView {
   readonly historyToggle = output<void>();
   /** "Before this change": the hunk's first old- and new-side lines. */
   readonly before = output<{ oldStart: number; newStart: number }>();
+  /** "Trace" on a hunk: filter the history to this new-side line range. */
+  readonly trace = output<LineRange>();
   readonly blameToggle = output<void>();
   /** A clicked annotation: the commit plus the line's position at it. */
   readonly blameSelect = output<{ sha: string; line: number }>();
@@ -421,6 +450,7 @@ export class DiffView {
         text: hunk.header,
         hunkOldStart: hunk.oldStart,
         hunkNewStart: hunk.newStart,
+        hunkRange: hunkChangedRange(hunk),
       });
       for (const op of hunk.ops) {
         if (op.kind === 'equal') {
@@ -464,6 +494,7 @@ export class DiffView {
         header: hunk.header,
         hunkOldStart: hunk.oldStart,
         hunkNewStart: hunk.newStart,
+        hunkRange: hunkChangedRange(hunk),
         left: null,
         right: null,
       });
