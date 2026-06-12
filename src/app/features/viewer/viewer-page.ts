@@ -720,11 +720,7 @@ export class ViewerPage {
     });
   }
 
-  /**
-   * "Trace" on a hunk: filter the history panel to the commits that changed
-   * the hunk's lines, anchored at the viewed commit. Opens the panel so the
-   * filtered list is visible right away.
-   */
+  /** Trace a new-side line range, anchored at the viewed commit. */
   protected onHunkTrace(range: LineRange): void {
     const path = this.store.selectedPath();
     const at = this.store.viewAt();

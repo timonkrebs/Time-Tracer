@@ -72,6 +72,14 @@ export function regionTouchesRange(region: ChangeRegion, range: LineRange): bool
   return region.newStart <= range.end && last >= range.start;
 }
 
+/** New-side trace range for one contiguous change run. */
+export function changeRegionRange(region: ChangeRegion): LineRange {
+  if (region.newCount > 0) {
+    return { start: region.newStart, end: region.newStart + region.newCount - 1 };
+  }
+  return { start: Math.max(1, region.newStart - 1), end: region.newStart };
+}
+
 /**
  * Maps a new-side range onto the old side of the same diff. An edge that
  * falls inside a replaced block expands to the block's old extent (as
@@ -114,27 +122,23 @@ function mapEdge(regions: readonly ChangeRegion[], line: number, edge: 'start' |
  * are not included. For a removal at the very end of the file the range
  * deliberately reaches one line past it — that is where the gap lies.
  */
-export function hunkChangedRange(hunk: DiffHunk): LineRange | null {
-  let min = Infinity;
-  let max = -Infinity;
-  const mark = (line: number): void => {
-    if (line < min) min = line;
-    if (line > max) max = line;
-  };
-  // Position the next new-side line would have, tracked through the ops.
+export function hunkChangeRanges(hunk: DiffHunk): LineRange[] {
+  const ranges: LineRange[] = [];
   let nextNew = hunk.newCount > 0 ? hunk.newStart : hunk.newStart + 1;
   let inRun = false;
   let runHasAdd = false;
   let runGap = 0;
+  let min = Infinity;
+  let max = -Infinity;
+
   const closeRun = (): void => {
-    // A run with adds is covered by them; a pure removal between new lines
-    // `runGap - 1` and `runGap` is covered by marking both neighbours.
-    if (inRun && !runHasAdd) {
-      mark(Math.max(1, runGap - 1));
-      mark(runGap);
-    }
+    if (!inRun) return;
+    ranges.push(
+      runHasAdd ? { start: min, end: max } : { start: Math.max(1, runGap - 1), end: runGap },
+    );
     inRun = false;
   };
+
   for (const op of hunk.ops) {
     if (op.kind === 'equal') {
       closeRun();
@@ -145,13 +149,25 @@ export function hunkChangedRange(hunk: DiffHunk): LineRange | null {
       inRun = true;
       runHasAdd = false;
       runGap = nextNew;
+      min = Infinity;
+      max = -Infinity;
     }
     if (op.kind === 'add') {
       runHasAdd = true;
-      mark(op.newLine);
+      min = Math.min(min, op.newLine);
+      max = Math.max(max, op.newLine);
       nextNew = op.newLine + 1;
     }
   }
   closeRun();
-  return min === Infinity ? null : { start: min, end: max };
+  return ranges;
+}
+
+export function hunkChangedRange(hunk: DiffHunk): LineRange | null {
+  const ranges = hunkChangeRanges(hunk);
+  if (ranges.length === 0) return null;
+  return {
+    start: Math.min(...ranges.map((range) => range.start)),
+    end: Math.max(...ranges.map((range) => range.end)),
+  };
 }

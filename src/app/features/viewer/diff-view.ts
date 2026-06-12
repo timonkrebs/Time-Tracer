@@ -6,11 +6,12 @@ import {
   computed,
   input,
   output,
+  signal,
   viewChild,
 } from '@angular/core';
 
 import { BlameState, DiffState } from '../../core/store/repo-store';
-import { LineRange, hunkChangedRange } from '../../core/util/line-range';
+import { LineRange, hunkChangeRanges } from '../../core/util/line-range';
 import { shortSha } from '../../core/util/relative-time';
 import { AnnotationCell, buildAnnotationCells } from './blame-annotation';
 
@@ -23,11 +24,11 @@ interface DiffRow {
   readonly newNo: string;
   readonly marker: string;
   readonly text: string;
+  readonly newLine?: number;
+  readonly traceRange?: LineRange;
   /** First old/new-side lines of the hunk; only set for hunk header rows. */
   readonly hunkOldStart?: number;
   readonly hunkNewStart?: number;
-  /** New-side range of the hunk's actual changes; only on hunk header rows. */
-  readonly hunkRange?: LineRange | null;
 }
 
 interface SplitCell {
@@ -41,8 +42,7 @@ interface SplitRow {
   readonly header?: string;
   readonly hunkOldStart?: number;
   readonly hunkNewStart?: number;
-  /** New-side range of the hunk's actual changes; only on hunk header rows. */
-  readonly hunkRange?: LineRange | null;
+  readonly traceRange?: LineRange;
   readonly left: SplitCell | null;
   readonly right: SplitCell | null;
 }
@@ -57,8 +57,7 @@ interface SplitRow {
  *
  * Each hunk offers "◂ Before" — jump to the parent version, annotated, at
  * the hunk's old position — the per-hunk step of the recursive time travel.
- * "Trace" filters the history panel to the commits that changed the hunk's
- * lines, following the range backwards through every version.
+ * "Trace" filters history to one change run or a selected new-side line range.
  */
 @Component({
   selector: 'app-diff-view',
@@ -87,6 +86,27 @@ interface SplitRow {
           </span>
         }
         <span class="flex-1"></span>
+        @if (selectedRange(); as range) {
+          <span class="shrink-0 text-[11px] text-indigo-300/80">
+            {{ rangeLabel(range) }}
+          </span>
+          <button
+            type="button"
+            class="shrink-0 rounded border border-indigo-300/30 px-1.5 py-0.5 text-[11px] text-indigo-100 transition hover:bg-indigo-300/10"
+            (click)="traceSelection()"
+          >
+            Trace selection
+          </button>
+          <button
+            type="button"
+            class="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-zinc-500 transition hover:bg-zinc-800 hover:text-zinc-200"
+            aria-label="Clear line selection"
+            title="Clear line selection"
+            (click)="clearSelection()"
+          >
+            ×
+          </button>
+        }
         @if (blameComputing()) {
           <span class="shrink-0 text-[11px] text-indigo-300/80">annotating…</span>
         }
@@ -240,16 +260,6 @@ interface SplitRow {
                       ◂ Before
                     </button>
                   }
-                  @if (row.hunkRange; as range) {
-                    <button
-                      type="button"
-                      class="mr-4 ml-2 shrink-0 rounded border border-sky-300/30 px-1.5 text-[11px] leading-4 text-sky-200/90 transition hover:bg-sky-300/10"
-                      title="Filter the history to the commits that changed these lines"
-                      (click)="trace.emit(range)"
-                    >
-                      Trace
-                    </button>
-                  }
                 </div>
               } @else {
                 <div class="flex">
@@ -282,6 +292,20 @@ interface SplitRow {
                         aria-hidden="true"
                         >{{ cell.lineNo }}</span
                       >
+                      <span class="w-12 shrink-0 text-center select-none">
+                        @if (row.traceRange; as range) {
+                          @if (!row.right) {
+                            <button
+                              type="button"
+                              class="rounded border border-sky-300/30 px-1.5 text-[11px] leading-4 text-sky-200/90 transition hover:bg-sky-300/10"
+                              title="Trace this changed block"
+                              (click)="trace.emit(range)"
+                            >
+                              Trace
+                            </button>
+                          }
+                        }
+                      </span>
                       <span
                         class="min-w-0 flex-1 overflow-hidden pr-4 pl-3 whitespace-pre [tab-size:4]"
                         [class]="row.left.changed ? 'text-rose-200' : 'text-zinc-300'"
@@ -314,10 +338,33 @@ interface SplitRow {
                         }
                       </span>
                       <span
-                        class="w-9 shrink-0 border-l border-zinc-800/60 pr-2 text-right text-zinc-600 select-none"
-                        aria-hidden="true"
-                        >{{ cell.lineNo }}</span
+                        class="w-9 shrink-0 border-l border-zinc-800/60 pr-0 text-right text-zinc-600 select-none"
                       >
+                        <button
+                          type="button"
+                          class="h-6 w-full pr-2 text-right transition hover:bg-indigo-500/10 hover:text-indigo-200"
+                          [class.bg-indigo-500/20]="lineSelected(cell.lineNo)"
+                          [class.text-indigo-100]="lineSelected(cell.lineNo)"
+                          [attr.aria-label]="'Select line ' + cell.lineNo"
+                          (click)="selectLine(cell.lineNo, $event)"
+                        >
+                          {{ cell.lineNo }}
+                        </button>
+                      </span>
+                      <span class="w-12 shrink-0 text-center select-none">
+                        @if (row.traceRange; as range) {
+                          @if (row.right) {
+                            <button
+                              type="button"
+                              class="rounded border border-sky-300/30 px-1.5 text-[11px] leading-4 text-sky-200/90 transition hover:bg-sky-300/10"
+                              title="Trace this changed block"
+                              (click)="trace.emit(range)"
+                            >
+                              Trace
+                            </button>
+                          }
+                        }
+                      </span>
                       <span
                         class="min-w-0 flex-1 overflow-hidden pr-4 pl-3 whitespace-pre [tab-size:4]"
                         [class]="row.right.changed ? 'text-emerald-200' : 'text-zinc-300'"
@@ -359,16 +406,6 @@ interface SplitRow {
                       ◂ Before
                     </button>
                   }
-                  @if (row.hunkRange; as range) {
-                    <button
-                      type="button"
-                      class="mr-4 ml-2 shrink-0 rounded border border-sky-300/30 px-1.5 text-[11px] leading-4 text-sky-200/90 transition hover:bg-sky-300/10"
-                      title="Filter the history to the commits that changed these lines"
-                      (click)="trace.emit(range)"
-                    >
-                      Trace
-                    </button>
-                  }
                 </div>
               } @else {
                 <div
@@ -381,11 +418,22 @@ interface SplitRow {
                     aria-hidden="true"
                     >{{ row.oldNo }}</span
                   >
-                  <span
-                    class="w-10 shrink-0 pr-1 text-right text-zinc-600 select-none"
-                    aria-hidden="true"
-                    >{{ row.newNo }}</span
-                  >
+                  <span class="w-10 shrink-0 pr-0 text-right text-zinc-600 select-none">
+                    @if (row.newLine; as line) {
+                      <button
+                        type="button"
+                        class="h-6 w-full pr-1 text-right transition hover:bg-indigo-500/10 hover:text-indigo-200"
+                        [class.bg-indigo-500/20]="lineSelected(line)"
+                        [class.text-indigo-100]="lineSelected(line)"
+                        [attr.aria-label]="'Select line ' + line"
+                        (click)="selectLine(line, $event)"
+                      >
+                        {{ line }}
+                      </button>
+                    } @else {
+                      <span class="pr-1">{{ row.newNo }}</span>
+                    }
+                  </span>
                   <span
                     class="w-4 shrink-0 text-center select-none"
                     [class.text-emerald-400]="row.type === 'add'"
@@ -393,6 +441,18 @@ interface SplitRow {
                     aria-hidden="true"
                     >{{ row.marker }}</span
                   >
+                  <span class="w-12 shrink-0 text-center select-none">
+                    @if (row.traceRange; as range) {
+                      <button
+                        type="button"
+                        class="rounded border border-sky-300/30 px-1.5 text-[11px] leading-4 text-sky-200/90 transition hover:bg-sky-300/10"
+                        title="Trace this changed block"
+                        (click)="trace.emit(range)"
+                      >
+                        Trace
+                      </button>
+                    }
+                  </span>
                   <span
                     class="pr-10 whitespace-pre [tab-size:4]"
                     [class.text-emerald-200]="row.type === 'add'"
@@ -431,7 +491,7 @@ export class DiffView {
   readonly historyToggle = output<void>();
   /** "Before this change": the hunk's first old- and new-side lines. */
   readonly before = output<{ oldStart: number; newStart: number }>();
-  /** "Trace" on a hunk: filter the history to this new-side line range. */
+  /** "Trace": filter the history to this new-side line range. */
   readonly trace = output<LineRange>();
   readonly blameToggle = output<void>();
   /** A clicked annotation: the commit plus the line's position at it. */
@@ -440,6 +500,24 @@ export class DiffView {
   private readonly scroller = viewChild<ElementRef<HTMLElement>>('scroller');
 
   protected readonly skeletonWidths = [70, 45, 88, 60, 35, 78, 52];
+
+  private readonly diffKey = computed(() => {
+    const s = this.state();
+    if (s?.status !== 'ready') return null;
+    return `${this.path() ?? ''}:${s.commit.sha}:${s.basePath ?? ''}:${s.headPath ?? ''}`;
+  });
+
+  private readonly selection = signal<{
+    readonly key: string;
+    readonly anchor: number;
+    readonly range: LineRange;
+  } | null>(null);
+
+  protected readonly selectedRange = computed<LineRange | null>(() => {
+    const key = this.diffKey();
+    const selection = this.selection();
+    return key && selection?.key === key ? selection.range : null;
+  });
 
   protected readonly canStepBefore = computed(() => {
     const s = this.state();
@@ -465,32 +543,43 @@ export class DiffView {
         text: hunk.header,
         hunkOldStart: hunk.oldStart,
         hunkNewStart: hunk.newStart,
-        hunkRange: hunkChangedRange(hunk),
       });
+      const traceRanges = hunkChangeRanges(hunk);
+      let traceIndex = 0;
+      let inChangeRun = false;
       for (const op of hunk.ops) {
         if (op.kind === 'equal') {
+          inChangeRun = false;
           rows.push({
             type: 'ctx',
             oldNo: String(op.oldLine),
             newNo: String(op.newLine),
+            newLine: op.newLine,
             marker: '',
             text: op.text,
           });
         } else if (op.kind === 'remove') {
+          const traceRange = !inChangeRun ? traceRanges[traceIndex++] : undefined;
+          inChangeRun = true;
           rows.push({
             type: 'remove',
             oldNo: String(op.oldLine),
             newNo: '',
             marker: '−',
             text: op.text,
+            ...(traceRange ? { traceRange } : {}),
           });
         } else {
+          const traceRange = !inChangeRun ? traceRanges[traceIndex++] : undefined;
+          inChangeRun = true;
           rows.push({
             type: 'add',
             oldNo: '',
             newNo: String(op.newLine),
+            newLine: op.newLine,
             marker: '+',
             text: op.text,
+            ...(traceRange ? { traceRange } : {}),
           });
         }
       }
@@ -509,19 +598,27 @@ export class DiffView {
         header: hunk.header,
         hunkOldStart: hunk.oldStart,
         hunkNewStart: hunk.newStart,
-        hunkRange: hunkChangedRange(hunk),
         left: null,
         right: null,
       });
+      const traceRanges = hunkChangeRanges(hunk);
+      let traceIndex = 0;
       let removes: SplitCell[] = [];
       let adds: SplitCell[] = [];
+      let pendingTraceRange: LineRange | undefined;
       const flush = (): void => {
         const count = Math.max(removes.length, adds.length);
         for (let i = 0; i < count; i++) {
-          rows.push({ type: 'line', left: removes[i] ?? null, right: adds[i] ?? null });
+          rows.push({
+            type: 'line',
+            left: removes[i] ?? null,
+            right: adds[i] ?? null,
+            ...(i === 0 && pendingTraceRange ? { traceRange: pendingTraceRange } : {}),
+          });
         }
         removes = [];
         adds = [];
+        pendingTraceRange = undefined;
       };
       for (const op of hunk.ops) {
         if (op.kind === 'equal') {
@@ -532,8 +629,10 @@ export class DiffView {
             right: { lineNo: op.newLine, text: op.text, changed: false },
           });
         } else if (op.kind === 'remove') {
+          pendingTraceRange ??= traceRanges[traceIndex++];
           removes.push({ lineNo: op.oldLine, text: op.text, changed: true });
         } else {
+          pendingTraceRange ??= traceRanges[traceIndex++];
           adds.push({ lineNo: op.newLine, text: op.text, changed: true });
         }
       }
@@ -553,6 +652,40 @@ export class DiffView {
     if (s?.status !== 'ready') return [];
     return buildAnnotationCells(this.rightBlame(), s.diff.newLineCount);
   });
+
+  protected lineSelected(line: number): boolean {
+    const range = this.selectedRange();
+    return !!range && line >= range.start && line <= range.end;
+  }
+
+  protected selectLine(line: number, event: MouseEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    const key = this.diffKey();
+    if (!key) return;
+    const current = this.selection();
+    const anchor = event.shiftKey && current?.key === key ? current.anchor : line;
+    this.selection.set({
+      key,
+      anchor,
+      range: { start: Math.min(anchor, line), end: Math.max(anchor, line) },
+    });
+  }
+
+  protected clearSelection(): void {
+    this.selection.set(null);
+  }
+
+  protected traceSelection(): void {
+    const range = this.selectedRange();
+    if (!range) return;
+    this.trace.emit(range);
+    this.clearSelection();
+  }
+
+  protected rangeLabel(range: LineRange): string {
+    return range.start === range.end ? `line ${range.start}` : `lines ${range.start}–${range.end}`;
+  }
 
   /** Index of the row carrying the highlighted new-side line, if visible. */
   protected readonly highlightRowIndex = computed<number | null>(() => {

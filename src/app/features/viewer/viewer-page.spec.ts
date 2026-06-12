@@ -10,6 +10,9 @@ import { ViewerPage } from './viewer-page';
 const NEW_SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
 const OLD_SHA = 'ffeeddccbbaa99887766554433221100ffeeddcc';
 const RENAME_SHA = 'beadfeedbeadfeedbeadfeedbeadfeedbeadfeed';
+const RUN_SHA = '1111111111111111111111111111111111111111';
+const MIDDLE_SHA = '2222222222222222222222222222222222222222';
+const ROOT_SHA = '3333333333333333333333333333333333333333';
 
 const NEW_COMMIT = {
   sha: NEW_SHA,
@@ -41,6 +44,36 @@ const RENAME_COMMIT = {
   parents: [{ sha: OLD_SHA }],
 };
 
+const RUN_COMMIT = {
+  sha: RUN_SHA,
+  html_url: `https://github.com/acme/rocket/commit/${RUN_SHA}`,
+  commit: {
+    message: 'feat: update edge lines',
+    author: { name: 'Ada', email: 'ada@example.com', date: '2026-07-01T00:00:00Z' },
+  },
+  parents: [{ sha: MIDDLE_SHA }],
+};
+
+const MIDDLE_COMMIT = {
+  sha: MIDDLE_SHA,
+  html_url: `https://github.com/acme/rocket/commit/${MIDDLE_SHA}`,
+  commit: {
+    message: 'chore: touch middle line',
+    author: { name: 'Grace', email: 'grace@example.com', date: '2026-06-20T00:00:00Z' },
+  },
+  parents: [{ sha: ROOT_SHA }],
+};
+
+const ROOT_COMMIT = {
+  sha: ROOT_SHA,
+  html_url: `https://github.com/acme/rocket/commit/${ROOT_SHA}`,
+  commit: {
+    message: 'feat: add multi file',
+    author: { name: 'Grace', email: 'grace@example.com', date: '2026-06-10T00:00:00Z' },
+  },
+  parents: [],
+};
+
 /**
  * Integration tests of the full viewer pipeline: route → input binding →
  * store → provider (stubbed fetch) → rendered tree/file/history DOM.
@@ -69,6 +102,7 @@ describe('ViewerPage (integration)', () => {
       tree: [
         { path: 'src', type: 'tree', sha: 'tree1' },
         { path: 'src/engine.ts', type: 'blob', sha: 'blob1', size: 24 },
+        { path: 'src/multi.ts', type: 'blob', sha: 'blob-multi', size: 14 },
         { path: 'README.md', type: 'blob', sha: 'blob2', size: 14 },
       ],
     },
@@ -84,6 +118,12 @@ describe('ViewerPage (integration)', () => {
       content: btoa('export const thrust = 1;'),
       encoding: 'base64',
     },
+    '/repos/acme/rocket/git/blobs/blob-multi': {
+      sha: 'blob-multi',
+      size: 14,
+      content: btoa('A\nb\nc\nd\ne\nf\nG\n'),
+      encoding: 'base64',
+    },
     // Per-path histories: engine.ts was created by a rename; thruster.ts is
     // its predecessor, last touched at the root commit.
     '/repos/acme/rocket/commits': (url: URL) => {
@@ -92,6 +132,7 @@ describe('ViewerPage (integration)', () => {
       if (path === 'src/engine.ts') return [RENAME_COMMIT];
       if (path === 'src/thruster.ts')
         return ref === OLD_SHA ? [OLD_COMMIT] : [RENAME_COMMIT, OLD_COMMIT];
+      if (path === 'src/multi.ts') return [RUN_COMMIT, MIDDLE_COMMIT, ROOT_COMMIT];
       if (path === 'NOTES.md') return [OLD_COMMIT];
       return [NEW_COMMIT, OLD_COMMIT];
     },
@@ -131,6 +172,26 @@ describe('ViewerPage (integration)', () => {
         encoding: 'base64',
       };
     },
+    '/repos/acme/rocket/contents/src/multi.ts': (url: URL) => {
+      const ref = url.searchParams.get('ref');
+      const text =
+        ref === RUN_SHA
+          ? 'A\nb\nc\nd\ne\nf\nG\n'
+          : ref === MIDDLE_SHA
+            ? 'a\nb\nc\nd\ne\nf\ng\n'
+            : ref === ROOT_SHA
+              ? 'a\nb\nc\nD\ne\nf\ng\n'
+              : null;
+      if (text === null) return undefined;
+      return {
+        type: 'file',
+        path: 'src/multi.ts',
+        sha: `blob-multi-${ref}`,
+        size: text.length,
+        content: btoa(text),
+        encoding: 'base64',
+      };
+    },
     // The README change also deleted NOTES.md — the traced lines' source.
     [`/repos/acme/rocket/commits/${NEW_SHA}`]: {
       ...NEW_COMMIT,
@@ -140,6 +201,9 @@ describe('ViewerPage (integration)', () => {
       ],
     },
     [`/repos/acme/rocket/commits/${OLD_SHA}`]: OLD_COMMIT,
+    [`/repos/acme/rocket/commits/${RUN_SHA}`]: RUN_COMMIT,
+    [`/repos/acme/rocket/commits/${MIDDLE_SHA}`]: MIDDLE_COMMIT,
+    [`/repos/acme/rocket/commits/${ROOT_SHA}`]: ROOT_COMMIT,
     '/repos/acme/rocket/contents/NOTES.md': (url: URL) => {
       if (url.searchParams.get('ref') !== OLD_SHA) return undefined;
       return {
@@ -226,7 +290,7 @@ describe('ViewerPage (integration)', () => {
       expect(text).toContain('acme/rocket');
       expect(text).toContain('README.md');
       expect(text).toContain('src');
-      expect(text).toContain('2 files · 1 folders');
+      expect(text).toContain('3 files · 1 folders');
     });
   });
 
@@ -584,6 +648,54 @@ describe('ViewerPage (integration)', () => {
       const text = await textOnScreen();
       expect(text).not.toContain('Tracing lines');
       expect(text).toContain('docs: initial readme'); // full history is back
+    });
+  });
+
+  it('traces a single change run inside a merged display hunk', async () => {
+    await harness.navigateByUrl(
+      `/r/acme/rocket?path=src%2Fmulti.ts&at=${RUN_SHA}&view=diff&blame=0`,
+    );
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('@@ -1,7 +1,7 @@');
+      expect(text).toContain('chore: touch middle line'); // full history in the panel
+    });
+
+    clickButton('Trace');
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('Tracing line 1');
+      expect(text).toContain('feat: update edge lines');
+      expect(text).not.toContain('chore: touch middle line');
+    });
+  });
+
+  it('traces a manually selected line range', async () => {
+    await harness.navigateByUrl(
+      `/r/acme/rocket?path=src%2Fmulti.ts&at=${RUN_SHA}&view=diff&blame=0`,
+    );
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('@@ -1,7 +1,7 @@');
+    });
+
+    harness
+      .routeNativeElement!.querySelector<HTMLButtonElement>('[aria-label="Select line 1"]')!
+      .click();
+    harness
+      .routeNativeElement!.querySelector<HTMLButtonElement>('[aria-label="Select line 7"]')!
+      .dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('lines 1–7');
+    });
+
+    clickButton('Trace selection');
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('Tracing lines 1–7');
+      expect(text).toContain('feat: update edge lines');
+      expect(text).toContain('chore: touch middle line');
     });
   });
 

@@ -2,6 +2,7 @@ import { computeFileDiff, diffLines, splitLines } from './diff';
 import {
   LineRange,
   changeRegions,
+  hunkChangeRanges,
   hunkChangedRange,
   mapRangeToParent,
   regionTouchesRange,
@@ -152,6 +153,14 @@ describe('hunkChangedRange', () => {
     // Two edits two lines apart merge into one hunk (context 3).
     const [hunk] = hunksOf('a\nb\nc\nd\ne\n', 'A\nb\nc\nd\nE\n');
     expect(hunkChangedRange(hunk)).toEqual({ start: 1, end: 5 });
+  });
+
+  it('keeps separate run ranges inside a merged hunk', () => {
+    const [hunk] = hunksOf('a\nb\nc\nd\ne\n', 'A\nb\nc\nd\nE\n');
+    expect(hunkChangeRanges(hunk)).toEqual([
+      { start: 1, end: 1 },
+      { start: 5, end: 5 },
+    ]);
   });
 
   it('handles a whole-file removal hunk', () => {
