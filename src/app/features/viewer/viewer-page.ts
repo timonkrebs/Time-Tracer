@@ -398,6 +398,7 @@ const HISTORY_OPEN_KEY = 'time-tracer.history-open';
                 [historyActive]="historyOpen()"
                 [blameActive]="blameOn()"
                 [blame]="store.selectedBlame()"
+                [viewKey]="store.viewAt()"
                 [highlightLine]="lineNumber()"
                 (retry)="onFileRetry($event)"
                 (historyToggle)="toggleHistory()"

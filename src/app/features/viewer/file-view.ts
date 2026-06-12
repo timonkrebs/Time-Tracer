@@ -166,23 +166,28 @@ interface BlameRow {
               }
               @for (row of rows; track row.lineNo) {
                 <div class="flex hover:bg-white/[0.02]">
-                  <span class="w-52 shrink-0 truncate pl-4 text-xs leading-6 select-none">
+                  <span class="w-52 shrink-0 pl-4 text-xs leading-6 select-none">
                     @if (row.cell.sha; as sha) {
                       <button
                         type="button"
-                        class="max-w-full cursor-pointer truncate align-top underline-offset-2 transition hover:underline"
+                        class="blame-tooltip max-w-full cursor-pointer align-top underline-offset-2 transition hover:underline"
                         [class]="row.cell.labelClass"
+                        [attr.data-blame-title]="row.cell.title"
                         [title]="row.cell.title"
                         (click)="blameSelect.emit({ sha, line: row.cell.lineAtCommit })"
                       >
-                        {{ row.cell.label }}
+                        <span class="block truncate">{{ row.cell.label }}</span>
                       </button>
                     } @else if (row.cell.pending) {
                       <span class="animate-pulse text-zinc-700">·</span>
                     } @else if (row.cell.label) {
-                      <span [class]="row.cell.labelClass" [title]="row.cell.title">{{
-                        row.cell.label
-                      }}</span>
+                      <span
+                        class="blame-tooltip inline-block max-w-full"
+                        [class]="row.cell.labelClass"
+                        [attr.data-blame-title]="row.cell.title"
+                        [title]="row.cell.title"
+                        ><span class="block truncate">{{ row.cell.label }}</span></span
+                      >
                     }
                   </span>
                   <span
@@ -264,6 +269,8 @@ export class FileView {
   /** Renders per-line blame annotations in the gutter. */
   readonly blameActive = input(false);
   readonly blame = input<BlameState | null>(null);
+  /** Commit/ref key of the rendered file, used to reset scroll between navigations. */
+  readonly viewKey = input<string | null>(null);
   /** 1-based line to highlight and scroll into view, if any. */
   readonly highlightLine = input<number | null>(null);
 
@@ -275,6 +282,7 @@ export class FileView {
   readonly blameSelect = output<{ sha: string; line: number }>();
 
   private readonly scroller = viewChild<ElementRef<HTMLElement>>('scroller');
+  private lastScrollKey: string | null = null;
 
   protected readonly skeletonWidths = [62, 84, 45, 91, 73, 38, 80, 55, 67, 49, 88, 30];
 
@@ -282,11 +290,24 @@ export class FileView {
     afterRenderEffect(() => {
       const line = this.highlightLine();
       this.textInfo(); // re-scroll when a different file/version renders
+      const key = this.scrollKey();
       const el = this.scroller()?.nativeElement;
-      if (!line || !el) return;
-      el.scrollTop = Math.max(0, (line - 1) * LINE_HEIGHT_PX - el.clientHeight / 3);
+      if (!el || !key) return;
+      if (line) {
+        el.scrollTop = Math.max(0, (line - 1) * LINE_HEIGHT_PX - el.clientHeight / 3);
+        this.lastScrollKey = key;
+      } else if (this.lastScrollKey !== key) {
+        el.scrollTop = 0;
+        this.lastScrollKey = key;
+      }
     });
   }
+
+  private readonly scrollKey = computed(() => {
+    const s = this.state();
+    if (!s || s.status !== 'ready') return null;
+    return `${s.path}:${this.viewKey() ?? 'tip'}:${s.file.sha}`;
+  });
 
   protected readonly textInfo = computed(() => {
     const s = this.state();

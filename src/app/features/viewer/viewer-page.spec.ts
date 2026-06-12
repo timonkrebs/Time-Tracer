@@ -18,7 +18,7 @@ const NEW_COMMIT = {
   sha: NEW_SHA,
   html_url: `https://github.com/acme/rocket/commit/${NEW_SHA}`,
   commit: {
-    message: 'docs: update readme',
+    message: 'docs: update readme\n\nExplain why the launch text changed.',
     author: { name: 'Ada', email: 'ada@example.com', date: '2026-06-01T00:00:00Z' },
   },
   parents: [{ sha: OLD_SHA }],
@@ -532,6 +532,10 @@ describe('ViewerPage (integration)', () => {
       expect(text).toContain('01.01.2026 Grace'); // line 1: introduced by the root commit
       expect(text).toContain('01.06.2026 Ada'); // lines 2-3: introduced by the newest commit
     });
+    const adaBlame = Array.from(
+      harness.routeNativeElement!.querySelectorAll<HTMLButtonElement>('button'),
+    ).find((button) => (button.textContent ?? '').includes('01.06.2026 Ada'));
+    expect(adaBlame?.title).toContain('Explain why the launch text changed.');
 
     clickButton('01.01.2026 Grace');
 
@@ -684,7 +688,7 @@ describe('ViewerPage (integration)', () => {
       .click();
     harness
       .routeNativeElement!.querySelector<HTMLButtonElement>('[aria-label="Select line 7"]')!
-      .dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));
+      .click();
     await vi.waitFor(async () => {
       expect(await textOnScreen()).toContain('lines 1–7');
     });

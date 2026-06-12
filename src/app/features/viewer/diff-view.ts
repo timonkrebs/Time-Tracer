@@ -270,21 +270,28 @@ interface SplitRow {
                   >
                     @if (row.left; as cell) {
                       @let lc = leftCells()[cell.lineNo - 1];
-                      <span class="w-40 shrink-0 truncate pl-3 text-xs leading-6 select-none">
+                      <span class="w-40 shrink-0 pl-3 text-xs leading-6 select-none">
                         @if (lc.sha; as sha) {
                           <button
                             type="button"
-                            class="max-w-full cursor-pointer truncate align-top underline-offset-2 transition hover:underline"
+                            class="blame-tooltip max-w-full cursor-pointer align-top underline-offset-2 transition hover:underline"
                             [class]="lc.labelClass"
+                            [attr.data-blame-title]="lc.title"
                             [title]="lc.title"
                             (click)="blameSelect.emit({ sha, line: lc.lineAtCommit })"
                           >
-                            {{ lc.label }}
+                            <span class="block truncate">{{ lc.label }}</span>
                           </button>
                         } @else if (lc.pending) {
                           <span class="animate-pulse text-zinc-700">·</span>
                         } @else if (lc.label) {
-                          <span [class]="lc.labelClass" [title]="lc.title">{{ lc.label }}</span>
+                          <span
+                            class="blame-tooltip inline-block max-w-full"
+                            [class]="lc.labelClass"
+                            [attr.data-blame-title]="lc.title"
+                            [title]="lc.title"
+                            ><span class="block truncate">{{ lc.label }}</span></span
+                          >
                         }
                       </span>
                       <span
@@ -320,21 +327,28 @@ interface SplitRow {
                   >
                     @if (row.right; as cell) {
                       @let rc = rightCells()[cell.lineNo - 1];
-                      <span class="w-40 shrink-0 truncate pl-3 text-xs leading-6 select-none">
+                      <span class="w-40 shrink-0 pl-3 text-xs leading-6 select-none">
                         @if (rc.sha; as sha) {
                           <button
                             type="button"
-                            class="max-w-full cursor-pointer truncate align-top underline-offset-2 transition hover:underline"
+                            class="blame-tooltip max-w-full cursor-pointer align-top underline-offset-2 transition hover:underline"
                             [class]="rc.labelClass"
+                            [attr.data-blame-title]="rc.title"
                             [title]="rc.title"
                             (click)="blameSelect.emit({ sha, line: rc.lineAtCommit })"
                           >
-                            {{ rc.label }}
+                            <span class="block truncate">{{ rc.label }}</span>
                           </button>
                         } @else if (rc.pending) {
                           <span class="animate-pulse text-zinc-700">·</span>
                         } @else if (rc.label) {
-                          <span [class]="rc.labelClass" [title]="rc.title">{{ rc.label }}</span>
+                          <span
+                            class="blame-tooltip inline-block max-w-full"
+                            [class]="rc.labelClass"
+                            [attr.data-blame-title]="rc.title"
+                            [title]="rc.title"
+                            ><span class="block truncate">{{ rc.label }}</span></span
+                          >
                         }
                       </span>
                       <span
@@ -498,6 +512,7 @@ export class DiffView {
   readonly blameSelect = output<{ sha: string; line: number }>();
 
   private readonly scroller = viewChild<ElementRef<HTMLElement>>('scroller');
+  private lastScrollKey: string | null = null;
 
   protected readonly skeletonWidths = [70, 45, 88, 60, 35, 78, 52];
 
@@ -664,7 +679,10 @@ export class DiffView {
     const key = this.diffKey();
     if (!key) return;
     const current = this.selection();
-    const anchor = event.shiftKey && current?.key === key ? current.anchor : line;
+    const sameDiff = current?.key === key;
+    const extendFromSingleLine =
+      sameDiff && current.range.start === current.range.end && current.anchor !== line;
+    const anchor = (sameDiff && event.shiftKey) || extendFromSingleLine ? current.anchor : line;
     this.selection.set({
       key,
       anchor,
@@ -706,8 +724,15 @@ export class DiffView {
     afterRenderEffect(() => {
       const index = this.highlightRowIndex();
       const el = this.scroller()?.nativeElement;
-      if (index === null || !el) return;
-      el.scrollTop = Math.max(0, index * LINE_HEIGHT_PX - el.clientHeight / 3);
+      const key = this.diffKey();
+      if (!el || !key) return;
+      if (index !== null) {
+        el.scrollTop = Math.max(0, index * LINE_HEIGHT_PX - el.clientHeight / 3);
+        this.lastScrollKey = key;
+      } else if (this.lastScrollKey !== key) {
+        el.scrollTop = 0;
+        this.lastScrollKey = key;
+      }
     });
   }
 
