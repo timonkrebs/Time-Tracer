@@ -12,7 +12,7 @@ import { Title } from '@angular/platform-browser';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 
 import { LocalRepos } from '../../core/git/local/local-repos';
-import { RenameCandidate, RepoStore } from '../../core/store/repo-store';
+import { HunkOriginCandidate, RenameCandidate, RepoStore } from '../../core/store/repo-store';
 import { LineRange } from '../../core/util/line-range';
 import { relativeTime, shortSha } from '../../core/util/relative-time';
 import { DiffView } from './diff-view';
@@ -419,6 +419,7 @@ const HISTORY_OPEN_KEY = 'time-tracer.history-open';
                 [selectedSha]="store.viewAt()"
                 [renames]="store.selectedRenames()"
                 [trace]="store.lineTrace()"
+                [origins]="store.traceOrigins()"
                 (commitSelect)="goToCommit($event)"
                 (loadMore)="store.loadMoreHistory()"
                 (retry)="store.retryHistory()"
@@ -427,6 +428,8 @@ const HISTORY_OPEN_KEY = 'time-tracer.history-open';
                 (candidateSelect)="onCandidateSelect($event)"
                 (traceClear)="store.clearLineTrace()"
                 (traceOlder)="store.extendLineTrace()"
+                (searchOrigins)="store.searchTraceOrigins($event)"
+                (originSelect)="onOriginSelect($event)"
               />
             </aside>
           }
@@ -738,6 +741,26 @@ export class ViewerPage {
         at: anchor?.sha ?? renames.parentSha,
         view: this.viewPref(),
         line: null,
+      },
+      queryParamsHandling: 'merge',
+    });
+  }
+
+  /**
+   * A hunk-origin candidate was picked: open that file as it was just
+   * before the introducing commit, scrolled to the matched line. Anchored
+   * at the candidate's own last touch (like rename candidates) so history,
+   * blame and the steppers keep working in the source file's timeline.
+   */
+  protected async onOriginSelect(candidate: HunkOriginCandidate): Promise<void> {
+    const anchor = await this.store.lastTouch(candidate.path, candidate.parentSha);
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: {
+        path: candidate.path,
+        at: anchor?.sha ?? candidate.parentSha,
+        view: 'file',
+        line: String(candidate.line),
       },
       queryParamsHandling: 'merge',
     });

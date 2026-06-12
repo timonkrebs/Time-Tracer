@@ -90,6 +90,7 @@ describe('ViewerPage (integration)', () => {
       const path = url.searchParams.get('path');
       if (path === 'src/engine.ts') return [RENAME_COMMIT];
       if (path === 'src/thruster.ts') return [OLD_COMMIT];
+      if (path === 'NOTES.md') return [OLD_COMMIT];
       return [NEW_COMMIT, OLD_COMMIT];
     },
     '/repos/acme/rocket/contents/README.md': (url: URL) => {
@@ -128,8 +129,26 @@ describe('ViewerPage (integration)', () => {
         encoding: 'base64',
       };
     },
-    [`/repos/acme/rocket/commits/${NEW_SHA}`]: NEW_COMMIT,
+    // The README change also deleted NOTES.md — the traced lines' source.
+    [`/repos/acme/rocket/commits/${NEW_SHA}`]: {
+      ...NEW_COMMIT,
+      files: [
+        { filename: 'README.md', status: 'modified' },
+        { filename: 'NOTES.md', status: 'removed' },
+      ],
+    },
     [`/repos/acme/rocket/commits/${OLD_SHA}`]: OLD_COMMIT,
+    '/repos/acme/rocket/contents/NOTES.md': (url: URL) => {
+      if (url.searchParams.get('ref') !== OLD_SHA) return undefined;
+      return {
+        type: 'file',
+        path: 'NOTES.md',
+        sha: 'blob-notes',
+        size: 12,
+        content: btoa('hello\n\nGo!\n'),
+        encoding: 'base64',
+      };
+    },
     [`/repos/acme/rocket/commits/${RENAME_SHA}`]: {
       ...RENAME_COMMIT,
       files: [
@@ -574,6 +593,39 @@ describe('ViewerPage (integration)', () => {
       const text = await textOnScreen();
       expect(text).not.toContain('Tracing lines');
       expect(text).toContain('docs: initial readme'); // full history is back
+    });
+  });
+
+  it('searches where traced lines came from and jumps to the source', async () => {
+    await harness.navigateByUrl(`/r/acme/rocket?path=README.md&at=${NEW_SHA}&view=diff`);
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('@@ -1,1 +1,3 @@');
+    });
+
+    clickButton('Trace');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('The oldest commit above introduced these lines.');
+    });
+
+    clickButton('Where did these lines come from?');
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      // NOTES.md was deleted by the same commit and contains the block.
+      expect(text).toContain('NOTES.md');
+      expect(text).toContain('100% match');
+      expect(text).toContain('line 2');
+      expect(text).toContain('deleted');
+    });
+
+    clickButton('NOTES.md');
+
+    await vi.waitFor(async () => {
+      expect(router.url).toContain('path=NOTES.md');
+      expect(router.url).toContain(`at=${OLD_SHA}`);
+      expect(router.url).toContain('line=2');
+      // The source file renders at its pre-deletion version.
+      expect(await textOnScreen()).toContain('hello');
     });
   });
 

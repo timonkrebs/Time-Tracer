@@ -2,6 +2,8 @@ mkdir -p ~/.npm-global     && npm config set prefix '~/.npm-global'     && echo 
 
 # Time Tracer
 
+**Try it live: [gittimetracer.netlify.app](https://gittimetracer.netlify.app/)**
+
 Explore any public GitHub, GitLab or Azure DevOps repository — or a git repository from your own
 disk or a .zip archive — and travel back through its history change by change.
 
@@ -74,11 +76,19 @@ renames — see the feature list and roadmap below for what's done and what's ne
   introduced the lines. Matches stream in as they are found, the walk pauses at the end of the
   loaded history pages ("Search older commits" continues it), and a banner shows the traced
   range with a one-click way back to the full history. Clicking a filtered commit time-travels
-  as usual — stepping through exactly the commits that shaped those lines.
+  as usual — stepping through exactly the commits that shaped those lines. Where the trace ends,
+  **"Where did these lines come from?"** hunts for the block's origin: the introducing commit's
+  other files (deleted ones are prime suspects) — or, on demand, the whole snapshot just before
+  it — are searched with a line-level local alignment (exact lines anchor, edited lines score by
+  per-line Levenshtein), and each ranked hit jumps straight to the matching file and line in the
+  predecessor's own timeline.
 - **Rename candidates**: where a file's recorded history ends, the History panel can search the
-  commit just before it for likely predecessors — GitHub's own rename detection, identical blobs
-  in the parent tree, and name/size/content-similarity heuristics, each ranked with a confidence
-  score. Picking a candidate continues the journey in the predecessor's own timeline (anchored at
+  commit just before it for likely predecessors — GitHub's own rename detection, files the
+  creating commit *deleted* (prime rename suspects, content-compared one by one), identical blobs
+  in the parent tree, and name/size/content heuristics, each ranked with a confidence score.
+  Content comparisons use a line-structured fuzzy similarity (exact lines via the minimal diff,
+  edited lines via per-line Levenshtein), so a rename that also touched up lines still scores
+  high. Picking a candidate continues the journey in the predecessor's own timeline (anchored at
   its last change before the rename), with history, blame and steppers all working there.
 - **Deep-linkable state**:
   `/r/:owner/:repo?ref=<ref>&path=<file>&at=<sha>&view=diff&blame=1&line=42` — refresh, share,
@@ -122,7 +132,7 @@ src/app/
 │   │   ├── repo-store.ts    # signals store: load lifecycle, tree, selection, file +
 │   │   │                    # history caches, time-travel (viewAt) state
 │   │   └── recent-repos.ts  # localStorage-backed recents
-│   └── util/                # pure helpers: tree building, decoding, diffing, line-range tracking
+│   └── util/                # pure helpers: tree building, diffing, line tracking, similarity
 └── features/
     ├── loader/              # landing page with URL form, examples, recents
     └── viewer/              # split pane: header, file tree, file view, history panel
@@ -160,7 +170,8 @@ npm run build      # production build into dist/
    (provider rename detection + identical blobs + similarity heuristics, journey continues in the
    predecessor's timeline).
 6. ~~**Per-hunk history filter** — trace a hunk's lines through time, `git log -L`-style.~~
-   ✅ Done (range-tracking walk in `core/util/line-range.ts`, surfaced as *Trace* on every hunk).
+   ✅ Done (range-tracking walk in `core/util/line-range.ts`, surfaced as *Trace* on every hunk;
+   hunk-origin search for moved blocks via `core/util/similarity.ts`).
 7. **Branch/ref switcher** — pick branches and tags from the viewer header (any ref already works
    via the `?ref=` query param).
 8. ~~**More sources** — GitLab provider and local folders behind the `GitProvider` interface.~~

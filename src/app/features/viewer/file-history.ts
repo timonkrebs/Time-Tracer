@@ -3,6 +3,9 @@ import { ChangeDetectionStrategy, Component, input, output } from '@angular/core
 import { CommitInfo } from '../../core/models';
 import {
   HistoryStatus,
+  HunkOriginCandidate,
+  HunkOriginScope,
+  HunkOriginState,
   LineTraceState,
   RenameCandidate,
   RenameState,
@@ -17,6 +20,9 @@ import { relativeTime, shortSha } from '../../core/util/relative-time';
  *
  * While a line trace is active (a hunk's "Trace"), the list shows only the
  * commits that changed the traced lines, with a banner to clear the filter.
+ * Where the trace ends, the origin search looks for the place the lines may
+ * have moved from — first among the introducing commit's other files, then
+ * across the whole snapshot before it.
  */
 @Component({
   selector: 'app-file-history',
@@ -160,9 +166,90 @@ import { relativeTime, shortSha } from '../../core/util/relative-time';
                 Search older commits
               </button>
             } @else if (t.commits.length > 0) {
-              <p class="border-t border-zinc-800/50 px-3 py-2 text-[11px] leading-4 text-zinc-600">
-                The oldest commit above introduced these lines.
-              </p>
+              <div class="border-t border-zinc-800/50 px-3 py-2">
+                <p class="text-[11px] leading-4 text-zinc-600">
+                  The oldest commit above introduced these lines.
+                </p>
+                @if (t.origin) {
+                  @if (origins(); as o) {
+                    @switch (o.status) {
+                      @case ('searching') {
+                        <p class="mt-1.5 animate-pulse text-[11px] text-zinc-500">
+                          Comparing files… ({{ o.scanned }}/{{ o.total }})
+                        </p>
+                      }
+                      @case ('unavailable') {
+                        <p class="mt-1.5 text-[11px] leading-4 text-zinc-500">{{ o.message }}</p>
+                      }
+                      @case ('error') {
+                        <p class="mt-1.5 text-[11px] text-rose-400">{{ o.message }}</p>
+                        <button
+                          type="button"
+                          class="mt-1 rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-300 transition hover:border-zinc-500"
+                          (click)="searchOrigins.emit(o.scope)"
+                        >
+                          Try again
+                        </button>
+                      }
+                    }
+                    @for (candidate of o.candidates; track candidate.path) {
+                      <button
+                        type="button"
+                        class="mt-1 block w-full rounded border border-zinc-800 bg-zinc-900/60 px-2 py-1.5 text-left transition hover:border-indigo-400/40 hover:bg-indigo-500/10"
+                        title="Open this file just before the commit, at the matched line"
+                        (click)="originSelect.emit(candidate)"
+                      >
+                        <span class="block truncate font-mono text-[11px] text-zinc-200">{{
+                          candidate.path
+                        }}</span>
+                        <span class="mt-0.5 flex items-center gap-1.5 text-[10px]">
+                          <span class="text-indigo-300">{{ percent(candidate.score) }} match</span>
+                          <span class="text-zinc-500">line {{ candidate.line }}</span>
+                          @if (candidate.deleted) {
+                            <span class="rounded-full border border-zinc-700 px-1.5 text-zinc-500"
+                              >deleted</span
+                            >
+                          }
+                        </span>
+                      </button>
+                    }
+                    @if (o.status === 'ready') {
+                      @if (o.candidates.length === 0) {
+                        <p class="mt-1.5 text-[11px] leading-4 text-zinc-500">
+                          {{
+                            o.scope === 'commit'
+                              ? "No likely source among the commit's other files."
+                              : 'No likely source found in the snapshot before the commit.'
+                          }}
+                        </p>
+                      }
+                      @if (o.scope === 'commit') {
+                        <button
+                          type="button"
+                          class="mt-1.5 rounded border border-zinc-700 px-2.5 py-1 text-[11px] text-zinc-300 transition hover:border-zinc-500"
+                          title="Compare every file as the repository was just before this commit (capped)"
+                          (click)="searchOrigins.emit('snapshot')"
+                        >
+                          Search the whole snapshot
+                        </button>
+                      } @else if (o.capped) {
+                        <p class="mt-1 text-[10px] leading-4 text-zinc-600">
+                          Capped search — closest-named files only.
+                        </p>
+                      }
+                    }
+                  } @else {
+                    <button
+                      type="button"
+                      class="mt-1.5 rounded border border-indigo-400/30 bg-indigo-500/10 px-2.5 py-1 text-[11px] text-indigo-200 transition hover:bg-indigo-500/20"
+                      title="Search the commit's other files for where this block may have moved from"
+                      (click)="searchOrigins.emit('commit')"
+                    >
+                      Where did these lines come from?
+                    </button>
+                  }
+                }
+              </div>
             } @else {
               <p class="px-3 py-2 text-xs text-zinc-600">No commits changed these lines.</p>
             }
@@ -317,6 +404,8 @@ export class FileHistory {
   readonly renames = input<RenameState | null>(null);
   /** Active line trace — replaces the list with the filtered commits. */
   readonly trace = input<LineTraceState | null>(null);
+  /** Origin search of the finished trace, once started. */
+  readonly origins = input<HunkOriginState | null>(null);
 
   readonly commitSelect = output<string | null>();
   readonly loadMore = output<void>();
@@ -326,6 +415,8 @@ export class FileHistory {
   readonly candidateSelect = output<RenameCandidate>();
   readonly traceClear = output<void>();
   readonly traceOlder = output<void>();
+  readonly searchOrigins = output<HunkOriginScope>();
+  readonly originSelect = output<HunkOriginCandidate>();
 
   protected unavailableReason(): string {
     const state = this.renames();
@@ -350,6 +441,8 @@ export class FileHistory {
     switch (reason) {
       case 'github-rename':
         return 'rename';
+      case 'deleted-in-commit':
+        return 'deleted';
       case 'identical-content':
         return 'identical';
       case 'similar-content':

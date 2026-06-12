@@ -735,6 +735,114 @@ describe('RepoStore', () => {
     });
   });
 
+  describe('hunk origin search (searchTraceOrigins)', () => {
+    beforeEach(async () => {
+      await store.loadRepo(slug);
+    });
+
+    function text(path: string, sha: string, content: string): Promise<RepoFile> {
+      return Promise.resolve({ kind: 'text', path, sha, size: content.length, text: content });
+    }
+
+    /** Traces README lines 2–3, which c2 (repo parent: c1) introduced. */
+    async function traceIntroducedBlock(): Promise<void> {
+      provider.listCommitsResult = () => Promise.resolve([commit('c2', ['c1']), commit('c1', [])]);
+      provider.fileAtRefResult = (path, ref) => {
+        if (path === 'README.md') {
+          return text(
+            path,
+            `blob-${ref}`,
+            ref === 'c2' ? 'A\nalpha block line\nbeta block line\n' : 'A\n',
+          );
+        }
+        // The moved block's source, as it was at the parent commit c1.
+        return text(
+          path,
+          `blob-${ref}`,
+          'header line\nalpha block line\nbeta block line\nfooter line\n',
+        );
+      };
+      await store.openFile('README.md', 'c2');
+      await store.startLineTrace('README.md', 'c2', { start: 2, end: 3 });
+    }
+
+    it('records where the trace ended', async () => {
+      await traceIntroducedBlock();
+
+      expect(store.lineTrace()).toMatchObject({
+        status: 'ready',
+        origin: { sha: 'c2', range: { start: 2, end: 3 } },
+      });
+    });
+
+    it('finds the source among the files the commit touched', async () => {
+      await traceIntroducedBlock();
+      provider.commitFilesResult = () =>
+        Promise.resolve([
+          { path: 'README.md', status: 'modified' },
+          { path: 'src/old.ts', status: 'removed' },
+        ]);
+
+      await store.searchTraceOrigins('commit');
+
+      const state = store.traceOrigins();
+      expect(state?.status).toBe('ready');
+      expect(state?.candidates).toEqual([
+        { path: 'src/old.ts', line: 2, score: 1, deleted: true, parentSha: 'c1' },
+      ]);
+    });
+
+    it('widens to the whole snapshot on demand', async () => {
+      await traceIntroducedBlock();
+      provider.commitFilesResult = () =>
+        Promise.resolve([{ path: 'README.md', status: 'modified' }]);
+      provider.treeResult = (ref) =>
+        ref === 'c1'
+          ? Promise.resolve({
+              truncated: false,
+              entries: [
+                { path: 'README.md', name: 'README.md', kind: 'file', sha: 'r0', size: 2 },
+                { path: 'src/old.ts', name: 'old.ts', kind: 'file', sha: 'o1', size: 40 },
+              ],
+            })
+          : Promise.resolve({ entries, truncated: false });
+
+      await store.searchTraceOrigins('commit');
+      expect(store.traceOrigins()).toMatchObject({ status: 'ready', candidates: [] });
+
+      await store.searchTraceOrigins('snapshot');
+      const state = store.traceOrigins();
+      expect(state?.status).toBe('ready');
+      expect(state?.candidates).toMatchObject([{ path: 'src/old.ts', line: 2, deleted: false }]);
+      // The traced file itself is never searched.
+      expect(state?.total).toBe(1);
+    });
+
+    it('is unavailable when the introducing commit is the root', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c1', [])]);
+      provider.fileAtRefResult = (path, ref) => text(path, `blob-${ref}`, 'A\n');
+      await store.openFile('README.md', 'c1');
+      await store.startLineTrace('README.md', 'c1', { start: 1, end: 1 });
+      expect(store.lineTrace()?.origin).toEqual({ sha: 'c1', range: { start: 1, end: 1 } });
+
+      await store.searchTraceOrigins('commit');
+
+      expect(store.traceOrigins()).toMatchObject({ status: 'unavailable' });
+    });
+
+    it('is cleared with the trace', async () => {
+      await traceIntroducedBlock();
+      provider.commitFilesResult = () =>
+        Promise.resolve([{ path: 'src/old.ts', status: 'removed' }]);
+      await store.searchTraceOrigins('commit');
+      expect(store.traceOrigins()).not.toBeNull();
+
+      store.clearLineTrace();
+
+      expect(store.traceOrigins()).toBeNull();
+    });
+  });
+
   describe('rename candidates (loadRenameCandidates)', () => {
     function parentTree(): RepoTree {
       return {
@@ -834,6 +942,46 @@ describe('RepoStore', () => {
       await store.loadRenameCandidates('README.md');
 
       expect(store.selectedRenames()).toBeNull();
+    });
+
+    it('ranks files the creating commit deleted by fuzzy content similarity', async () => {
+      provider.commitFilesResult = () =>
+        Promise.resolve([
+          { path: 'README.md', status: 'added' },
+          { path: 'docs/legacy.md', status: 'removed' },
+        ]);
+      provider.treeResult = (ref) =>
+        ref === 'parent'
+          ? Promise.resolve({
+              truncated: false,
+              entries: [
+                { path: 'docs', name: 'docs', kind: 'dir', sha: 'd1' },
+                { path: 'docs/legacy.md', name: 'legacy.md', kind: 'file', sha: 'L1', size: 13 },
+              ],
+            })
+          : Promise.resolve({ entries, truncated: false });
+      // README at creation is 'line1\nline2\n'; the deleted file differs by
+      // one character in line 2 — exact-line similarity would see only 50%.
+      provider.fileAtRefResult = (path) =>
+        Promise.resolve({
+          kind: 'text',
+          path,
+          sha: path === 'README.md' ? 'BLOB0' : `c-${path}`,
+          size: 12,
+          text: path === 'docs/legacy.md' ? 'line1\nline2x\n' : 'line1\nline2\n',
+        });
+
+      await store.loadRenameCandidates('README.md');
+
+      const state = store.selectedRenames();
+      expect(state?.status).toBe('ready');
+      if (state?.status !== 'ready') return;
+      const legacy = state.candidates.find((c) => c.path === 'docs/legacy.md');
+      expect(legacy?.reasons).toContain('deleted-in-commit');
+      expect(legacy?.reasons).toContain('similar-content');
+      expect(legacy!.confidence).toBeGreaterThan(0.85);
+      // The deleted file outranks every generic heuristic candidate.
+      expect(state.candidates[0].path).toBe('docs/legacy.md');
     });
   });
 
