@@ -404,6 +404,8 @@ describe('RepoStore', () => {
       expect(state?.status).toBe('ready');
       if (state?.status !== 'ready') return;
       expect(state.baseSha).toBe('parent');
+      expect(state.basePath).toBe('README.md');
+      expect(state.headPath).toBe('README.md');
       expect(state.diff.added).toBe(1);
       expect(state.diff.removed).toBe(1);
       expect(provider.fileAtRefCalls).toEqual([
@@ -425,8 +427,65 @@ describe('RepoStore', () => {
       const state = store.selectedDiff();
       expect(state?.status).toBe('ready');
       if (state?.status !== 'ready') return;
+      expect(state.basePath).toBeNull();
+      expect(state.headPath).toBe('README.md');
       expect(state.diff.added).toBe(2);
       expect(state.diff.removed).toBe(0);
+    });
+
+    it('diffs a renamed file against its previous path', async () => {
+      provider.commitResult = (sha) => Promise.resolve(commit(sha, ['parent']));
+      provider.commitFilesResult = () =>
+        Promise.resolve([{ path: 'README.md', status: 'renamed', previousPath: 'docs/README.md' }]);
+      provider.fileAtRefResult = (path, ref) => {
+        if (ref === 'parent' && path === 'README.md') {
+          return Promise.reject(new RepoProviderError('absent', 'not-found'));
+        }
+        if (ref === 'parent' && path === 'docs/README.md') {
+          return textFile(path, ref, 'a\nold\nc\n');
+        }
+        return textFile(path, ref, 'a\nnew\nc\n');
+      };
+
+      await store.openFile('README.md', 'child');
+      await store.loadDiff('README.md', 'child');
+
+      const state = store.selectedDiff();
+      expect(state?.status).toBe('ready');
+      if (state?.status !== 'ready') return;
+      expect(state.baseSha).toBe('parent');
+      expect(state.basePath).toBe('docs/README.md');
+      expect(state.headPath).toBe('README.md');
+      expect(state.diff.added).toBe(1);
+      expect(state.diff.removed).toBe(1);
+      expect(provider.fileAtRefCalls).toContainEqual({ path: 'docs/README.md', ref: 'parent' });
+    });
+
+    it('diffs a path renamed away against the new path at the commit', async () => {
+      provider.commitResult = (sha) => Promise.resolve(commit(sha, ['parent']));
+      provider.commitFilesResult = () =>
+        Promise.resolve([{ path: 'README.md', status: 'renamed', previousPath: 'docs/README.md' }]);
+      provider.fileAtRefResult = (path, ref) => {
+        if (ref === 'child' && path === 'docs/README.md') {
+          return Promise.reject(new RepoProviderError('absent', 'not-found'));
+        }
+        if (ref === 'child' && path === 'README.md') {
+          return textFile(path, ref, 'a\nnew\nc\n');
+        }
+        return textFile(path, ref, 'a\nold\nc\n');
+      };
+
+      await store.openFile('docs/README.md', 'child');
+      await store.loadDiff('docs/README.md', 'child');
+
+      const state = store.selectedDiff();
+      expect(state?.status).toBe('ready');
+      if (state?.status !== 'ready') return;
+      expect(state.basePath).toBe('docs/README.md');
+      expect(state.headPath).toBe('README.md');
+      expect(state.diff.added).toBe(1);
+      expect(state.diff.removed).toBe(1);
+      expect(provider.fileAtRefCalls).toContainEqual({ path: 'README.md', ref: 'child' });
     });
 
     it('diffs a root commit against nothing without fetching a base', async () => {
@@ -440,6 +499,8 @@ describe('RepoStore', () => {
       expect(state?.status).toBe('ready');
       if (state?.status !== 'ready') return;
       expect(state.baseSha).toBeNull();
+      expect(state.basePath).toBeNull();
+      expect(state.headPath).toBe('README.md');
       expect(state.diff.added).toBe(1);
       expect(provider.fileAtRefCalls.filter((c) => c.ref !== 'child')).toEqual([]);
     });

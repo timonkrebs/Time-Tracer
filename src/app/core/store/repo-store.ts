@@ -2,6 +2,7 @@ import { Injectable, computed, inject, signal } from '@angular/core';
 
 import { ProviderRegistry, RepoWebLinks } from '../git/git-provider';
 import {
+  CommitFileChange,
   CommitInfo,
   FileState,
   RepoFile,
@@ -39,6 +40,10 @@ export type DiffState =
       readonly commit: CommitInfo;
       /** Parent commit the diff is against; null for a root commit. */
       readonly baseSha: string | null;
+      /** Path that supplied the old side; null when the old side is empty. */
+      readonly basePath: string | null;
+      /** Path that supplied the new side; null when the commit deleted it. */
+      readonly headPath: string | null;
     }
   | { readonly status: 'unavailable'; readonly reason: string }
   | { readonly status: 'error'; readonly message: string };
@@ -385,8 +390,8 @@ export class RepoStore {
 
   /**
    * Computes what the commit `at` changed in `path`: the file at the commit
-   * diffed against the same path at the commit's first parent. Cached per
-   * `<commit, path>`; reuses file-content caches for both sides.
+   * diffed against its first parent. Rename commits may use a different path
+   * on either side. Cached per `<commit, path>`; reuses file-content caches.
    */
   async loadDiff(path: string, at: string): Promise<void> {
     const key = fileKey(path, at);
@@ -402,31 +407,75 @@ export class RepoStore {
       if (seq !== this.loadSeq) return;
       const baseSha = commit.parentShas[0] ?? null;
 
-      const [currentState, baseState] = await Promise.all([
+      const provider = this.registry.byId(slug.provider);
+      let changes: readonly CommitFileChange[] | null = null;
+      const commitFiles = async (): Promise<readonly CommitFileChange[]> => {
+        changes ??= await provider.getCommitFiles(slug, at);
+        return changes;
+      };
+
+      let currentState: FileState | null;
+      let samePathBaseState: FileState | null;
+      [currentState, samePathBaseState] = await Promise.all([
         this.ensureFile(path, at),
         baseSha ? this.ensureFile(path, baseSha) : Promise.resolve(null),
       ]);
       if (seq !== this.loadSeq) return;
 
-      if (currentState.status !== 'ready') {
-        this.setDiffState(key, {
-          status: 'error',
-          message:
-            currentState.status === 'error'
-              ? currentState.message
-              : 'The file content could not be loaded.',
-        });
-        return;
+      let headPath: string | null = currentState.status === 'ready' ? path : null;
+      if (baseSha && currentState.status === 'error' && currentState.kind === 'not-found') {
+        const movedTo = (await commitFiles()).find((c) => c.previousPath === path);
+        if (seq !== this.loadSeq) return;
+        if (movedTo) {
+          currentState = await this.ensureFile(movedTo.path, at);
+          if (seq !== this.loadSeq) return;
+          headPath = currentState.status === 'ready' ? movedTo.path : null;
+        } else {
+          const removed = changes!.some((c) => c.path === path && c.status === 'removed');
+          if (removed) currentState = null;
+        }
       }
-      if (currentState.file.kind !== 'text') {
-        this.setDiffState(key, {
-          status: 'unavailable',
-          reason:
-            currentState.file.kind === 'binary'
-              ? 'Binary file — no text diff.'
-              : 'The file is too large to diff here.',
-        });
-        return;
+
+      let currentText = '';
+      if (currentState) {
+        if (currentState.status !== 'ready') {
+          this.setDiffState(key, {
+            status: 'error',
+            message:
+              currentState.status === 'error'
+                ? currentState.message
+                : 'The file content could not be loaded.',
+          });
+          return;
+        }
+        if (currentState.file.kind !== 'text') {
+          this.setDiffState(key, {
+            status: 'unavailable',
+            reason:
+              currentState.file.kind === 'binary'
+                ? 'Binary file — no text diff.'
+                : 'The file is too large to diff here.',
+          });
+          return;
+        }
+        currentText = currentState.file.text;
+      } else {
+        headPath = null;
+      }
+
+      let basePath: string | null =
+        samePathBaseState && samePathBaseState.status === 'ready' ? path : null;
+      let baseState = samePathBaseState;
+      if (baseSha && baseState?.status === 'error' && baseState.kind === 'not-found') {
+        const previousPath = (await commitFiles()).find(
+          (c) => c.path === (headPath ?? path) && c.previousPath,
+        )?.previousPath;
+        if (seq !== this.loadSeq) return;
+        if (previousPath) {
+          baseState = await this.ensureFile(previousPath, baseSha);
+          if (seq !== this.loadSeq) return;
+          basePath = baseState.status === 'ready' ? previousPath : null;
+        }
       }
 
       let baseText = '';
@@ -454,8 +503,8 @@ export class RepoStore {
         }
       }
 
-      const diff = computeFileDiff(baseText, currentState.file.text);
-      this.setDiffState(key, { status: 'ready', diff, commit, baseSha });
+      const diff = computeFileDiff(baseText, currentText);
+      this.setDiffState(key, { status: 'ready', diff, commit, baseSha, basePath, headPath });
     } catch (error) {
       if (seq !== this.loadSeq) return;
       this.setDiffState(key, { status: 'error', message: toRepoProviderError(error).message });
@@ -504,8 +553,9 @@ export class RepoStore {
   }
 
   private canExtendBlame(path: string, at: string | null, state: BlameState): boolean {
-    if (this._historyPath() !== path || this._historyStatus() !== 'ready') return false;
-    const history = this._history();
+    const cached = this.historyCache.get(path);
+    if (!cached) return false;
+    const history = cached.commits;
     const anchor = at ? history.findIndex((c) => c.sha === at) : 0;
     if (anchor === -1) return false;
     return history.length - anchor > state.processed;
@@ -516,14 +566,16 @@ export class RepoStore {
     const fail = (status: 'unavailable' | 'error', message: string): void =>
       this.setBlameState(key, { status, lines: [], truncated: false, processed: 0, message });
 
-    await this.loadHistory(path);
+    if (this._selectedPath() === path) await this.loadHistory(path);
+    const historyState = await this.historyFor(path);
     if (seq !== this.loadSeq) return;
-    if (this._historyPath() !== path || this._historyStatus() !== 'ready') {
-      fail('error', this._historyError() ?? 'The file history could not be loaded.');
+    if (!historyState) {
+      fail('error', 'The file history could not be loaded.');
       return;
     }
-    const anchor = at ? this._history().findIndex((c) => c.sha === at) : 0;
-    if (this._history().length === 0) {
+    const history = historyState.commits;
+    const anchor = at ? history.findIndex((c) => c.sha === at) : 0;
+    if (history.length === 0) {
       fail('unavailable', 'No commit history found for this file.');
       return;
     }
@@ -557,11 +609,11 @@ export class RepoStore {
     let newerLines = blamedLines;
 
     for (let i = anchor; pending > 0; i++) {
-      const newer = this._history()[i];
-      const older = this._history()[i + 1];
+      const newer = history[i];
+      const older = history[i + 1];
 
       if (!older) {
-        if (this._historyHasMore()) {
+        if (historyState.hasMore) {
           // The trail continues past the loaded pages.
           for (let j = 0; j < owners.length; j++) if (owners[j] === null) owners[j] = 'older';
           publish('ready', true);
@@ -573,15 +625,6 @@ export class RepoStore {
         }
         processed++;
         publish('ready', false);
-        return;
-      }
-
-      // Soft-stop when the user switched files; partial state stays cached
-      // and the walk resumes (cheaply) when the version is needed again.
-      // Note: only the path is checked — the split changes view blames the
-      // parent version while `viewAt` points at the commit itself.
-      if (this._selectedPath() !== path) {
-        publish('computing', false);
         return;
       }
 
@@ -731,6 +774,28 @@ export class RepoStore {
     if (!path) return;
     this._historyStatus.set('idle');
     void this.loadHistory(path);
+  }
+
+  private async historyFor(
+    path: string,
+  ): Promise<{ commits: readonly CommitInfo[]; hasMore: boolean; page: number } | null> {
+    const cached = this.historyCache.get(path);
+    if (cached) return cached;
+    const slug = this._slug();
+    if (!slug || this._phase() !== 'ready') return null;
+    try {
+      const commits = await this.registry.byId(slug.provider).listCommits(slug, {
+        ref: this.ref() ?? undefined,
+        path,
+        perPage: HISTORY_PAGE_SIZE,
+      });
+      this.cacheCommits(commits);
+      const entry = { commits, hasMore: commits.length === HISTORY_PAGE_SIZE, page: 1 };
+      this.historyCache.set(path, entry);
+      return entry;
+    } catch {
+      return null;
+    }
   }
 
   /**

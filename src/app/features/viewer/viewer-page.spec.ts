@@ -88,8 +88,10 @@ describe('ViewerPage (integration)', () => {
     // its predecessor, last touched at the root commit.
     '/repos/acme/rocket/commits': (url: URL) => {
       const path = url.searchParams.get('path');
+      const ref = url.searchParams.get('sha');
       if (path === 'src/engine.ts') return [RENAME_COMMIT];
-      if (path === 'src/thruster.ts') return [OLD_COMMIT];
+      if (path === 'src/thruster.ts')
+        return ref === OLD_SHA ? [OLD_COMMIT] : [RENAME_COMMIT, OLD_COMMIT];
       if (path === 'NOTES.md') return [OLD_COMMIT];
       return [NEW_COMMIT, OLD_COMMIT];
     },
@@ -123,9 +125,9 @@ describe('ViewerPage (integration)', () => {
       return {
         type: 'file',
         path: 'src/thruster.ts',
-        sha: 'blob1',
+        sha: 'blob0',
         size: 24,
-        content: btoa('export const thrust = 1;'),
+        content: btoa('export const thrust = 0;'),
         encoding: 'base64',
       };
     },
@@ -164,7 +166,7 @@ describe('ViewerPage (integration)', () => {
       truncated: false,
       tree: [
         { path: 'src', type: 'tree', sha: 'tree0' },
-        { path: 'src/thruster.ts', type: 'blob', sha: 'blob1', size: 24 },
+        { path: 'src/thruster.ts', type: 'blob', sha: 'blob0', size: 24 },
         { path: 'README.md', type: 'blob', sha: 'blob2', size: 17 },
       ],
     },
@@ -459,14 +461,9 @@ describe('ViewerPage (integration)', () => {
 
   it('annotates lines with blame and jumps to the introducing commit', async () => {
     await harness.navigateByUrl('/r/acme/rocket?path=README.md');
-    await vi.waitFor(async () => {
-      expect(await textOnScreen()).toContain('Go!');
-    });
-
-    clickButton('Blame');
 
     await vi.waitFor(async () => {
-      expect(router.url).toContain('blame=1');
+      expect(router.url).not.toContain('blame=0');
       const text = await textOnScreen();
       expect(text).toContain('01.01.2026 Grace'); // line 1: introduced by the root commit
       expect(text).toContain('01.06.2026 Ada'); // lines 2-3: introduced by the newest commit
@@ -485,15 +482,9 @@ describe('ViewerPage (integration)', () => {
 
   it('splits the changes view with blame on both sides', async () => {
     await harness.navigateByUrl(`/r/acme/rocket?path=README.md&at=${NEW_SHA}&view=diff`);
-    await vi.waitFor(async () => {
-      expect(await textOnScreen()).toContain('@@ -1,1 +1,3 @@');
-    });
-
-    // The Blame toggle is available in the changes view too.
-    clickButton('Blame');
 
     await vi.waitFor(async () => {
-      expect(router.url).toContain('blame=1');
+      expect(router.url).not.toContain('blame=0');
       const text = await textOnScreen();
       // Split header: parent on the left, the commit on the right.
       expect(text).toContain('Before');
@@ -520,7 +511,7 @@ describe('ViewerPage (integration)', () => {
     // Turning blame off returns to the unified diff.
     clickButton('Blame');
     await vi.waitFor(async () => {
-      expect(router.url).not.toContain('blame=1');
+      expect(router.url).toContain('blame=0');
       expect(await textOnScreen()).toContain('@@ -1,1 +1,3 @@');
     });
   });
@@ -629,30 +620,35 @@ describe('ViewerPage (integration)', () => {
     });
   });
 
-  it('omits Before when the commit created the file and keeps blame working', async () => {
-    // engine.ts was created by the rename commit — there is nothing before.
+  it('renders a rename commit against the predecessor path and keeps blame working', async () => {
     await harness.navigateByUrl(`/r/acme/rocket?path=src%2Fengine.ts&at=${RENAME_SHA}&view=diff`);
     await vi.waitFor(async () => {
       const text = await textOnScreen();
+      expect(text).toContain('src/thruster.ts');
+      expect(text).toContain('export const thrust = 0;');
       expect(text).toContain('export const thrust = 1;');
       expect(text).toContain('refactor: rename thruster to engine'); // history loaded
     });
-    // No dead-end button that would error with "does not exist at …".
-    expect(await textOnScreen()).not.toContain('◂ Before');
+    expect(await textOnScreen()).toContain('◂ Before');
 
-    clickButton('Blame');
     await vi.waitFor(async () => {
       const text = await textOnScreen();
+      expect(text).toContain('01.01.2026 Grace'); // annotated predecessor version
       expect(text).toContain('01.03.2026 Ada'); // annotated at this newest version
       expect(text).not.toContain('does not exist at');
     });
-    expect(router.url).toContain('blame=1');
+    expect(router.url).not.toContain('blame=0');
   });
 
-  it('continues past a rename into the predecessor file', async () => {
+  it('continues past a rename into the predecessor file with blame back on', async () => {
     await harness.navigateByUrl('/r/acme/rocket?path=src%2Fengine.ts');
     await vi.waitFor(async () => {
       expect(await textOnScreen()).toContain('export const thrust = 1;');
+    });
+
+    clickButton('Blame');
+    await vi.waitFor(() => {
+      expect(router.url).toContain('blame=0');
     });
 
     clickButton('History');
@@ -667,9 +663,8 @@ describe('ViewerPage (integration)', () => {
     await vi.waitFor(async () => {
       const text = await textOnScreen();
       expect(text).toContain('src/thruster.ts');
-      expect(text).toContain('100% match');
+      expect(text).toContain('99% match');
       expect(text).toContain('rename');
-      expect(text).toContain('identical');
     });
 
     clickButton('src/thruster.ts');
@@ -677,8 +672,46 @@ describe('ViewerPage (integration)', () => {
     await vi.waitFor(async () => {
       expect(router.url).toContain('path=src%2Fthruster.ts');
       expect(router.url).toContain(`at=${OLD_SHA}`);
+      expect(router.url).not.toContain('blame=0');
       // The predecessor's own timeline: a root commit, everything new.
-      expect(await textOnScreen()).toContain('initial commit — everything is new');
+      const text = await textOnScreen();
+      expect(text).toContain('initial commit — everything is new');
+      expect(text).toContain('01.01.2026 Grace');
+    });
+  });
+
+  it('renders the rename-away commit from the predecessor history', async () => {
+    await harness.navigateByUrl('/r/acme/rocket?path=src%2Fengine.ts');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('export const thrust = 1;');
+    });
+
+    clickButton('History');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('Continue past the rename?');
+    });
+
+    clickButton('Continue past the rename?');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('src/thruster.ts');
+    });
+    clickButton('src/thruster.ts');
+
+    await vi.waitFor(() => {
+      expect(router.url).toContain('path=src%2Fthruster.ts');
+      expect(router.url).toContain(`at=${OLD_SHA}`);
+    });
+
+    clickButton('refactor: rename thruster to engine');
+
+    await vi.waitFor(async () => {
+      expect(router.url).toContain('path=src%2Fthruster.ts');
+      expect(router.url).toContain(`at=${RENAME_SHA}`);
+      const text = await textOnScreen();
+      expect(text).toContain('src/engine.ts');
+      expect(text).toContain('export const thrust = 0;');
+      expect(text).toContain('export const thrust = 1;');
+      expect(text).not.toContain('does not exist at');
     });
   });
 });

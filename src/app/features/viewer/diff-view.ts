@@ -188,14 +188,29 @@ interface SplitRow {
         <div class="flex h-6 shrink-0 border-b border-zinc-800 bg-zinc-900/40 text-[11px]">
           <span class="flex w-1/2 items-center gap-1 border-r border-zinc-800/80 px-4 text-zinc-500"
             >Before
-            @if (s.baseSha; as base) {
-              <span class="font-mono">{{ abbrev(base) }}</span>
+            @if (s.basePath; as basePath) {
+              @if (basePath !== path()) {
+                <span class="truncate">{{ basePath }}</span>
+              }
+            } @else if (s.baseSha) {
+              <span>(nothing at parent)</span>
             } @else {
               <span>(nothing — initial commit)</span>
             }
+            @if (s.baseSha; as base) {
+              <span class="font-mono">{{ abbrev(base) }}</span>
+            }
           </span>
           <span class="flex w-1/2 items-center gap-1 px-4 text-zinc-500"
-            >After <span class="font-mono">{{ abbrev(s.commit.sha) }}</span>
+            >After
+            @if (s.headPath; as headPath) {
+              @if (headPath !== path()) {
+                <span class="truncate">{{ headPath }}</span>
+              }
+            } @else {
+              <span>(deleted)</span>
+            }
+            <span class="font-mono">{{ abbrev(s.commit.sha) }}</span>
           </span>
         </div>
         <div #scroller class="slim-scrollbar min-h-0 flex-1 overflow-auto">

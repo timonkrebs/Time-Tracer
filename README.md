@@ -1,4 +1,4 @@
-mkdir -p ~/.npm-global     && npm config set prefix '~/.npm-global'     && echo 'export PATH=~/.npm-global/bin:$PATH' >> ~/.bashrc && source ~/.bashrc
+mkdir -p ~/.npm-global && npm config set prefix '~/.npm-global' && echo 'export PATH=~/.npm-global/bin:$PATH' >> ~/.bashrc && source ~/.bashrc
 
 # Time Tracer
 
@@ -16,13 +16,13 @@ Access API and parsed with isomorphic-git. Nothing you browse ever leaves your m
 The end goal is an interactive **git blame explorer** in the spirit of IntelliJ's annotate view:
 
 - Annotate a file and step **backwards in time hunk by hunk** — select a hunk, jump to the state
-  of the file *before* the commit that introduced it, and keep digging recursively.
+  of the file _before_ the commit that introduced it, and keep digging recursively.
 - **Don't stop at renames.** Where `git blame` normally ends at a rename or content move, Time
   Tracer will present a ranked list of **candidate predecessor files** so the journey back in time
   can continue across renames and code moves.
 
 Both halves of that vision are now in place: hunk-level time travel (◂ Before, blame chains and
-the per-hunk *Trace* history filter) and rename candidates that continue the journey across
+the per-hunk _Trace_ history filter) and rename candidates that continue the journey across
 renames — see the feature list and roadmap below for what's done and what's next.
 
 ## Current features
@@ -55,17 +55,17 @@ renames — see the feature list and roadmap below for what's done and what's ne
 - **Changes view (default)**: picking a commit opens what that commit changed in the file — a
   unified diff against its first parent, computed client-side with a minimal Myers diff (dual
   line-number gutter, hunk headers, +added/−removed stats, root/merge commits handled). Switch to
-  *File* to read the full version instead; your last File/Changes choice is remembered.
-- **Blame annotations everywhere**: the *Blame* toggle is available in both views. In the file
+  _File_ to read the full version instead; your last File/Changes choice is remembered.
+- **Blame annotations everywhere**: the _Blame_ toggle is available in both views. In the file
   view it annotates every line with the commit that introduced it (`dd.mm.yyyy author` on every line, IDE-style, colour-coded
   older→newer, IntelliJ-style block grouping). In the changes view it switches to a **split
-  view** — the version *before* the commit on the left, *after* on the right, removes/adds
+  view** — the version _before_ the commit on the left, _after_ on the right, removes/adds
   aligned side by side, and **both sides carry their own blame gutters**. Attribution is computed
   client-side by walking the file's history with the minimal diff, streams in progressively, and
   works at any historical version. Lines older than the loaded history pages are marked and
   resolve incrementally as more pages load.
 - **Recursive time travel, hunk by hunk**: clicking a blame annotation opens the introducing
-  commit's diff *scrolled to that exact line*; every hunk in a diff offers **◂ Before** — jump to
+  commit's diff _scrolled to that exact line_; every hunk in a diff offers **◂ Before** — jump to
   the parent version, annotated, at the hunk's old position. Blame → commit → before → blame
   chains indefinitely, each step deep-linked (`line=` highlights and scrolls).
 - **Per-hunk history filter ("Trace")**: every hunk also offers **Trace** — the History panel
@@ -84,16 +84,17 @@ renames — see the feature list and roadmap below for what's done and what's ne
   predecessor's own timeline.
 - **Rename candidates**: where a file's recorded history ends, the History panel can search the
   commit just before it for likely predecessors — GitHub's own rename detection, files the
-  creating commit *deleted* (prime rename suspects, content-compared one by one), identical blobs
+  creating commit _deleted_ (prime rename suspects, content-compared one by one), identical blobs
   in the parent tree, and name/size/content heuristics, each ranked with a confidence score.
   Content comparisons use a line-structured fuzzy similarity (exact lines via the minimal diff,
   edited lines via per-line Levenshtein), so a rename that also touched up lines still scores
   high. Picking a candidate continues the journey in the predecessor's own timeline (anchored at
   its last change before the rename), with history, blame and steppers all working there.
 - **Deep-linkable state**:
-  `/r/:owner/:repo?ref=<ref>&path=<file>&at=<sha>&view=diff&blame=1&line=42` — refresh, share,
-  and use browser back/forward to step through previously viewed files, historical versions,
-  diffs and annotations.
+  `/r/:owner/:repo?ref=<ref>&path=<file>&at=<sha>&view=diff&line=42` — refresh, share, and use
+  browser back/forward to step through previously viewed files, historical versions, diffs and
+  annotations. Blame annotations are on by default; add `blame=0` to share a unified diff or plain
+  file view.
 - **Honest file handling**: UTF-8 decoding, binary detection (NUL-byte heuristic, like git),
   a 2 MB size guard with a link out to GitHub, and per-snapshot content caching.
 - **Specific error states**: not found, invalid ref, empty repository, network failure, and
@@ -167,7 +168,7 @@ npm run build      # production build into dist/
 
 1. ~~**Commit timeline** — per-file commit list with time travel to any version.~~ ✅ Done.
 2. ~~**File diffs between commits** — compute hunks client-side from two blob versions.~~ ✅ Done
-   (minimal Myers diff engine in `core/util/diff.ts`, surfaced as the *Changes* view).
+   (minimal Myers diff engine in `core/util/diff.ts`, surfaced as the _Changes_ view).
 3. ~~**Blame annotations** — per-line commit attribution in the line-number gutter.~~ ✅ Done
    (diff-walk attribution with progressive rendering; click an annotation to open the commit).
 4. ~~**Recursive time travel** — "blame previous revision" per hunk, IntelliJ-style.~~ ✅ Done
@@ -176,7 +177,7 @@ npm run build      # production build into dist/
    (provider rename detection + identical blobs + similarity heuristics, journey continues in the
    predecessor's timeline).
 6. ~~**Per-hunk history filter** — trace a hunk's lines through time, `git log -L`-style.~~
-   ✅ Done (range-tracking walk in `core/util/line-range.ts`, surfaced as *Trace* on every hunk;
+   ✅ Done (range-tracking walk in `core/util/line-range.ts`, surfaced as _Trace_ on every hunk;
    hunk-origin search for moved blocks via `core/util/similarity.ts`).
 7. **Branch/ref switcher** — pick branches and tags from the viewer header (any ref already works
    via the `?ref=` query param).

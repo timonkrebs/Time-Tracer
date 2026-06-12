@@ -33,7 +33,7 @@ const HISTORY_OPEN_KEY = 'time-tracer.history-open';
  *
  * The route is the source of truth: owner/repo/ref drive `RepoStore.loadRepo`,
  * `path` drives file selection, `at` views that file at a historical commit,
- * `view` picks file vs. changes mode and `blame` toggles line annotations —
+ * `view` picks file vs. changes mode and `blame=0` disables line annotations —
  * so deep links, refreshes and browser back/forward all behave like real
  * navigation, including steps through time.
  */
@@ -379,7 +379,7 @@ const HISTORY_OPEN_KEY = 'time-tracer.history-open';
                 [highlightLine]="lineNumber()"
                 [splitMode]="blameOn()"
                 [leftBlame]="leftBlame()"
-                [rightBlame]="store.selectedBlame()"
+                [rightBlame]="rightBlame()"
                 [blameActive]="blameOn()"
                 [historyActive]="historyOpen()"
                 [beforeAvailable]="hunkBeforeAvailable()"
@@ -456,7 +456,7 @@ export class ViewerPage {
   readonly at = input<string | undefined>();
   /** `diff` or `file`; absent falls back to the remembered preference. */
   readonly view = input<string | undefined>();
-  /** Truthy enables blame annotations in the file view. */
+  /** `0` disables blame annotations; absent/default keeps them on. */
   readonly blame = input<string | undefined>();
   /** 1-based line to highlight and scroll to (file or changes view). */
   readonly line = input<string | undefined>();
@@ -478,28 +478,23 @@ export class ViewerPage {
   });
 
   /** Blame is available in both views: gutter in File, split in Changes. */
-  protected readonly blameOn = computed(() => !!this.blame());
+  protected readonly blameOn = computed(() => this.blame() !== '0');
 
   protected readonly lineNumber = computed<number | null>(() => {
     const parsed = Number(this.line());
     return Number.isInteger(parsed) && parsed >= 1 ? parsed : null;
   });
 
-  /**
-   * The history entry just before the viewed commit — the left side of the
-   * split changes view. Anchoring there (instead of the raw parent sha)
-   * keeps blame working: the parent itself may not have touched the path.
-   */
-  private readonly prevSha = computed<string | null>(() => {
-    if (!this.store.viewAt()) return null;
-    const idx = this.anchorIndex();
-    if (idx === -1) return null;
-    return this.store.history()[idx + 1]?.sha ?? null;
+  protected readonly leftBlame = computed(() => {
+    const diff = this.store.selectedDiff();
+    if (diff?.status !== 'ready' || !diff.baseSha || !diff.basePath) return null;
+    return this.store.blameFor(diff.basePath, diff.baseSha);
   });
 
-  protected readonly leftBlame = computed(() => {
-    const prev = this.prevSha();
-    return prev ? this.store.blameFor(this.store.selectedPath(), prev) : null;
+  protected readonly rightBlame = computed(() => {
+    const diff = this.store.selectedDiff();
+    if (diff?.status !== 'ready') return this.store.selectedBlame();
+    return diff.headPath ? this.store.blameFor(diff.headPath, diff.commit.sha) : null;
   });
 
   protected readonly selectedFileLinks = computed(() => {
@@ -543,6 +538,8 @@ export class ViewerPage {
    * history shows the viewed commit created the file (nothing earlier).
    */
   protected readonly hunkBeforeAvailable = computed(() => {
+    const diff = this.store.selectedDiff();
+    if (diff?.status === 'ready') return !!diff.basePath;
     if (!this.store.viewAt()) return false;
     if (!this.historyReadyForPath()) return true; // unknown yet — the handler resolves it
     const idx = this.anchorIndex();
@@ -619,15 +616,15 @@ export class ViewerPage {
       const diff = this.diffMode();
       const path = this.path() || null;
       const at = this.at() || null;
-      // prevSha also re-runs this when more history pages arrive,
-      // extending truncated blames.
-      const prev = this.prevSha();
-      this.store.history();
+      const selectedDiff = this.store.selectedDiff();
+      const basePath = diff && selectedDiff?.status === 'ready' ? selectedDiff.basePath : null;
+      const baseSha = diff && selectedDiff?.status === 'ready' ? selectedDiff.baseSha : null;
+      const headPath = diff && selectedDiff?.status === 'ready' ? selectedDiff.headPath : path;
       untracked(() => {
         if (phase !== 'ready' || !blame || !path) return;
-        void this.store.loadBlame(path, at);
+        if (headPath) void this.store.loadBlame(headPath, at);
         // The split changes view also annotates the version before.
-        if (diff && prev) void this.store.loadBlame(path, prev);
+        if (diff && basePath && baseSha) void this.store.loadBlame(basePath, baseSha);
       });
     });
 
@@ -687,6 +684,22 @@ export class ViewerPage {
     const path = this.store.selectedPath();
     const at = this.store.viewAt();
     if (!path || !at) return;
+    const diff = this.store.selectedDiff();
+    if (diff?.status === 'ready' && diff.baseSha && diff.basePath && diff.basePath !== path) {
+      const anchor = await this.store.lastTouch(diff.basePath, diff.baseSha);
+      void this.router.navigate([], {
+        relativeTo: this.route,
+        queryParams: {
+          path: diff.basePath,
+          at: anchor?.sha ?? diff.baseSha,
+          view: 'file',
+          blame: null,
+          line: String(Math.max(1, target.oldStart)),
+        },
+        queryParamsHandling: 'merge',
+      });
+      return;
+    }
     if (!this.historyReadyForPath()) await this.store.loadHistory(path);
     let history = this.store.history();
     let idx = history.findIndex((c) => c.sha === at);
@@ -740,6 +753,7 @@ export class ViewerPage {
         path: candidate.path,
         at: anchor?.sha ?? renames.parentSha,
         view: this.viewPref(),
+        blame: null,
         line: null,
       },
       queryParamsHandling: 'merge',
@@ -842,7 +856,7 @@ export class ViewerPage {
   protected toggleBlame(): void {
     void this.router.navigate([], {
       relativeTo: this.route,
-      queryParams: { blame: this.blame() ? null : '1' },
+      queryParams: { blame: this.blameOn() ? '0' : null },
       queryParamsHandling: 'merge',
     });
   }
