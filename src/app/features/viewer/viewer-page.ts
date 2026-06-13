@@ -21,6 +21,7 @@ import {
 import { LineRange } from '../../core/util/line-range';
 import { relativeTime, shortSha } from '../../core/util/relative-time';
 import { DiffView } from './diff-view';
+import { FileFinder } from './file-finder';
 import { FileHistory } from './file-history';
 import { FileTree } from './file-tree';
 import { FileView } from './file-view';
@@ -46,8 +47,8 @@ const TREE_COLLAPSED_KEY = 'time-tracer.tree-collapsed';
 @Component({
   selector: 'app-viewer-page',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [RouterLink, FileTree, FileView, FileHistory, DiffView],
-  host: { class: 'block h-full' },
+  imports: [RouterLink, FileTree, FileView, FileHistory, DiffView, FileFinder],
+  host: { class: 'block h-full', '(document:keydown)': 'onGlobalKeydown($event)' },
   template: `
     <div class="flex h-full flex-col" [class.select-none]="dragging()">
       <header
@@ -74,6 +75,27 @@ const TREE_COLLAPSED_KEY = 'time-tracer.tree-collapsed';
             >
               <rect x="3" y="3" width="18" height="18" rx="2" />
               <path d="M9 3v18" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="shrink-0 rounded p-1.5 text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-100"
+            (click)="openFinder()"
+            aria-label="Find a file"
+            title="Find a file (Ctrl/⌘ P)"
+          >
+            <svg
+              class="size-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="11" cy="11" r="7" />
+              <path d="m21 21-4.3-4.3" />
             </svg>
           </button>
         }
@@ -473,6 +495,14 @@ const TREE_COLLAPSED_KEY = 'time-tracer.tree-collapsed';
           }
         </div>
       }
+
+      @if (finderOpen() && store.phase() === 'ready') {
+        <app-file-finder
+          [files]="store.files()"
+          (fileSelect)="onFinderSelect($event)"
+          (closed)="finderOpen.set(false)"
+        />
+      }
     </div>
   `,
 })
@@ -509,6 +539,8 @@ export class ViewerPage {
   protected readonly historyOpen = signal(restoreHistoryOpen());
   /** Remembered across sessions: the file tree can be collapsed to widen the view. */
   protected readonly treeCollapsed = signal(restoreTreeCollapsed());
+  /** Quick-open file finder overlay (Ctrl/⌘ P). */
+  protected readonly finderOpen = signal(false);
   /** Remembered File/Changes choice; Changes is the default. */
   private readonly viewPref = signal<'file' | 'diff'>(restoreViewMode());
   private dragOrigin: { x: number; width: number } | null = null;
@@ -696,6 +728,25 @@ export class ViewerPage {
       const fullName = this.store.metadata()?.fullName;
       if (fullName) this.title.setTitle(`${fullName} · Time Tracer`);
     });
+  }
+
+  /** Ctrl/⌘ P opens the quick file finder (overriding the browser print dialog). */
+  protected onGlobalKeydown(event: KeyboardEvent): void {
+    if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'p') {
+      if (this.store.phase() !== 'ready') return;
+      event.preventDefault();
+      this.finderOpen.set(true);
+    }
+  }
+
+  protected openFinder(): void {
+    this.finderOpen.set(true);
+  }
+
+  /** A file was picked in the finder: open it and dismiss the overlay. */
+  protected onFinderSelect(path: string): void {
+    this.finderOpen.set(false);
+    this.onFileSelect(path);
   }
 
   protected onFileSelect(path: string): void {

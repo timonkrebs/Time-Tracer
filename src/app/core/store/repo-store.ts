@@ -272,6 +272,13 @@ export class RepoStore {
   readonly fileCount = computed(() => this._entries().filter((e) => e.kind === 'file').length);
   readonly dirCount = computed(() => this._entries().filter((e) => e.kind === 'dir').length);
 
+  /** Flat, path-sorted list of file entries — the corpus the file finder ranks. */
+  readonly files = computed(() =>
+    this._entries()
+      .filter((e) => e.kind === 'file')
+      .sort((a, b) => a.path.localeCompare(b.path)),
+  );
+
   private readonly entriesByPath = computed(() => {
     const map = new Map<string, TreeEntry>();
     for (const entry of this._entries()) map.set(entry.path, entry);
