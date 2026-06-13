@@ -1,5 +1,5 @@
 import { CommitInfo } from '../models';
-import { computeFileMetric, heatLevel } from './hotspots';
+import { HEAT_THRESHOLDS, computeFileMetric, heatLevel } from './hotspots';
 
 const DAY_MS = 86_400_000;
 
@@ -94,5 +94,12 @@ describe('heatLevel', () => {
     expect(heatLevel(2)).toBe(2);
     expect(heatLevel(5)).toBe(3);
     expect(heatLevel(12)).toBe(4);
+  });
+
+  it('changes band exactly at each HEAT_THRESHOLDS boundary', () => {
+    HEAT_THRESHOLDS.forEach((threshold, level) => {
+      expect(heatLevel(threshold)).toBe(level);
+      if (level > 0) expect(heatLevel(threshold - 0.001)).toBe(level - 1);
+    });
   });
 });

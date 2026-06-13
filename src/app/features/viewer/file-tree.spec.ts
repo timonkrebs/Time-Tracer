@@ -50,11 +50,14 @@ describe('FileTree', () => {
     fixture.detectChanges();
   }
 
-  /** The hotspot badges are the only title-bearing spans in the tree. */
   function badges(): HTMLElement[] {
     return Array.from(
-      (fixture.nativeElement as HTMLElement).querySelectorAll<HTMLElement>('span[title]'),
+      (fixture.nativeElement as HTMLElement).querySelectorAll<HTMLElement>('.heat-badge'),
     );
+  }
+
+  function popup(): HTMLElement | null {
+    return (fixture.nativeElement as HTMLElement).querySelector('app-heat-popup');
   }
 
   it('renders file and directory names', () => {
@@ -97,16 +100,29 @@ describe('FileTree', () => {
     expect(badges()).toHaveLength(0);
   });
 
-  it('describes revisions, recency, authors and partiality in the tooltip', () => {
+  it('summarises revisions, recency, authors and partiality in the aria-label', () => {
     render(
       [fileNode('README.md')],
       new Map([['README.md', metric({ revisions: 5, score: 3, authors: 2, partial: true })]]),
     );
-    const title = badges()[0].title;
-    expect(title).toContain('≥ 5 changes');
-    expect(title).toContain('recency-weighted 3.0');
-    expect(title).toContain('last changed');
-    expect(title).toContain('2 authors');
+    const label = badges()[0].getAttribute('aria-label') ?? '';
+    expect(label).toContain('≥ 5 changes');
+    expect(label).toContain('recency-weighted 3.0');
+    expect(label).toContain('last changed');
+    expect(label).toContain('2 authors');
+  });
+
+  it('reveals a details popup while the badge is hovered and hides it on leave', () => {
+    render([fileNode('README.md')], new Map([['README.md', metric()]]));
+    expect(popup()).toBeNull();
+
+    badges()[0].dispatchEvent(new MouseEvent('mouseenter'));
+    fixture.detectChanges();
+    expect(popup()).not.toBeNull();
+
+    badges()[0].dispatchEvent(new MouseEvent('mouseleave'));
+    fixture.detectChanges();
+    expect(popup()).toBeNull();
   });
 
   it('passes metrics down to nested files in expanded directories', () => {

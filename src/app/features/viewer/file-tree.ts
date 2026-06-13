@@ -1,9 +1,10 @@
-import { ChangeDetectionStrategy, Component, input, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, input, output, signal } from '@angular/core';
 
 import { TreeNode } from '../../core/models';
 import { FileMetric, heatLevel } from '../../core/util/hotspots';
 import { relativeTime } from '../../core/util/relative-time';
 import { HEAT_STYLES } from './heat';
+import { HeatPopup } from './heat-popup';
 
 /** Maps a file name to a Tailwind text colour class for its icon. */
 function fileIconColor(name: string): string {
@@ -56,7 +57,7 @@ function fileIconColor(name: string): string {
 @Component({
   selector: 'app-file-tree',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [FileTree],
+  imports: [FileTree, HeatPopup],
   template: `
     @for (node of nodes(); track node.path) {
       @if (node.kind === 'dir') {
@@ -137,9 +138,11 @@ function fileIconColor(name: string): string {
           <span class="min-w-0 truncate">{{ node.name }}</span>
           @if (metricFor(node.path); as m) {
             <span
-              class="ml-auto shrink-0 rounded px-1 text-[10px] leading-[15px] font-medium tabular-nums"
+              class="heat-badge ml-auto shrink-0 cursor-default rounded px-1 text-[10px] leading-[15px] font-medium tabular-nums"
               [class]="heatClass(m.score)"
-              [title]="metricTitle(m)"
+              [attr.aria-label]="metricLabel(m)"
+              (mouseenter)="onBadgeEnter($event, m)"
+              (mouseleave)="onBadgeLeave()"
               >{{ scoreLabel(m.score) }}</span
             >
           }
@@ -168,6 +171,16 @@ function fileIconColor(name: string): string {
         </div>
       }
     }
+    @if (hovered(); as h) {
+      <div
+        class="pointer-events-none fixed z-50"
+        [style.right.px]="h.right"
+        [style.top.px]="h.top"
+        [style.transform]="h.flip ? 'translateY(-100%)' : null"
+      >
+        <app-heat-popup [metric]="h.metric" />
+      </div>
+    }
   `,
 })
 export class FileTree {
@@ -181,8 +194,35 @@ export class FileTree {
   readonly fileSelect = output<string>();
   readonly dirToggle = output<string>();
 
+  /** The badge being hovered and where to anchor its popup, if any. */
+  protected readonly hovered = signal<{
+    readonly metric: FileMetric;
+    readonly right: number;
+    readonly top: number;
+    readonly flip: boolean;
+  } | null>(null);
+
   protected iconColor(name: string): string {
     return fileIconColor(name);
+  }
+
+  /**
+   * Opens the hotspot popup anchored under the hovered badge, right-aligned to
+   * it and flipped above when there is little room below the viewport edge.
+   */
+  protected onBadgeEnter(event: MouseEvent, metric: FileMetric): void {
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    const flip = rect.bottom > window.innerHeight - 200;
+    this.hovered.set({
+      metric,
+      right: Math.max(8, window.innerWidth - rect.right),
+      top: flip ? rect.top - 6 : rect.bottom + 6,
+      flip,
+    });
+  }
+
+  protected onBadgeLeave(): void {
+    this.hovered.set(null);
   }
 
   /** The metric for a path, or null until its history shows a change. */
@@ -200,7 +240,8 @@ export class FileTree {
     return HEAT_STYLES[heatLevel(score)].badge;
   }
 
-  protected metricTitle(m: FileMetric): string {
+  /** Accessible summary of the badge (the popup shows the visual detail). */
+  protected metricLabel(m: FileMetric): string {
     const parts: string[] = [
       `${m.partial ? '≥ ' : ''}${m.revisions} change${m.revisions === 1 ? '' : 's'}`,
       `recency-weighted ${m.score.toFixed(1)}`,

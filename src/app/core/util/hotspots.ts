@@ -92,15 +92,21 @@ export function computeFileMetric(
 }
 
 /**
+ * Lower-bound score for each heat level: level `n` covers scores from
+ * `HEAT_THRESHOLDS[n]` up to (but excluding) `HEAT_THRESHOLDS[n + 1]`. Level 0
+ * starts at 0, so every non-negative score maps to a level.
+ */
+export const HEAT_THRESHOLDS: readonly [0, number, number, number, number] = [0, 0.75, 2, 4, 8];
+
+/**
  * Buckets a recency-weighted {@link FileMetric.score} into five heat levels
- * (0 = cold … 4 = hot) for colour-coding. The thresholds read against the
- * score's natural meaning — roughly the number of "recent-equivalent"
- * changes — so ~8+ recent changes is a hotspot.
+ * (0 = cold … 4 = hot) for colour-coding, using {@link HEAT_THRESHOLDS}. The
+ * thresholds read against the score's natural meaning — roughly the number of
+ * "recent-equivalent" changes — so ~8+ recent changes is a hotspot.
  */
 export function heatLevel(score: number): 0 | 1 | 2 | 3 | 4 {
-  if (score >= 8) return 4;
-  if (score >= 4) return 3;
-  if (score >= 2) return 2;
-  if (score >= 0.75) return 1;
+  for (let level = 4; level > 0; level--) {
+    if (score >= HEAT_THRESHOLDS[level]) return level as 1 | 2 | 3 | 4;
+  }
   return 0;
 }

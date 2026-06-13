@@ -10,6 +10,7 @@ describe('HEAT_STYLES', () => {
       expect(style).toBeDefined();
       expect(style.badge).toBeTruthy();
       expect(style.swatch).toBeTruthy();
+      expect(style.label).toBeTruthy();
     }
   });
 });

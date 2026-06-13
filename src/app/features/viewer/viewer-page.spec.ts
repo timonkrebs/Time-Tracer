@@ -408,11 +408,12 @@ describe('ViewerPage (integration)', () => {
     await vi.waitFor(async () => {
       await textOnScreen();
       const badge = harness.routeNativeElement!.querySelector<HTMLElement>(
-        'app-file-tree span[title*="recency-weighted"]',
+        'app-file-tree .heat-badge',
       );
       expect(badge).not.toBeNull();
-      expect(badge!.title).toContain('2 changes');
-      expect(badge!.title).toContain('2 authors');
+      const label = badge!.getAttribute('aria-label') ?? '';
+      expect(label).toContain('2 changes');
+      expect(label).toContain('2 authors');
       expect(badge!.textContent!.trim()).not.toBe('');
     });
 
