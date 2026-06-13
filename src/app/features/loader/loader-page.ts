@@ -1,16 +1,26 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { Router } from '@angular/router';
 
-import { AccessTokens, TokenProviderId } from '../../core/git/access-tokens';
-import { ProviderRegistry } from '../../core/git/git-provider';
+import { AccessTokens, TokenProviderId, hostKey } from '../../core/git/access-tokens';
+import { GitProvider, ProviderRegistry } from '../../core/git/git-provider';
 import { LocalRepos, supportsLocalRepos } from '../../core/git/local/local-repos';
 import { ZipRepos } from '../../core/git/local/zip-repos';
+import { ParsedRepoUrl } from '../../core/models';
 import { RecentRepos, RecentRepo } from '../../core/store/recent-repos';
 
 const EXAMPLES = ['angular/angular', 'sindresorhus/ky', 'octocat/Hello-World'];
 
 /** Full commit shas need no ref/path disambiguation — they never contain `/`. */
 const COMMIT_SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
+
+/** Self-hostable provider flavors offered in the custom-instance form. */
+const CUSTOM_FLAVORS = [
+  { id: 'github', label: 'GitHub Enterprise' },
+  { id: 'gitlab', label: 'GitLab (self-hosted)' },
+  { id: 'bitbucket-server', label: 'Bitbucket Server / DC' },
+] as const;
+
+type CustomFlavor = (typeof CUSTOM_FLAVORS)[number]['id'];
 
 @Component({
   selector: 'app-loader-page',
@@ -40,8 +50,9 @@ const COMMIT_SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
           </div>
           <h1 class="text-3xl font-semibold tracking-tight text-zinc-50">Time Tracer</h1>
           <p class="mt-2 max-w-md text-sm leading-6 text-zinc-400">
-            Explore any public GitHub or GitLab repository — or a local folder — and travel back
-            through its history change by change, right in your browser.
+            Explore any public GitHub, GitLab, Bitbucket or Azure DevOps repository — a self-hosted
+            instance, or a local folder — and travel back through its history change by change,
+            right in your browser.
           </p>
         </div>
 
@@ -53,7 +64,7 @@ const COMMIT_SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
             type="text"
             autocomplete="off"
             spellcheck="false"
-            placeholder="github.com/owner/repo  ·  gitlab.com/…  ·  dev.azure.com/org/project/_git/repo"
+            placeholder="github.com/owner/repo  ·  gitlab.com/…  ·  bitbucket.org/…  ·  dev.azure.com/…"
             class="h-11 min-w-0 flex-1 rounded-lg border border-zinc-700 bg-zinc-900 px-4 text-sm text-zinc-100 placeholder:text-zinc-600 outline-none transition focus:border-indigo-400/60 focus:ring-2 focus:ring-indigo-400/20"
             [value]="query()"
             (input)="onInput($event)"
@@ -198,6 +209,52 @@ const COMMIT_SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
                 </p>
               </div>
               <div>
+                <label class="mb-1 block text-xs font-medium text-zinc-400" for="gitlab-token"
+                  >GitLab</label
+                >
+                <input
+                  id="gitlab-token"
+                  type="password"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="glpat-…"
+                  class="h-9 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 font-mono text-xs text-zinc-100 placeholder:text-zinc-600 outline-none transition focus:border-indigo-400/60 focus:ring-2 focus:ring-indigo-400/20"
+                  [value]="tokens.tokenFor('gitlab')"
+                  (input)="saveToken('gitlab', $event)"
+                />
+                <p class="mt-1 text-[11px] leading-4 text-zinc-600">
+                  Unlocks private projects and raises limits; create one with the
+                  <span class="font-mono">read_api</span> scope.
+                  <a
+                    class="text-indigo-300/80 transition hover:text-indigo-200 hover:underline"
+                    href="https://gitlab.com/-/user_settings/personal_access_tokens"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    >Create one ↗</a
+                  >
+                </p>
+              </div>
+              <div>
+                <label class="mb-1 block text-xs font-medium text-zinc-400" for="bitbucket-token"
+                  >Bitbucket</label
+                >
+                <input
+                  id="bitbucket-token"
+                  type="password"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="access token, or user:app_password"
+                  class="h-9 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 font-mono text-xs text-zinc-100 placeholder:text-zinc-600 outline-none transition focus:border-indigo-400/60 focus:ring-2 focus:ring-indigo-400/20"
+                  [value]="tokens.tokenFor('bitbucket')"
+                  (input)="saveToken('bitbucket', $event)"
+                />
+                <p class="mt-1 text-[11px] leading-4 text-zinc-600">
+                  Unlocks private repositories — a repository/workspace access token (sent as
+                  Bearer) or a <span class="font-mono">username:app_password</span> pair (sent as
+                  Basic), needing <span class="font-mono">Repositories: Read</span>.
+                </p>
+              </div>
+              <div>
                 <label class="mb-1 block text-xs font-medium text-zinc-400" for="azd-token"
                   >Azure DevOps</label
                 >
@@ -228,6 +285,117 @@ const COMMIT_SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
           }
         </section>
 
+        <section class="mt-4">
+          <button
+            type="button"
+            class="flex items-center gap-1.5 text-xs text-zinc-500 transition hover:text-zinc-300"
+            (click)="customOpen.set(!customOpen())"
+            [attr.aria-expanded]="customOpen()"
+          >
+            <svg
+              class="size-3 transition-transform"
+              [class.rotate-90]="customOpen()"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="m9 18 6-6-6-6" />
+            </svg>
+            Self-hosted / custom instance
+          </button>
+          @if (customOpen()) {
+            <div class="mt-2 space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/40 p-4">
+              <p class="text-xs leading-5 text-zinc-500">
+                Connect to a GitHub Enterprise, self-hosted GitLab, or Bitbucket Server / Data
+                Center instance by its base URL. The URL and token stay in this browser and go only
+                to that instance's API.
+              </p>
+              <div
+                class="flex gap-1 rounded-lg border border-zinc-700 p-0.5 text-[11px]"
+                role="group"
+                aria-label="Instance type"
+              >
+                @for (flavor of customFlavors; track flavor.id) {
+                  <button
+                    type="button"
+                    class="flex-1 rounded px-2 py-1 transition"
+                    [class]="
+                      customFlavor() === flavor.id
+                        ? 'bg-indigo-500/20 text-indigo-200'
+                        : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+                    "
+                    (click)="customFlavor.set(flavor.id)"
+                  >
+                    {{ flavor.label }}
+                  </button>
+                }
+              </div>
+              <div>
+                <label class="mb-1 block text-xs font-medium text-zinc-400" for="custom-host"
+                  >Instance base URL</label
+                >
+                <input
+                  id="custom-host"
+                  type="url"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="https://git.example.com"
+                  class="h-9 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 font-mono text-xs text-zinc-100 placeholder:text-zinc-600 outline-none transition focus:border-indigo-400/60 focus:ring-2 focus:ring-indigo-400/20"
+                  [value]="customHost()"
+                  (input)="onCustomHostInput($event)"
+                />
+              </div>
+              <div>
+                <label class="mb-1 block text-xs font-medium text-zinc-400" for="custom-repo"
+                  >Repository</label
+                >
+                <input
+                  id="custom-repo"
+                  type="text"
+                  autocomplete="off"
+                  spellcheck="false"
+                  [placeholder]="customRepoPlaceholder()"
+                  class="h-9 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 font-mono text-xs text-zinc-100 placeholder:text-zinc-600 outline-none transition focus:border-indigo-400/60 focus:ring-2 focus:ring-indigo-400/20"
+                  [value]="customRepo()"
+                  (input)="onCustomRepoInput($event)"
+                  (keydown.enter)="openCustom()"
+                />
+              </div>
+              <div>
+                <label class="mb-1 block text-xs font-medium text-zinc-400" for="custom-token"
+                  >Access token (optional)</label
+                >
+                <input
+                  id="custom-token"
+                  type="password"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="personal / HTTP access token"
+                  class="h-9 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 font-mono text-xs text-zinc-100 placeholder:text-zinc-600 outline-none transition focus:border-indigo-400/60 focus:ring-2 focus:ring-indigo-400/20"
+                  [disabled]="!customHost().trim()"
+                  [value]="customTokenValue()"
+                  (input)="saveCustomToken($event)"
+                />
+              </div>
+              @if (customError()) {
+                <p class="text-xs text-rose-400" role="alert">{{ customError() }}</p>
+              }
+              <button
+                type="button"
+                [disabled]="busy()"
+                class="h-9 w-full rounded-lg bg-indigo-500 text-sm font-medium text-white transition hover:bg-indigo-400 focus-visible:ring-2 focus-visible:ring-indigo-300 active:bg-indigo-600 disabled:cursor-wait disabled:opacity-60"
+                (click)="openCustom()"
+              >
+                {{ busy() ? 'Opening…' : 'Open instance repository' }}
+              </button>
+            </div>
+          }
+        </section>
+
         @if (recents.entries().length > 0) {
           <section class="mt-10">
             <h2 class="mb-2 text-xs font-medium tracking-wide text-zinc-500 uppercase">Recent</h2>
@@ -252,6 +420,9 @@ const COMMIT_SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
                           class="rounded-full border border-zinc-700 px-1.5 text-[10px] text-zinc-500"
                           >{{ recent.provider }}</span
                         >
+                      }
+                      @if (recent.host) {
+                        <span class="text-[10px] text-zinc-600">{{ hostLabel(recent.host) }}</span>
                       }
                     </span>
                     @if (recent.description) {
@@ -285,8 +456,9 @@ const COMMIT_SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
         }
 
         <p class="mt-10 text-center text-xs leading-5 text-zinc-600">
-          Client-only — data comes straight from the GitHub/GitLab/Azure DevOps APIs or your own
-          disk. No server: repository content and access tokens never go anywhere else.
+          Client-only — data comes straight from the GitHub/GitLab/Bitbucket/Azure DevOps APIs (or
+          your self-hosted instance) or your own disk. No server: repository content and access
+          tokens never go anywhere else.
         </p>
       </div>
     </main>
@@ -307,7 +479,33 @@ export class LoaderPage {
   protected readonly canOpenLocal = supportsLocalRepos();
   protected readonly tokensOpen = signal(false);
   protected readonly hasAnyToken = computed(
-    () => !!(this.tokens.tokenFor('github') || this.tokens.tokenFor('azd')),
+    () =>
+      !!(
+        this.tokens.tokenFor('github') ||
+        this.tokens.tokenFor('gitlab') ||
+        this.tokens.tokenFor('bitbucket') ||
+        this.tokens.tokenFor('azd')
+      ),
+  );
+
+  // Self-hosted / custom-instance form.
+  protected readonly customFlavors = CUSTOM_FLAVORS;
+  protected readonly customOpen = signal(false);
+  protected readonly customFlavor = signal<CustomFlavor>('github');
+  protected readonly customHost = signal('');
+  protected readonly customRepo = signal('');
+  protected readonly customError = signal<string | null>(null);
+  /** Token key the custom form reads/writes — the instance origin. */
+  private readonly customTokenKey = computed(() => {
+    const host = this.customHost().trim();
+    return host ? hostKey(host) : '';
+  });
+  protected readonly customTokenValue = computed(() => {
+    const key = this.customTokenKey();
+    return key ? this.tokens.tokenFor(key) : '';
+  });
+  protected readonly customRepoPlaceholder = computed(() =>
+    this.customFlavor() === 'bitbucket-server' ? 'PROJECT/repo or a browse URL' : 'owner/repo or a full URL',
   );
 
   protected onInput(event: Event): void {
@@ -332,10 +530,43 @@ export class LoaderPage {
     const parsed = provider?.parseUrl(input);
     if (!provider || !parsed) {
       this.error.set(
-        'That does not look like a GitHub or GitLab repository. Try "owner/repo" or a full URL.',
+        'That does not look like a hosted repository. Try "owner/repo", a full URL, or the self-hosted form below.',
       );
       return;
     }
+    await this.navigateTo(provider, parsed);
+  }
+
+  /** Opens a repository on a self-hosted / custom instance. */
+  protected async openCustom(): Promise<void> {
+    if (this.busy()) return;
+    const host = this.customHost().trim();
+    if (!host) {
+      this.customError.set('Enter the instance base URL.');
+      return;
+    }
+    const repo = this.customRepo().trim();
+    if (!repo) {
+      this.customError.set('Enter the repository — owner/repo or a full URL on the instance.');
+      return;
+    }
+    const provider = this.registry.byId(this.customFlavor());
+    const parsed = provider.parseHostedUrl?.(repo, host) ?? null;
+    if (!parsed) {
+      this.customError.set('Could not read a repository from that input on this instance.');
+      return;
+    }
+    this.customError.set(null);
+    await this.navigateTo(provider, parsed);
+  }
+
+  /**
+   * Resolves a parsed reference (disambiguating slash-containing refs against
+   * the provider's real refs when it can) and navigates to the viewer, carrying
+   * a custom instance `host` through the query string.
+   */
+  private async navigateTo(provider: GitProvider, parsed: ParsedRepoUrl): Promise<void> {
+    const host = parsed.host;
 
     // The URL parser splits `tree/<ref>/<path>` at the first segment, which is
     // wrong for refs containing `/` (e.g. `feature/foo`). Let the provider
@@ -345,7 +576,7 @@ export class LoaderPage {
       this.busy.set(true);
       try {
         const resolved = await provider.resolveRefPath(
-          { provider: provider.id, owner: parsed.owner, repo: parsed.repo },
+          { provider: provider.id, owner: parsed.owner, repo: parsed.repo, ...(host ? { host } : {}) },
           `${ref}/${path}`,
         );
         if (resolved) ({ ref, path } = resolved);
@@ -357,11 +588,37 @@ export class LoaderPage {
     }
 
     const queryParams: Record<string, string> = {};
+    if (host) queryParams['host'] = host;
     if (ref) queryParams['ref'] = ref;
     if (path) queryParams['path'] = path;
     void this.router.navigate([routePrefix(provider.id), parsed.owner, parsed.repo], {
       queryParams,
     });
+  }
+
+  protected onCustomHostInput(event: Event): void {
+    this.customHost.set((event.target as HTMLInputElement).value);
+    this.customError.set(null);
+  }
+
+  protected onCustomRepoInput(event: Event): void {
+    this.customRepo.set((event.target as HTMLInputElement).value);
+    this.customError.set(null);
+  }
+
+  /** Persists the custom instance's token under its host key. */
+  protected saveCustomToken(event: Event): void {
+    const key = this.customTokenKey();
+    if (key) this.tokens.setToken(key, (event.target as HTMLInputElement).value);
+  }
+
+  /** Hostname of an instance origin, for compact display. */
+  protected hostLabel(host: string): string {
+    try {
+      return new URL(host).hostname;
+    } catch {
+      return host;
+    }
   }
 
   /** Imports a repository from a .zip archive (works in every browser). */
@@ -408,12 +665,23 @@ export class LoaderPage {
       void this.router.navigate(['/local', recent.repo]);
       return;
     }
-    void this.router.navigate([routePrefix(provider), recent.owner, recent.repo]);
+    void this.router.navigate([routePrefix(provider), recent.owner, recent.repo], {
+      queryParams: recent.host ? { host: recent.host } : {},
+    });
   }
 }
 
 function routePrefix(providerId: string): string {
-  if (providerId === 'gitlab') return '/gl';
-  if (providerId === 'azd') return '/azd';
-  return '/r';
+  switch (providerId) {
+    case 'gitlab':
+      return '/gl';
+    case 'azd':
+      return '/azd';
+    case 'bitbucket':
+      return '/bb';
+    case 'bitbucket-server':
+      return '/bbs';
+    default:
+      return '/r';
+  }
 }

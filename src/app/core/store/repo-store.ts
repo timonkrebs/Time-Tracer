@@ -376,6 +376,7 @@ export class RepoStore {
         repo: metadata.name,
         description: metadata.description,
         provider: slug.provider,
+        ...(slug.host ? { host: slug.host } : {}),
       });
     } catch (error) {
       if (seq !== this.loadSeq) return;
@@ -1506,6 +1507,7 @@ export class RepoStore {
     return (
       !!current &&
       current.provider === slug.provider &&
+      (current.host ?? null) === (slug.host ?? null) &&
       current.owner.toLowerCase() === slug.owner.toLowerCase() &&
       current.repo.toLowerCase() === slug.repo.toLowerCase() &&
       (this._requestedRef() ?? null) === ref

@@ -1,4 +1,4 @@
-import { Injectable } from '@angular/core';
+import { Injectable, inject } from '@angular/core';
 
 import {
   CommitFileChange,
@@ -12,10 +12,11 @@ import {
   TreeEntry,
 } from '../../models';
 import { base64ToBytes, bytesToUtf8, isProbablyBinary } from '../../util/decode';
+import { AccessTokens } from '../access-tokens';
 import { GitProvider, RepoWebLinks } from '../git-provider';
 import { parseGitlabUrl } from './gitlab-url';
 
-const API_BASE = 'https://gitlab.com/api/v4';
+const PUBLIC_HOST = 'https://gitlab.com';
 
 /** Files above this size are not fetched; the UI links to GitLab instead. */
 const MAX_FILE_SIZE_BYTES = 2_000_000;
@@ -68,14 +69,19 @@ interface GitlabDiffItem {
 }
 
 /**
- * Reads public repositories through GitLab.com's unauthenticated REST API
- * (v4). Projects are addressed by their URL-encoded full path, which also
- * covers nested groups.
+ * Reads repositories through GitLab's REST API (v4). Projects are addressed
+ * by their URL-encoded full path, which also covers nested groups. The same
+ * implementation serves self-hosted GitLab instances: when the slug carries a
+ * custom `host`, requests go to that host's `/api/v4` base. A stored personal
+ * access token (sent as `PRIVATE-TOKEN`) raises rate limits and unlocks
+ * private projects.
  */
 @Injectable({ providedIn: 'root' })
 export class GitlabProvider implements GitProvider {
   readonly id = 'gitlab';
   readonly label = 'GitLab';
+
+  private readonly tokens = inject(AccessTokens);
 
   canHandle(input: string): boolean {
     return this.parseUrl(input) !== null;
@@ -85,8 +91,13 @@ export class GitlabProvider implements GitProvider {
     return parseGitlabUrl(input);
   }
 
+  /** Parses a repo reference on a self-hosted GitLab host. */
+  parseHostedUrl(input: string, host: string): ParsedRepoUrl | null {
+    return parseGitlabUrl(input, host);
+  }
+
   async getMetadata(slug: RepoSlug): Promise<RepoMetadata> {
-    const data = await this.request<GitlabProjectResponse>(`/projects/${projectId(slug)}`, {
+    const data = await this.request<GitlabProjectResponse>(slug, `/projects/${projectId(slug)}`, {
       notFound: 'Project not found — it may not exist or it may be private.',
     });
     return {
@@ -106,6 +117,7 @@ export class GitlabProvider implements GitProvider {
     let truncated = false;
     for (let page = 1; ; page++) {
       const items = await this.request<GitlabTreeItem[]>(
+        slug,
         `/projects/${projectId(slug)}/repository/tree?recursive=true&per_page=100&page=${page}&ref=${encodeURIComponent(ref)}`,
         { notFound: `Ref "${ref}" was not found in this project.`, notFoundKind: 'invalid-ref' },
       );
@@ -132,6 +144,7 @@ export class GitlabProvider implements GitProvider {
 
   async getFile(slug: RepoSlug, entry: TreeEntry): Promise<RepoFile> {
     const data = await this.request<GitlabFileResponse>(
+      slug,
       `/projects/${projectId(slug)}/repository/blobs/${encodeURIComponent(entry.sha)}`,
       { notFound: `File "${entry.path}" was not found.` },
     );
@@ -140,6 +153,7 @@ export class GitlabProvider implements GitProvider {
 
   async getFileAtRef(slug: RepoSlug, path: string, ref: string): Promise<RepoFile> {
     const data = await this.request<GitlabFileResponse>(
+      slug,
       `/projects/${projectId(slug)}/repository/files/${encodeURIComponent(path)}?ref=${encodeURIComponent(ref)}`,
       {
         notFound: `"${path}" does not exist at ${ref.slice(0, 7)} — it may have been added later or deleted by this commit.`,
@@ -173,6 +187,7 @@ export class GitlabProvider implements GitProvider {
     if (options.page) params.set('page', String(options.page));
 
     const data = await this.request<GitlabCommitResponse[]>(
+      slug,
       `/projects/${projectId(slug)}/repository/commits?${params}`,
       { notFound: 'No commit history found for this ref or path.' },
     );
@@ -181,6 +196,7 @@ export class GitlabProvider implements GitProvider {
 
   async getCommit(slug: RepoSlug, sha: string): Promise<CommitInfo> {
     const data = await this.request<GitlabCommitResponse>(
+      slug,
       `/projects/${projectId(slug)}/repository/commits/${encodeURIComponent(sha)}`,
       { notFound: `Commit ${sha.slice(0, 7)} was not found in this project.` },
     );
@@ -189,6 +205,7 @@ export class GitlabProvider implements GitProvider {
 
   async getCommitFiles(slug: RepoSlug, sha: string): Promise<CommitFileChange[]> {
     const data = await this.request<GitlabDiffItem[]>(
+      slug,
       `/projects/${projectId(slug)}/repository/commits/${encodeURIComponent(sha)}/diff`,
       { notFound: `Commit ${sha.slice(0, 7)} was not found in this project.` },
     );
@@ -208,7 +225,8 @@ export class GitlabProvider implements GitProvider {
   }
 
   webLinks(slug: RepoSlug, ref: string, path?: string): RepoWebLinks {
-    const repoUrl = `https://gitlab.com/${slug.owner}/${slug.repo}`;
+    const webBase = slug.host ? stripTrailingSlash(slug.host) : PUBLIC_HOST;
+    const repoUrl = `${webBase}/${slug.owner}/${slug.repo}`;
     if (!path) return { repoUrl };
     const encodedPath = path.split('/').map(encodeURIComponent).join('/');
     const encodedRef = encodeURIComponent(ref);
@@ -220,12 +238,16 @@ export class GitlabProvider implements GitProvider {
   }
 
   private async request<T>(
+    slug: RepoSlug,
     apiPath: string,
     messages: { notFound: string; notFoundKind?: 'not-found' | 'invalid-ref' },
   ): Promise<T> {
+    const token = this.tokens.tokenForSlug(slug);
+    const init: RequestInit = token ? { headers: { 'PRIVATE-TOKEN': token } } : {};
+
     let response: Response;
     try {
-      response = await fetch(`${API_BASE}${apiPath}`);
+      response = await fetch(`${apiBase(slug)}${apiPath}`, init);
     } catch {
       throw new RepoProviderError(
         'Could not reach the GitLab API — check your connection and try again.',
@@ -236,9 +258,19 @@ export class GitlabProvider implements GitProvider {
     if (response.ok) {
       return (await response.json()) as T;
     }
+    if (response.status === 401) {
+      throw new RepoProviderError(
+        token
+          ? 'GitLab rejected the access token — check it on the start page, or clear it to browse anonymously.'
+          : 'GitLab requires authentication for this project — add a personal access token on the start page.',
+        'not-found',
+      );
+    }
     if (response.status === 429) {
       throw new RepoProviderError(
-        'GitLab is rate-limiting unauthenticated requests — wait a bit and try again.',
+        token
+          ? 'GitLab is rate-limiting requests — wait a bit and try again.'
+          : 'GitLab is rate-limiting unauthenticated requests — wait a bit and try again, or add a personal access token (start page).',
         'rate-limited',
       );
     }
@@ -250,6 +282,15 @@ export class GitlabProvider implements GitProvider {
       'unknown',
     );
   }
+}
+
+/** REST base for a slug: gitlab.com, or a self-hosted instance's `/api/v4`. */
+function apiBase(slug: RepoSlug): string {
+  return `${slug.host ? stripTrailingSlash(slug.host) : PUBLIC_HOST}/api/v4`;
+}
+
+function stripTrailingSlash(value: string): string {
+  return value.replace(/\/+$/, '');
 }
 
 function projectId(slug: RepoSlug): string {

@@ -2,12 +2,14 @@
 
 **Try it live: [gittimetracer.netlify.app](https://gittimetracer.netlify.app/)**
 
-Explore any public GitHub, GitLab or Azure DevOps repository — or a git repository from your own
-disk or a .zip archive — and travel back through its history change by change.
+Explore any public GitHub, GitLab, Bitbucket or Azure DevOps repository — a self-hosted GitHub
+Enterprise / GitLab / Bitbucket Server instance, or a git repository from your own disk or a .zip
+archive — and travel back through its history change by change. Installable as an offline-capable
+PWA.
 
 Time Tracer is a **client-only** Angular app: there is no backend. Hosted repositories are read
-through the GitHub/GitLab public REST APIs; local folders are read directly via the File System
-Access API and parsed with isomorphic-git. Nothing you browse ever leaves your machine.
+through the GitHub/GitLab/Bitbucket/Azure DevOps REST APIs; local folders are read directly via the
+File System Access API and parsed with isomorphic-git. Nothing you browse ever leaves your machine.
 
 ## Vision
 
@@ -28,10 +30,17 @@ renames — see the feature list and roadmap below for what's done and what's ne
 - **Load a repo** from `owner/repo`, any `github.com` URL (`/tree/<ref>`, `/blob/<ref>/<path>`,
   commit URLs, `.git`, SSH form), a `raw.githubusercontent.com` URL — including branch names
   containing `/`, resolved against the repo's real refs — or any `gitlab.com` URL
-  (`…/gitlab-org/gitlab.git`, `/-/tree/...`, `/-/blob/...`, nested groups included), or any
+  (`…/gitlab-org/gitlab.git`, `/-/tree/...`, `/-/blob/...`, nested groups included), any
+  `bitbucket.org` URL (`/{workspace}/{repo}`, `/src/<ref>/<path>`, `/commits/<sha>`, SSH), or any
   Azure DevOps URL (`dev.azure.com/{org}/{project}/_git/{repo}`, pull-request/commit pages,
   `?path=…&version=GB…` state, `{org}.visualstudio.com`, SSH) — anonymous AZD access works for
   public projects; private ones explain that sign-in is required.
+- **Self-hosted & enterprise instances**: a start-page form connects to a **GitHub Enterprise
+  Server**, **self-hosted GitLab**, or **Bitbucket Server / Data Center** instance by its base URL
+  (paste a full URL on the instance or just `owner/repo`). The same GitHub/GitLab readers target
+  the instance's `/api/v3` / `/api/v4` endpoints; Bitbucket Server uses its REST 1.0 API. The host
+  travels in a `host` query param, so self-hosted deep links are shareable too, and each instance
+  keeps its own access token.
 - **Open local repositories** like vscode.dev: pick a folder with the File System Access API and
   Time Tracer parses its `.git` directly in the browser with isomorphic-git — full tree, history,
   diffs, blame and rename candidates, completely offline and read-only. Folder handles persist
@@ -57,7 +66,8 @@ renames — see the feature list and roadmap below for what's done and what's ne
   _File_ to read the full version instead; your last File/Changes choice is remembered.
 - **Blame annotations everywhere**: the _Blame_ toggle is available in both views. In the file
   view it annotates every line with the commit that introduced it (`dd.mm.yyyy author` on every line, IDE-style, colour-coded
-  older→newer, IntelliJ-style block grouping). In the changes view it switches to a **split
+  older→newer, IntelliJ-style block grouping); very large blamed files are **row-virtualized**, so
+  only the lines in view are in the DOM and a 10k-line file scrolls smoothly. In the changes view it switches to a **split
   view** — the version _before_ the commit on the left, _after_ on the right, removes/adds
   aligned side by side, and **both sides carry their own blame gutters**. Attribution is computed
   client-side by walking the file's history with the minimal diff, streams in progressively, and
@@ -102,12 +112,18 @@ renames — see the feature list and roadmap below for what's done and what's ne
   a 2 MB size guard with a link out to GitHub, and per-snapshot content caching.
 - **Specific error states**: not found, invalid ref, empty repository, network failure, and
   GitHub's unauthenticated rate limit (with its reset time).
-- **Personal access tokens (optional)**: a collapsible section on the start page stores a GitHub
-  token (raises the API budget from 60 to 5,000 requests/hour and opens private repos with the
-  `repo` scope) and an Azure DevOps token (opens private projects, `Code (Read)` scope, sent as
-  Basic auth). Tokens live only in this browser's localStorage and go only to the matching
-  provider's API; rate-limit and access errors say when adding — or fixing — a token would help.
-- **Recent repositories** remembered locally (localStorage).
+- **Personal access tokens (optional)**: a collapsible section on the start page stores a token per
+  provider — GitHub (60 → 5,000 requests/hour, private repos with the `repo` scope), GitLab
+  (`read_api`, sent as `PRIVATE-TOKEN`), Bitbucket (a repository/workspace access token sent as
+  Bearer, or a `user:app_password` pair sent as Basic) and Azure DevOps (`Code (Read)`, Basic
+  auth). Self-hosted instances keep their **own token per host**. Tokens live only in this
+  browser's localStorage and go only to the matching instance's API; rate-limit and access errors
+  say when adding — or fixing — a token would help.
+- **Installable PWA / offline app-shell**: a web app manifest and icon make Time Tracer installable
+  to the home screen / desktop, and a service worker caches the app shell so it launches and runs
+  offline (after the first visit). The worker only ever caches the app's own static assets —
+  cross-origin provider API calls and repository content are never intercepted or cached.
+- **Recent repositories** remembered locally (localStorage), self-hosted instances included.
 
 > GitHub's unauthenticated API allows **60 requests/hour per IP** (5,000/hour with a personal
 > access token). Time Tracer uses one request
@@ -133,9 +149,11 @@ src/app/
 ├── core/
 │   ├── models.ts            # RepoSlug, TreeEntry, RepoFile, CommitInfo, errors…
 │   ├── git/
+│   │   ├── access-tokens.ts # per-host/provider PAT store (localStorage)
 │   │   ├── git-provider.ts  # GitProvider interface · GIT_PROVIDERS token · registry
-│   │   ├── github/          # URL parser + unauthenticated REST implementation
-│   │   ├── gitlab/          # gitlab.com URL parser + REST v4 implementation
+│   │   ├── github/          # URL parser + REST implementation (github.com + Enterprise)
+│   │   ├── gitlab/          # URL parser + REST v4 implementation (gitlab.com + self-hosted)
+│   │   ├── bitbucket/       # Cloud (REST 2.0) + Server/Data Center (REST 1.0) providers
 │   │   ├── azd/             # Azure DevOps URL parser + REST 7.1 implementation
 │   │   └── local/           # FS-Access/zip filesystems + isomorphic-git provider
 │   ├── store/
@@ -150,9 +168,11 @@ src/app/
 
 Design decisions that matter for what's next:
 
-- `GitProvider` is an injection-token-based abstraction — GitLab/Bitbucket can be added without
-  touching the UI. `listCommits` and `getFileAtRef` are the same primitives the blame milestone
-  will traverse with.
+- `GitProvider` is an injection-token-based abstraction — new hosts drop in without touching the
+  UI. A provider derives its API base and token from the `RepoSlug`, which carries an optional
+  `host` (instance origin); that one field is what lets the GitHub and GitLab readers serve both
+  the public host and self-hosted instances. `listCommits` and `getFileAtRef` are the primitives
+  blame, diff and trace all traverse with.
 - Historical file versions are fetched with **one request per hop** (the contents API at a commit
   sha) and cached per `<sha, path>`, so walking back through time is cheap and revisits are free.
 - The `RepoStore` guards every async flow with a load sequence number — stale responses from
@@ -184,8 +204,14 @@ npm run build      # production build into dist/
    hunk-origin search for moved blocks via `core/util/similarity.ts`).
 7. **Branch/ref switcher** — pick branches and tags from the viewer header (any ref already works
    via the `?ref=` query param).
-8. ~~**More sources** — GitLab provider and local folders behind the `GitProvider` interface.~~
-   ✅ Done.
+8. ~~**More sources** — GitLab, Bitbucket (Cloud + Server/Data Center) and Azure DevOps providers,
+   self-hosted GitHub Enterprise / GitLab instances by custom base URL, and local folders, all
+   behind the `GitProvider` interface.~~ ✅ Done.
 9. ~~**Access tokens** — an optional personal-access-token input for a higher hosted-API
-   budget.~~ ✅ Done (GitHub + Azure DevOps, stored locally, private repositories included).
-10. **Quality of life** — syntax highlighting.
+   budget.~~ ✅ Done (GitHub + GitLab + Bitbucket + Azure DevOps, a token per self-hosted instance,
+   stored locally, private repositories included).
+10. ~~**Installable PWA / offline app-shell** — manifest, icon and a service worker that caches the
+    app shell (never repository content).~~ ✅ Done.
+11. ~~**Row virtualization** — keep huge blamed files smooth by rendering only the visible rows.~~
+    ✅ Done.
+12. **Quality of life** — syntax highlighting.

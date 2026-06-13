@@ -27,6 +27,22 @@ export const routes: Routes = [
     title: 'Time Tracer',
   },
   {
+    // Bitbucket Cloud (bitbucket.org). `:owner` is the workspace id.
+    path: 'bb/:owner/:repo',
+    loadComponent: () => import('./features/viewer/viewer-page').then((m) => m.ViewerPage),
+    data: { provider: 'bitbucket' },
+    title: 'Time Tracer',
+  },
+  {
+    // Bitbucket Server / Data Center. `:owner` is the project key; the instance
+    // origin travels in the `host` query param (also used by GitHub Enterprise
+    // on `r/…` and self-hosted GitLab on `gl/…`).
+    path: 'bbs/:owner/:repo',
+    loadComponent: () => import('./features/viewer/viewer-page').then((m) => m.ViewerPage),
+    data: { provider: 'bitbucket-server' },
+    title: 'Time Tracer',
+  },
+  {
     path: 'local/:repo',
     loadComponent: () => import('./features/viewer/viewer-page').then((m) => m.ViewerPage),
     data: { provider: 'local', owner: 'local' },

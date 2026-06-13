@@ -1,6 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 
 import { RepoSlug } from '../../models';
+import { AccessTokens } from '../access-tokens';
 import { GitlabProvider } from './gitlab-provider';
 
 const slug: RepoSlug = { provider: 'gitlab', owner: 'gitlab-org', repo: 'gitlab' };
@@ -14,6 +15,7 @@ describe('GitlabProvider', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    localStorage.clear();
     fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     provider = TestBed.inject(GitlabProvider);
@@ -168,5 +170,59 @@ describe('GitlabProvider', () => {
     fetchMock.mockResolvedValue(jsonResponse({ message: 'Not Found' }, { status: 404 }));
 
     await expect(provider.getMetadata(slug)).rejects.toMatchObject({ kind: 'not-found' });
+  });
+
+  it('sends a stored token as PRIVATE-TOKEN', async () => {
+    TestBed.inject(AccessTokens).setToken('gitlab', 'glpat-secret');
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        path: 'gitlab',
+        path_with_namespace: 'gitlab-org/gitlab',
+        description: null,
+        default_branch: 'main',
+        web_url: 'https://gitlab.com/gitlab-org/gitlab',
+        star_count: 0,
+        namespace: { full_path: 'gitlab-org' },
+      }),
+    );
+
+    await provider.getMetadata(slug);
+
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+      headers: { 'PRIVATE-TOKEN': 'glpat-secret' },
+    });
+  });
+
+  describe('self-hosted host', () => {
+    const selfHosted: RepoSlug = {
+      provider: 'gitlab',
+      owner: 'group',
+      repo: 'project',
+      host: 'https://gitlab.example.com',
+    };
+
+    it('targets the instance /api/v4 base with its host-keyed token', async () => {
+      TestBed.inject(AccessTokens).setToken('https://gitlab.example.com', 'glpat-self');
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          path: 'project',
+          path_with_namespace: 'group/project',
+          description: null,
+          default_branch: 'main',
+          web_url: 'https://gitlab.example.com/group/project',
+          star_count: 0,
+          namespace: { full_path: 'group' },
+        }),
+      );
+
+      await provider.getMetadata(selfHosted);
+
+      expect(fetchMock.mock.calls[0][0]).toBe(
+        'https://gitlab.example.com/api/v4/projects/group%2Fproject',
+      );
+      expect(fetchMock.mock.calls[0][1]).toMatchObject({
+        headers: { 'PRIVATE-TOKEN': 'glpat-self' },
+      });
+    });
   });
 });
