@@ -150,29 +150,38 @@ export class FileFinder {
   private readonly searchInput = viewChild.required<ElementRef<HTMLInputElement>>('search');
   private readonly listEl = viewChild<ElementRef<HTMLUListElement>>('list');
 
-  /** Every file that matches the query (uncapped) — used for the count. */
-  private readonly matches = computed(() => {
+  /**
+   * Files matching the query, best first (uncapped). Null while the query is
+   * empty — every file "matches" then, so there is nothing to rank and we
+   * avoid allocating a per-file array the empty case never needs.
+   */
+  private readonly ranked = computed(() => {
     const q = this.query().trim();
-    const files = this.files();
-    if (q === '') return files.map((entry) => ({ path: entry.path, positions: [] as number[] }));
-    const ranked: { path: string; positions: readonly number[]; score: number }[] = [];
-    for (const entry of files) {
+    if (q === '') return null;
+    const matches: { path: string; positions: readonly number[]; score: number }[] = [];
+    for (const entry of this.files()) {
       const match = fuzzyMatchPath(q, entry.path);
-      if (match) ranked.push({ path: entry.path, positions: match.positions, score: match.score });
+      if (match) matches.push({ path: entry.path, positions: match.positions, score: match.score });
     }
-    ranked.sort(
+    matches.sort(
       (a, b) => b.score - a.score || a.path.length - b.path.length || a.path.localeCompare(b.path),
     );
-    return ranked;
+    return matches;
   });
 
-  protected readonly total = computed(() => this.matches().length);
+  /** How many files match — all of them before a query is typed. */
+  protected readonly total = computed(() => this.ranked()?.length ?? this.files().length);
 
-  protected readonly results = computed<FinderResult[]>(() =>
-    this.matches()
-      .slice(0, MAX_RESULTS)
-      .map(({ path, positions }) => toResult(path, positions)),
-  );
+  /** The visible page: at most MAX_RESULTS files, with matched runs highlighted. */
+  protected readonly results = computed<FinderResult[]>(() => {
+    const ranked = this.ranked();
+    if (!ranked) {
+      return this.files()
+        .slice(0, MAX_RESULTS)
+        .map((entry) => toResult(entry.path, []));
+    }
+    return ranked.slice(0, MAX_RESULTS).map(({ path, positions }) => toResult(path, positions));
+  });
 
   constructor() {
     afterNextRender(() => this.searchInput().nativeElement.focus());
