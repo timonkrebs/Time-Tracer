@@ -14,7 +14,13 @@ import {
   toRepoProviderError,
 } from '../models';
 import { FileDiff, computeFileDiff, diffLines, splitLines } from '../util/diff';
-import { LineRange, changeRegions, mapRangeToParent, regionTouchesRange } from '../util/line-range';
+import {
+  LineRange,
+  changeRegions,
+  mapRangeToParentIncludingMoves,
+  movedLinePairs,
+  regionTouchesRange,
+} from '../util/line-range';
 import { findBlockOrigin, fuzzyLineSimilarity } from '../util/similarity';
 import { ancestorsOf, buildTree } from '../util/tree';
 import { RecentRepos } from './recent-repos';
@@ -98,6 +104,14 @@ export interface BlameState {
   readonly message?: string;
 }
 
+/** One commit surfaced by an active line trace, with the range it changed. */
+export interface LineTraceHit {
+  readonly commit: CommitInfo;
+  readonly path: string;
+  /** New-side coordinates in {@link commit}'s version. */
+  readonly range: LineRange;
+}
+
 /**
  * Async state of the per-hunk history filter: a line range anchored at one
  * version, followed backwards through the file's history (the moral
@@ -113,6 +127,8 @@ export interface LineTraceState {
   readonly range: LineRange;
   /** Commits that changed lines inside the tracked range, newest first. */
   readonly commits: readonly CommitInfo[];
+  /** Commit/range pairs for navigation and line highlighting. */
+  readonly hits: readonly LineTraceHit[];
   /** History steps examined so far — progress feedback while computing. */
   readonly scanned: number;
   /** True when the walk paused at the end of the loaded history pages. */
@@ -652,11 +668,16 @@ export class RepoStore {
 
       const olderLines = splitLines(olderState.file.text);
       const ops = diffLines(olderLines, newerLines);
+      const moved = movedLinePairs(ops);
       const newToOld = new Map<number, number>();
       const added = new Set<number>();
       for (const op of ops) {
         if (op.kind === 'equal') newToOld.set(op.newLine - 1, op.oldLine - 1);
-        else if (op.kind === 'add') added.add(op.newLine - 1);
+        else if (op.kind === 'add') {
+          const oldLine = moved.get(op.newLine);
+          if (oldLine !== undefined) newToOld.set(op.newLine - 1, oldLine - 1);
+          else added.add(op.newLine - 1);
+        }
       }
 
       for (let j = 0; j < blamedLines.length; j++) {
@@ -831,6 +852,7 @@ export class RepoStore {
       anchorSha,
       range,
       commits: [],
+      hits: [],
       scanned: 0,
       truncated: false,
       origin: null,
@@ -902,12 +924,23 @@ export class RepoStore {
 
     const state = this._lineTrace()!;
     const commits = [...state.commits];
+    const hits = [...state.hits];
     let scanned = state.scanned;
     const publish = (patch: Partial<LineTraceState>): void =>
-      this._lineTrace.set({ ...this._lineTrace()!, commits: [...commits], scanned, ...patch });
+      this._lineTrace.set({
+        ...this._lineTrace()!,
+        commits: [...commits],
+        hits: [...hits],
+        scanned,
+        ...patch,
+      });
     const finish = (origin: LineTraceState['origin']): void => {
       this.traceResume = null;
       publish({ status: 'ready', truncated: false, origin });
+    };
+    const recordHit = (commit: CommitInfo, hitRange: LineRange): void => {
+      commits.push(commit);
+      hits.push({ commit, path, range: hitRange });
     };
 
     let newerLines: readonly string[] | null = null;
@@ -923,7 +956,7 @@ export class RepoStore {
           return;
         }
         // Complete history: the oldest commit introduced the tracked lines.
-        commits.push(newer);
+        recordHit(newer, r);
         finish({ sha: newer.sha, range: r });
         return;
       }
@@ -963,18 +996,19 @@ export class RepoStore {
       if (olderFile.file.kind !== 'text') {
         // The file was binary before this point; `newer` (re)introduced the
         // text lines, so the trail ends with it.
-        commits.push(newer);
+        recordHit(newer, r);
         scanned++;
         finish({ sha: newer.sha, range: r });
         return;
       }
 
       const olderLines = splitLines(olderFile.file.text);
-      const regions = changeRegions(diffLines(olderLines, newerLines));
-      if (regions.some((region) => regionTouchesRange(region, r))) commits.push(newer);
+      const ops = diffLines(olderLines, newerLines);
+      const regions = changeRegions(ops);
+      if (regions.some((region) => regionTouchesRange(region, r))) recordHit(newer, r);
       scanned++;
 
-      const mapped = mapRangeToParent(regions, r);
+      const mapped = mapRangeToParentIncludingMoves(ops, regions, r);
       if (!mapped) {
         // The whole range was introduced by `newer` — nothing older to follow.
         finish({ sha: newer.sha, range: r });

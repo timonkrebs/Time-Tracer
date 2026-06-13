@@ -6,10 +6,12 @@ import {
   HunkOriginCandidate,
   HunkOriginScope,
   HunkOriginState,
+  LineTraceHit,
   LineTraceState,
   RenameCandidate,
   RenameState,
 } from '../../core/store/repo-store';
+import { LineRange } from '../../core/util/line-range';
 import { relativeTime, shortSha } from '../../core/util/relative-time';
 
 /**
@@ -129,24 +131,28 @@ import { relativeTime, shortSha } from '../../core/util/relative-time';
           @if (t.status === 'error') {
             <p class="px-3 py-2 text-xs leading-5 text-rose-400">{{ t.message }}</p>
           }
-          @for (commit of t.commits; track commit.sha) {
+          @for (hit of t.hits; track hit.commit.sha + ':' + hit.path) {
             <button
               type="button"
               class="block w-full border-t border-zinc-800/50 px-3 py-2 text-left transition-colors"
               [class]="
-                selectedSha() === commit.sha
+                selectedSha() === hit.commit.sha
                   ? 'bg-indigo-500/15 text-zinc-100'
                   : 'text-zinc-400 hover:bg-white/5'
               "
-              (click)="commitSelect.emit(commit.sha)"
+              (click)="traceSelect.emit(hit)"
             >
-              <span class="block truncate text-xs" [title]="commit.summary">{{
-                commit.summary
+              <span class="block truncate text-xs" [title]="hit.commit.summary">{{
+                hit.commit.summary
               }}</span>
               <span class="mt-0.5 flex items-center gap-2 text-[11px] text-zinc-500">
-                <span class="font-mono">{{ abbrev(commit.sha) }}</span>
-                <span class="truncate">{{ commit.authorName }}</span>
-                <span class="ml-auto shrink-0">{{ when(commit.authoredAt) }}</span>
+                <span class="font-mono">{{ abbrev(hit.commit.sha) }}</span>
+                <span class="truncate">{{ hit.commit.authorName }}</span>
+                <span class="shrink-0 text-indigo-300/70">{{ rangeLabel(hit.range) }}</span>
+                @if (hit.path !== path()) {
+                  <span class="truncate font-mono text-zinc-600">{{ hit.path }}</span>
+                }
+                <span class="ml-auto shrink-0">{{ when(hit.commit.authoredAt) }}</span>
               </span>
             </button>
           }
@@ -408,6 +414,7 @@ export class FileHistory {
   readonly origins = input<HunkOriginState | null>(null);
 
   readonly commitSelect = output<string | null>();
+  readonly traceSelect = output<LineTraceHit>();
   readonly loadMore = output<void>();
   readonly retry = output<void>();
   readonly closed = output<void>();
@@ -452,8 +459,8 @@ export class FileHistory {
     }
   }
 
-  protected rangeLabel(trace: LineTraceState): string {
-    const { start, end } = trace.range;
+  protected rangeLabel(range: LineRange | LineTraceState): string {
+    const { start, end } = 'range' in range ? range.range : range;
     return start === end ? `line ${start}` : `lines ${start}–${end}`;
   }
 

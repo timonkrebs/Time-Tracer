@@ -624,6 +624,20 @@ describe('RepoStore', () => {
       expect(ownerShas()).toEqual(['c1', 'c2']);
     });
 
+    it('keeps a moved line attributed to the commit that introduced it', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c2'), commit('c1')]);
+      provider.fileResult = (entry) => text(entry.path, entry.sha, 'A\nC\nB\n');
+      provider.fileAtRefResult = (path, ref) =>
+        text(path, `blob-${ref}`, ref === 'c2' ? 'A\nC\nB\n' : 'A\nB\nC\n');
+
+      await store.openFile('README.md');
+      await store.loadBlame('README.md');
+
+      expect(store.selectedBlame()?.status).toBe('ready');
+      expect(ownerShas()).toEqual(['c1', 'c1', 'c1']);
+      expect(ownerLines()).toEqual([1, 3, 2]);
+    });
+
     it('marks lines beyond the loaded pages as older and extends later', async () => {
       // A full page of 30 commits ⇒ hasMore. Version at c_i = lines L_i…L_29.
       const pageOne = Array.from({ length: 30 }, (_, i) => commit(`c${i}`));
@@ -690,6 +704,13 @@ describe('RepoStore', () => {
       return (store.lineTrace()?.commits ?? []).map((c) => c.sha);
     }
 
+    function traceHits(): { sha: string; range: { start: number; end: number } }[] {
+      return (store.lineTrace()?.hits ?? []).map((hit) => ({
+        sha: hit.commit.sha,
+        range: hit.range,
+      }));
+    }
+
     it('keeps only the commits that changed the traced lines', async () => {
       provider.listCommitsResult = () =>
         Promise.resolve([commit('c3'), commit('c2'), commit('c1')]);
@@ -710,6 +731,31 @@ describe('RepoStore', () => {
       // c2 only appended a line below the range — filtered out; c1 (the
       // oldest known commit) introduced the file and with it the range.
       expect(traceShas()).toEqual(['c3', 'c1']);
+    });
+
+    it('follows same-file moved lines back to their previous position', async () => {
+      provider.listCommitsResult = () =>
+        Promise.resolve([commit('c3'), commit('c2'), commit('c1')]);
+      // c2 moves line B below C without editing it; c3 edits that moved line.
+      provider.fileAtRefResult = (path, ref) =>
+        text(
+          path,
+          `blob-${ref}`,
+          ref === 'c3' ? 'A\nC\nB changed\n' : ref === 'c2' ? 'A\nC\nB\n' : 'A\nB\nC\n',
+        );
+
+      await store.openFile('README.md', 'c3');
+      await store.startLineTrace('README.md', 'c3', { start: 3, end: 3 });
+
+      const state = store.lineTrace();
+      expect(state?.status).toBe('ready');
+      expect(state?.origin).toEqual({ sha: 'c1', range: { start: 2, end: 2 } });
+      expect(traceShas()).toEqual(['c3', 'c2', 'c1']);
+      expect(traceHits()).toEqual([
+        { sha: 'c3', range: { start: 3, end: 3 } },
+        { sha: 'c2', range: { start: 3, end: 3 } },
+        { sha: 'c1', range: { start: 2, end: 2 } },
+      ]);
     });
 
     it('ends the walk where the traced lines were introduced', async () => {

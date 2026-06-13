@@ -235,12 +235,6 @@ interface SplitRow {
         </div>
         <div #scroller class="slim-scrollbar min-h-0 flex-1 overflow-auto">
           <div class="relative font-mono text-[13px] leading-6">
-            @if (highlightRowIndex(); as hl) {
-              <div
-                class="pointer-events-none absolute inset-x-0 z-10 h-6 bg-indigo-500/10 ring-1 ring-indigo-400/40 ring-inset"
-                [style.top.px]="hl * 24"
-              ></div>
-            }
             @for (row of splitRows(); track $index) {
               @if (row.type === 'hunk') {
                 <div class="flex items-center bg-sky-500/10 text-sky-300/80">
@@ -262,7 +256,12 @@ interface SplitRow {
                   }
                 </div>
               } @else {
-                <div class="flex">
+                <div
+                  class="flex"
+                  [class.trace-highlight-row]="
+                    row.type === 'line' && row.right && lineHighlighted(row.right.lineNo)
+                  "
+                >
                   <div
                     class="flex w-1/2 min-w-0 border-r border-zinc-800/80"
                     [class.bg-rose-500/10]="row.left?.changed"
@@ -394,12 +393,6 @@ interface SplitRow {
       } @else {
         <div #scroller class="slim-scrollbar min-h-0 flex-1 overflow-auto">
           <div class="relative min-w-max font-mono text-[13px] leading-6">
-            @if (highlightRowIndex(); as hl) {
-              <div
-                class="pointer-events-none absolute inset-x-0 h-6 bg-indigo-500/10 ring-1 ring-indigo-400/40 ring-inset"
-                [style.top.px]="hl * 24"
-              ></div>
-            }
             @for (row of rows(); track $index) {
               @if (row.type === 'hunk') {
                 <div class="flex items-center bg-sky-500/10 text-sky-300/80">
@@ -426,6 +419,9 @@ interface SplitRow {
                   class="flex"
                   [class.bg-emerald-500/10]="row.type === 'add'"
                   [class.bg-rose-500/10]="row.type === 'remove'"
+                  [class.trace-highlight-row]="
+                    row.newLine !== undefined && lineHighlighted(row.newLine)
+                  "
                 >
                   <span
                     class="w-10 shrink-0 pr-1 text-right text-zinc-600 select-none"
@@ -488,6 +484,8 @@ export class DiffView {
   readonly path = input.required<string | null>();
   /** 1-based new-side line to highlight and scroll to, if any. */
   readonly highlightLine = input<number | null>(null);
+  /** 1-based inclusive new-side range to highlight and scroll to, if any. */
+  readonly highlightRange = input<LineRange | null>(null);
   /** Renders the side-by-side annotated view instead of the unified diff. */
   readonly splitMode = input(false);
   /** Blame of the parent version (left side). */
@@ -673,6 +671,11 @@ export class DiffView {
     return !!range && line >= range.start && line <= range.end;
   }
 
+  protected lineHighlighted(line: number): boolean {
+    const range = this.effectiveHighlightRange();
+    return !!range && line >= range.start && line <= range.end;
+  }
+
   protected selectLine(line: number, event: MouseEvent): void {
     event.preventDefault();
     event.stopPropagation();
@@ -705,18 +708,31 @@ export class DiffView {
     return range.start === range.end ? `line ${range.start}` : `lines ${range.start}–${range.end}`;
   }
 
+  private readonly effectiveHighlightRange = computed<LineRange | null>(() => {
+    const range = this.highlightRange();
+    if (range) return range;
+    const line = this.highlightLine();
+    return line ? { start: line, end: line } : null;
+  });
+
   /** Index of the row carrying the highlighted new-side line, if visible. */
   protected readonly highlightRowIndex = computed<number | null>(() => {
-    const line = this.highlightLine();
-    if (!line) return null;
+    const range = this.effectiveHighlightRange();
+    if (!range) return null;
     if (this.splitMode()) {
       const index = this.splitRows().findIndex(
-        (row) => row.type === 'line' && row.right?.lineNo === line,
+        (row) =>
+          row.type === 'line' &&
+          !!row.right &&
+          row.right.lineNo >= range.start &&
+          row.right.lineNo <= range.end,
       );
       return index === -1 ? null : index;
     }
-    const target = String(line);
-    const index = this.rows().findIndex((row) => row.type !== 'remove' && row.newNo === target);
+    const index = this.rows().findIndex(
+      (row) =>
+        row.newLine !== undefined && row.newLine >= range.start && row.newLine <= range.end,
+    );
     return index === -1 ? null : index;
   });
 

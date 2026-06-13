@@ -12,7 +12,12 @@ import { Title } from '@angular/platform-browser';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 
 import { LocalRepos } from '../../core/git/local/local-repos';
-import { HunkOriginCandidate, RenameCandidate, RepoStore } from '../../core/store/repo-store';
+import {
+  HunkOriginCandidate,
+  LineTraceHit,
+  RenameCandidate,
+  RepoStore,
+} from '../../core/store/repo-store';
 import { LineRange } from '../../core/util/line-range';
 import { relativeTime, shortSha } from '../../core/util/relative-time';
 import { DiffView } from './diff-view';
@@ -382,6 +387,7 @@ const HISTORY_OPEN_KEY = 'time-tracer.history-open';
                 [rightBlame]="rightBlame()"
                 [blameActive]="blameOn()"
                 [historyActive]="historyOpen()"
+                [highlightRange]="activeHighlightRange()"
                 [beforeAvailable]="hunkBeforeAvailable()"
                 (retry)="onDiffRetry()"
                 (before)="onHunkBefore($event)"
@@ -400,6 +406,7 @@ const HISTORY_OPEN_KEY = 'time-tracer.history-open';
                 [blame]="store.selectedBlame()"
                 [viewKey]="store.viewAt()"
                 [highlightLine]="lineNumber()"
+                [highlightRange]="activeHighlightRange()"
                 (retry)="onFileRetry($event)"
                 (historyToggle)="toggleHistory()"
                 (blameToggle)="toggleBlame()"
@@ -422,6 +429,7 @@ const HISTORY_OPEN_KEY = 'time-tracer.history-open';
                 [trace]="store.lineTrace()"
                 [origins]="store.traceOrigins()"
                 (commitSelect)="goToCommit($event)"
+                (traceSelect)="onTraceSelect($event)"
                 (loadMore)="store.loadMoreHistory()"
                 (retry)="store.retryHistory()"
                 (closed)="toggleHistory()"
@@ -484,6 +492,19 @@ export class ViewerPage {
   protected readonly lineNumber = computed<number | null>(() => {
     const parsed = Number(this.line());
     return Number.isInteger(parsed) && parsed >= 1 ? parsed : null;
+  });
+
+  protected readonly activeHighlightRange = computed<LineRange | null>(() => {
+    const trace = this.store.lineTrace();
+    const path = this.store.selectedPath();
+    const at = this.store.viewAt();
+    if (trace && trace.status !== 'error' && path && at) {
+      const hit = trace.hits.find((entry) => entry.path === path && entry.commit.sha === at);
+      if (hit) return hit.range;
+      if (trace.path === path && trace.anchorSha === at) return trace.range;
+    }
+    const line = this.lineNumber();
+    return line ? { start: line, end: line } : null;
   });
 
   protected readonly leftBlame = computed(() => {
@@ -670,6 +691,20 @@ export class ViewerPage {
   /** A blame annotation was clicked: show that commit's diff at the line. */
   protected onBlameSelect(event: { sha: string; line: number }): void {
     this.goToCommit(event.sha, { view: 'diff', line: event.line });
+  }
+
+  /** A filtered trace commit was clicked: open it at the matched range. */
+  protected onTraceSelect(hit: LineTraceHit): void {
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: {
+        path: hit.path,
+        at: hit.commit.sha,
+        view: 'diff',
+        line: String(hit.range.start),
+      },
+      queryParamsHandling: 'merge',
+    });
   }
 
   /**

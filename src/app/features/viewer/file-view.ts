@@ -12,6 +12,7 @@ import {
 import { RepoWebLinks } from '../../core/git/git-provider';
 import { FileState } from '../../core/models';
 import { BlameState } from '../../core/store/repo-store';
+import { LineRange } from '../../core/util/line-range';
 import { AnnotationCell, buildAnnotationCells } from './blame-annotation';
 
 /** Line height of code rows (`leading-6`), used for scroll/highlight maths. */
@@ -158,10 +159,11 @@ interface BlameRow {
         @if (blameRows(); as rows) {
           <div #scroller class="slim-scrollbar min-h-0 flex-1 overflow-auto">
             <div class="relative min-w-max font-mono text-[13px] leading-6">
-              @if (highlightLine(); as hl) {
+              @if (effectiveHighlightRange(); as range) {
                 <div
                   class="pointer-events-none absolute inset-x-0 h-6 bg-indigo-500/10 ring-1 ring-indigo-400/40 ring-inset"
-                  [style.top.px]="(hl - 1) * 24"
+                  [style.top.px]="(range.start - 1) * 24"
+                  [style.height.px]="(range.end - range.start + 1) * 24"
                 ></div>
               }
               @for (row of rows; track row.lineNo) {
@@ -205,10 +207,11 @@ interface BlameRow {
         } @else if (textInfo(); as info) {
           <div #scroller class="slim-scrollbar min-h-0 flex-1 overflow-auto">
             <div class="relative flex min-w-max font-mono text-[13px] leading-6">
-              @if (highlightLine(); as hl) {
+              @if (effectiveHighlightRange(); as range) {
                 <div
                   class="pointer-events-none absolute inset-x-0 h-6 bg-indigo-500/10 ring-1 ring-indigo-400/40 ring-inset"
-                  [style.top.px]="12 + (hl - 1) * 24"
+                  [style.top.px]="12 + (range.start - 1) * 24"
+                  [style.height.px]="(range.end - range.start + 1) * 24"
                 ></div>
               }
               <pre
@@ -273,6 +276,8 @@ export class FileView {
   readonly viewKey = input<string | null>(null);
   /** 1-based line to highlight and scroll into view, if any. */
   readonly highlightLine = input<number | null>(null);
+  /** 1-based inclusive range to highlight and scroll into view, if any. */
+  readonly highlightRange = input<LineRange | null>(null);
 
   /** Emits the path when the user wants to retry a failed fetch. */
   readonly retry = output<string>();
@@ -288,7 +293,7 @@ export class FileView {
 
   constructor() {
     afterRenderEffect(() => {
-      const line = this.highlightLine();
+      const line = this.effectiveHighlightRange()?.start ?? this.highlightLine();
       this.textInfo(); // re-scroll when a different file/version renders
       const key = this.scrollKey();
       const el = this.scroller()?.nativeElement;
@@ -307,6 +312,13 @@ export class FileView {
     const s = this.state();
     if (!s || s.status !== 'ready') return null;
     return `${s.path}:${this.viewKey() ?? 'tip'}:${s.file.sha}`;
+  });
+
+  protected readonly effectiveHighlightRange = computed<LineRange | null>(() => {
+    const range = this.highlightRange();
+    if (range) return range;
+    const line = this.highlightLine();
+    return line ? { start: line, end: line } : null;
   });
 
   protected readonly textInfo = computed(() => {

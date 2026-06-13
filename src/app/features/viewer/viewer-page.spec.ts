@@ -13,6 +13,9 @@ const RENAME_SHA = 'beadfeedbeadfeedbeadfeedbeadfeedbeadfeed';
 const RUN_SHA = '1111111111111111111111111111111111111111';
 const MIDDLE_SHA = '2222222222222222222222222222222222222222';
 const ROOT_SHA = '3333333333333333333333333333333333333333';
+const MOVE_EDIT_SHA = '4444444444444444444444444444444444444444';
+const MOVE_SHA = '5555555555555555555555555555555555555555';
+const MOVE_ROOT_SHA = '6666666666666666666666666666666666666666';
 
 const NEW_COMMIT = {
   sha: NEW_SHA,
@@ -74,6 +77,36 @@ const ROOT_COMMIT = {
   parents: [],
 };
 
+const MOVE_EDIT_COMMIT = {
+  sha: MOVE_EDIT_SHA,
+  html_url: `https://github.com/acme/rocket/commit/${MOVE_EDIT_SHA}`,
+  commit: {
+    message: 'fix: edit moved line',
+    author: { name: 'Ada', email: 'ada@example.com', date: '2026-08-03T00:00:00Z' },
+  },
+  parents: [{ sha: MOVE_SHA }],
+};
+
+const MOVE_COMMIT = {
+  sha: MOVE_SHA,
+  html_url: `https://github.com/acme/rocket/commit/${MOVE_SHA}`,
+  commit: {
+    message: 'refactor: move line block',
+    author: { name: 'Grace', email: 'grace@example.com', date: '2026-08-02T00:00:00Z' },
+  },
+  parents: [{ sha: MOVE_ROOT_SHA }],
+};
+
+const MOVE_ROOT_COMMIT = {
+  sha: MOVE_ROOT_SHA,
+  html_url: `https://github.com/acme/rocket/commit/${MOVE_ROOT_SHA}`,
+  commit: {
+    message: 'feat: add move fixture',
+    author: { name: 'Grace', email: 'grace@example.com', date: '2026-08-01T00:00:00Z' },
+  },
+  parents: [],
+};
+
 /**
  * Integration tests of the full viewer pipeline: route → input binding →
  * store → provider (stubbed fetch) → rendered tree/file/history DOM.
@@ -103,6 +136,7 @@ describe('ViewerPage (integration)', () => {
         { path: 'src', type: 'tree', sha: 'tree1' },
         { path: 'src/engine.ts', type: 'blob', sha: 'blob1', size: 24 },
         { path: 'src/multi.ts', type: 'blob', sha: 'blob-multi', size: 14 },
+        { path: 'src/move.ts', type: 'blob', sha: 'blob-move', size: 18 },
         { path: 'README.md', type: 'blob', sha: 'blob2', size: 14 },
       ],
     },
@@ -124,6 +158,12 @@ describe('ViewerPage (integration)', () => {
       content: btoa('A\nb\nc\nd\ne\nf\nG\n'),
       encoding: 'base64',
     },
+    '/repos/acme/rocket/git/blobs/blob-move': {
+      sha: 'blob-move',
+      size: 18,
+      content: btoa('A\nC\nB changed\n'),
+      encoding: 'base64',
+    },
     // Per-path histories: engine.ts was created by a rename; thruster.ts is
     // its predecessor, last touched at the root commit.
     '/repos/acme/rocket/commits': (url: URL) => {
@@ -133,6 +173,7 @@ describe('ViewerPage (integration)', () => {
       if (path === 'src/thruster.ts')
         return ref === OLD_SHA ? [OLD_COMMIT] : [RENAME_COMMIT, OLD_COMMIT];
       if (path === 'src/multi.ts') return [RUN_COMMIT, MIDDLE_COMMIT, ROOT_COMMIT];
+      if (path === 'src/move.ts') return [MOVE_EDIT_COMMIT, MOVE_COMMIT, MOVE_ROOT_COMMIT];
       if (path === 'NOTES.md') return [OLD_COMMIT];
       return [NEW_COMMIT, OLD_COMMIT];
     },
@@ -192,6 +233,26 @@ describe('ViewerPage (integration)', () => {
         encoding: 'base64',
       };
     },
+    '/repos/acme/rocket/contents/src/move.ts': (url: URL) => {
+      const ref = url.searchParams.get('ref');
+      const text =
+        ref === MOVE_EDIT_SHA
+          ? 'A\nC\nB changed\n'
+          : ref === MOVE_SHA
+            ? 'A\nC\nB\n'
+            : ref === MOVE_ROOT_SHA
+              ? 'A\nB\nC\n'
+              : null;
+      if (text === null) return undefined;
+      return {
+        type: 'file',
+        path: 'src/move.ts',
+        sha: `blob-move-${ref}`,
+        size: text.length,
+        content: btoa(text),
+        encoding: 'base64',
+      };
+    },
     // The README change also deleted NOTES.md — the traced lines' source.
     [`/repos/acme/rocket/commits/${NEW_SHA}`]: {
       ...NEW_COMMIT,
@@ -204,6 +265,9 @@ describe('ViewerPage (integration)', () => {
     [`/repos/acme/rocket/commits/${RUN_SHA}`]: RUN_COMMIT,
     [`/repos/acme/rocket/commits/${MIDDLE_SHA}`]: MIDDLE_COMMIT,
     [`/repos/acme/rocket/commits/${ROOT_SHA}`]: ROOT_COMMIT,
+    [`/repos/acme/rocket/commits/${MOVE_EDIT_SHA}`]: MOVE_EDIT_COMMIT,
+    [`/repos/acme/rocket/commits/${MOVE_SHA}`]: MOVE_COMMIT,
+    [`/repos/acme/rocket/commits/${MOVE_ROOT_SHA}`]: MOVE_ROOT_COMMIT,
     '/repos/acme/rocket/contents/NOTES.md': (url: URL) => {
       if (url.searchParams.get('ref') !== OLD_SHA) return undefined;
       return {
@@ -290,7 +354,7 @@ describe('ViewerPage (integration)', () => {
       expect(text).toContain('acme/rocket');
       expect(text).toContain('README.md');
       expect(text).toContain('src');
-      expect(text).toContain('3 files · 1 folders');
+      expect(text).toContain('4 files · 1 folders');
     });
   });
 
@@ -700,6 +764,49 @@ describe('ViewerPage (integration)', () => {
       expect(text).toContain('Tracing lines 1–7');
       expect(text).toContain('feat: update edge lines');
       expect(text).toContain('chore: touch middle line');
+    });
+  });
+
+  it('traces moved lines and highlights their range in filtered commits', async () => {
+    await harness.navigateByUrl(
+      `/r/acme/rocket?path=src%2Fmove.ts&at=${MOVE_EDIT_SHA}&view=diff&blame=0`,
+    );
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('@@ -1,3 +1,3 @@');
+      expect(text).toContain('fix: edit moved line');
+    });
+
+    clickButton('Trace');
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('Tracing line 3');
+      expect(text).toContain('fix: edit moved line');
+      expect(text).toContain('refactor: move line block');
+      expect(text).toContain('feat: add move fixture');
+    });
+
+    clickButton('refactor: move line block');
+
+    await vi.waitFor(async () => {
+      expect(router.url).toContain(`at=${MOVE_SHA}`);
+      expect(router.url).toContain('line=3');
+      const highlighted = Array.from(
+        harness.routeNativeElement!.querySelectorAll<HTMLElement>('.trace-highlight-row'),
+      );
+      expect(highlighted.some((row) => (row.textContent ?? '').includes('B'))).toBe(true);
+    });
+
+    clickButton('feat: add move fixture');
+
+    await vi.waitFor(async () => {
+      expect(router.url).toContain(`at=${MOVE_ROOT_SHA}`);
+      expect(router.url).toContain('line=2');
+      const highlighted = Array.from(
+        harness.routeNativeElement!.querySelectorAll<HTMLElement>('.trace-highlight-row'),
+      );
+      expect(highlighted.some((row) => (row.textContent ?? '').includes('B'))).toBe(true);
     });
   });
 

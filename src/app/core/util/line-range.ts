@@ -97,6 +97,55 @@ export function mapRangeToParent(
   return start > end ? null : { start, end };
 }
 
+/**
+ * Like {@link mapRangeToParent}, but treats exact same-file moves as line
+ * continuity instead of introducing the range at the move commit. Minimal
+ * line diffs represent moves as a removal plus an insertion, so the regular
+ * edge mapping sees only a pure add and stops. Pairing identical add/remove
+ * runs lets tracing and blame follow the line back to its old position while
+ * still counting the move commit as a structural change.
+ */
+export function mapRangeToParentIncludingMoves(
+  ops: readonly DiffOp[],
+  regions: readonly ChangeRegion[],
+  range: LineRange,
+): LineRange | null {
+  const mapped = mapRangeToParent(regions, range);
+  if (mapped) return mapped;
+
+  const moved = movedLinePairs(ops);
+  const mappedLines: number[] = [];
+  for (let line = range.start; line <= range.end; line++) {
+    const oldLine = moved.get(line);
+    if (oldLine !== undefined) mappedLines.push(oldLine);
+  }
+  if (mappedLines.length === 0) return null;
+  return { start: Math.min(...mappedLines), end: Math.max(...mappedLines) };
+}
+
+/**
+ * New-side line -> old-side line for exact add/remove runs that are likely
+ * same-file moves. Coordinates are 1-based, matching {@link DiffOp}.
+ */
+export function movedLinePairs(ops: readonly DiffOp[]): ReadonlyMap<number, number> {
+  const removes = lineRuns(ops, 'remove');
+  const adds = lineRuns(ops, 'add');
+  if (removes.length === 0 || adds.length === 0) return new Map();
+
+  const usedOldLines = new Set<number>();
+  const pairs = new Map<number, number>();
+  for (const add of adds) {
+    const match = findRemovedRun(add, removes, usedOldLines);
+    if (!match) continue;
+    for (let i = 0; i < add.texts.length; i++) {
+      const oldLine = match.run.lines[match.offset + i];
+      pairs.set(add.lines[i], oldLine);
+      usedOldLines.add(oldLine);
+    }
+  }
+  return pairs;
+}
+
 function mapEdge(regions: readonly ChangeRegion[], line: number, edge: 'start' | 'end'): number {
   let delta = 0;
   for (const region of regions) {
@@ -113,6 +162,55 @@ function mapEdge(regions: readonly ChangeRegion[], line: number, edge: 'start' |
     }
   }
   return line + delta;
+}
+
+interface LineRun {
+  readonly lines: readonly number[];
+  readonly texts: readonly string[];
+}
+
+function lineRuns(ops: readonly DiffOp[], kind: 'add' | 'remove'): LineRun[] {
+  const runs: LineRun[] = [];
+  let lines: number[] = [];
+  let texts: string[] = [];
+  const flush = (): void => {
+    if (lines.length === 0) return;
+    runs.push({ lines, texts });
+    lines = [];
+    texts = [];
+  };
+
+  for (const op of ops) {
+    if (op.kind !== kind) {
+      flush();
+      continue;
+    }
+    if (op.kind === 'add') lines.push(op.newLine);
+    else lines.push(op.oldLine);
+    texts.push(op.text);
+  }
+  flush();
+  return runs;
+}
+
+function findRemovedRun(
+  add: LineRun,
+  removes: readonly LineRun[],
+  usedOldLines: ReadonlySet<number>,
+): { run: LineRun; offset: number } | null {
+  for (const run of removes) {
+    for (let offset = 0; offset <= run.texts.length - add.texts.length; offset++) {
+      let ok = true;
+      for (let i = 0; i < add.texts.length; i++) {
+        if (add.texts[i] !== run.texts[offset + i] || usedOldLines.has(run.lines[offset + i])) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) return { run, offset };
+    }
+  }
+  return null;
 }
 
 /**
