@@ -31,6 +31,7 @@ const TREE_WIDTH_MIN = 200;
 const TREE_WIDTH_MAX = 600;
 const VIEW_MODE_KEY = 'time-tracer.view-mode';
 const HISTORY_OPEN_KEY = 'time-tracer.history-open';
+const TREE_COLLAPSED_KEY = 'time-tracer.tree-collapsed';
 
 /**
  * `/r/:owner/:repo?ref=…&path=…&at=…&view=…&blame=…` — the split-pane
@@ -52,6 +53,30 @@ const HISTORY_OPEN_KEY = 'time-tracer.history-open';
       <header
         class="flex h-12 shrink-0 items-center gap-3 border-b border-zinc-800 bg-zinc-900/60 px-4"
       >
+        @if (store.phase() === 'ready') {
+          <button
+            type="button"
+            class="-ml-1 shrink-0 rounded p-1.5 text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-100"
+            (click)="toggleTree()"
+            [attr.aria-label]="treeCollapsed() ? 'Show file tree' : 'Hide file tree'"
+            [attr.aria-pressed]="!treeCollapsed()"
+            [title]="treeCollapsed() ? 'Show file tree' : 'Hide file tree'"
+          >
+            <svg
+              class="size-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <path d="M9 3v18" />
+            </svg>
+          </button>
+        }
         <a
           routerLink="/"
           class="flex shrink-0 items-center gap-2 text-zinc-100 transition hover:text-white"
@@ -221,35 +246,37 @@ const HISTORY_OPEN_KEY = 'time-tracer.history-open';
         </div>
       } @else {
         <div class="flex min-h-0 flex-1">
-          <aside
-            class="slim-scrollbar shrink-0 overflow-x-hidden overflow-y-auto border-r border-zinc-800 bg-zinc-950 py-2 pr-1 pl-1"
-            [style.width.px]="treeWidth()"
-          >
-            @if (store.tree().length === 0) {
-              <p class="px-3 py-2 text-xs text-zinc-600">This repository has no files.</p>
-            } @else {
-              <app-file-tree
-                [nodes]="store.tree()"
-                [selectedPath]="store.selectedPath()"
-                [expanded]="store.expandedDirs()"
-                (fileSelect)="onFileSelect($event)"
-                (dirToggle)="store.toggleDir($event)"
-              />
-            }
-          </aside>
+          @if (!treeCollapsed()) {
+            <aside
+              class="slim-scrollbar shrink-0 overflow-x-hidden overflow-y-auto border-r border-zinc-800 bg-zinc-950 py-2 pr-1 pl-1"
+              [style.width.px]="treeWidth()"
+            >
+              @if (store.tree().length === 0) {
+                <p class="px-3 py-2 text-xs text-zinc-600">This repository has no files.</p>
+              } @else {
+                <app-file-tree
+                  [nodes]="store.tree()"
+                  [selectedPath]="store.selectedPath()"
+                  [expanded]="store.expandedDirs()"
+                  (fileSelect)="onFileSelect($event)"
+                  (dirToggle)="store.toggleDir($event)"
+                />
+              }
+            </aside>
 
-          <div
-            class="w-1 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-indigo-400/40"
-            [class.bg-indigo-400/40]="dragging()"
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize file tree"
-            (pointerdown)="onDragStart($event)"
-            (pointermove)="onDragMove($event)"
-            (pointerup)="onDragEnd()"
-            (pointercancel)="onDragEnd()"
-            (dblclick)="resetTreeWidth()"
-          ></div>
+            <div
+              class="w-1 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-indigo-400/40"
+              [class.bg-indigo-400/40]="dragging()"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize file tree"
+              (pointerdown)="onDragStart($event)"
+              (pointermove)="onDragMove($event)"
+              (pointerup)="onDragEnd()"
+              (pointercancel)="onDragEnd()"
+              (dblclick)="resetTreeWidth()"
+            ></div>
+          }
 
           <section class="flex min-w-0 flex-1 flex-col bg-zinc-950">
             @if (store.selectedPath()) {
@@ -478,6 +505,8 @@ export class ViewerPage {
   protected readonly dragging = signal(false);
   /** Remembered across files and sessions: once opened, History stays open. */
   protected readonly historyOpen = signal(restoreHistoryOpen());
+  /** Remembered across sessions: the file tree can be collapsed to widen the view. */
+  protected readonly treeCollapsed = signal(restoreTreeCollapsed());
   /** Remembered File/Changes choice; Changes is the default. */
   private readonly viewPref = signal<'file' | 'diff'>(restoreViewMode());
   private dragOrigin: { x: number; width: number } | null = null;
@@ -930,6 +959,16 @@ export class ViewerPage {
     }
   }
 
+  /** Hides or restores the file tree (the resized width is preserved). */
+  protected toggleTree(): void {
+    this.treeCollapsed.update((collapsed) => !collapsed);
+    try {
+      localStorage.setItem(TREE_COLLAPSED_KEY, this.treeCollapsed() ? '1' : '0');
+    } catch {
+      // Best-effort only.
+    }
+  }
+
   protected toggleBlame(): void {
     void this.router.navigate([], {
       relativeTo: this.route,
@@ -1023,6 +1062,14 @@ function persistViewMode(mode: 'file' | 'diff'): void {
 function restoreHistoryOpen(): boolean {
   try {
     return localStorage.getItem(HISTORY_OPEN_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function restoreTreeCollapsed(): boolean {
+  try {
+    return localStorage.getItem(TREE_COLLAPSED_KEY) === '1';
   } catch {
     return false;
   }

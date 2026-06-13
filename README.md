@@ -41,7 +41,8 @@ renames — see the feature list and roadmap below for what's done and what's ne
   "Imported from …" commit so browsing, diffing and annotating work uniformly. Wrapper folders
   like `repo-main/` are stripped automatically.
 - **Desktop-first split-pane viewer**: resizable file tree (drag the divider, double-click to
-  reset) next to a file view with a line-number gutter that carries the blame annotations.
+  reset, or collapse it entirely with the header toggle — remembered across sessions) next to a
+  file view with a line-number gutter that carries the blame annotations.
 - **Per-file commit history**: a History panel lists the commits that touched the selected file
   (paginated), with author and relative date. Its open/closed state is remembered, so it can stay
   open permanently across files and sessions.

@@ -358,6 +358,30 @@ describe('ViewerPage (integration)', () => {
     });
   });
 
+  it('collapses and restores the file tree', async () => {
+    await harness.navigateByUrl('/r/acme/rocket');
+    await vi.waitFor(async () => {
+      await textOnScreen();
+      expect(harness.routeNativeElement!.querySelector('app-file-tree')).not.toBeNull();
+    });
+
+    harness
+      .routeNativeElement!.querySelector<HTMLButtonElement>('[aria-label="Hide file tree"]')!
+      .click();
+    await vi.waitFor(async () => {
+      await textOnScreen();
+      expect(harness.routeNativeElement!.querySelector('app-file-tree')).toBeNull();
+    });
+
+    harness
+      .routeNativeElement!.querySelector<HTMLButtonElement>('[aria-label="Show file tree"]')!
+      .click();
+    await vi.waitFor(async () => {
+      await textOnScreen();
+      expect(harness.routeNativeElement!.querySelector('app-file-tree')).not.toBeNull();
+    });
+  });
+
   it('opens a file when its tree row is clicked and renders the content', async () => {
     await harness.navigateByUrl('/r/acme/rocket');
     await vi.waitFor(async () => {
