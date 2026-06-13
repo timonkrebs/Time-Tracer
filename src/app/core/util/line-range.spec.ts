@@ -92,11 +92,20 @@ describe('mapRangeToParent', () => {
     expect(mapRangeToParent(removed, { start: 1, end: 2 })).toEqual({ start: 2, end: 3 });
   });
 
-  it('expands edges inside a replaced block to the block', () => {
+  it('maps edges inside a replaced block to their positional predecessor', () => {
     // Old 2..5 replaced by new 2..3.
     const regions = regionsOf('a\nb\nc\nd\ne\nf\n', 'a\nX\nY\nf\n');
-    expect(mapRangeToParent(regions, { start: 3, end: 3 })).toEqual({ start: 2, end: 5 });
-    expect(mapRangeToParent(regions, { start: 1, end: 2 })).toEqual({ start: 1, end: 5 });
+    // New 3 (Y) is at offset 1 of the new block → old 3, not the whole 2..5:
+    // a single traced line keeps following a single line.
+    expect(mapRangeToParent(regions, { start: 3, end: 3 })).toEqual({ start: 3, end: 3 });
+    // New 2 (X, offset 0) → old 2; line 1 sits untouched above the block.
+    expect(mapRangeToParent(regions, { start: 1, end: 2 })).toEqual({ start: 1, end: 2 });
+  });
+
+  it('keeps a single line single when a block collapses to one line', () => {
+    // Old 2..5 (four lines) collapse into the single new line 2.
+    const regions = regionsOf('a\nb\nc\nd\ne\nf\n', 'a\nZ\nf\n');
+    expect(mapRangeToParent(regions, { start: 2, end: 2 })).toEqual({ start: 2, end: 2 });
   });
 
   it('covers a removal gap inside the range', () => {

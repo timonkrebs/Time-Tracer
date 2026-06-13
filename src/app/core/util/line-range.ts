@@ -82,11 +82,11 @@ export function changeRegionRange(region: ChangeRegion): LineRange {
 
 /**
  * Maps a new-side range onto the old side of the same diff. An edge that
- * falls inside a replaced block expands to the block's old extent (as
- * git's line-log does), so the range keeps covering everything the change
- * replaced — including lines that only exist in the older version. Returns
- * null when the whole range was introduced by this very diff: there is
- * nothing older to follow.
+ * falls inside a replaced block is mapped to the old line at the *same
+ * offset within the block* (clamped to the block), so a single traced line
+ * keeps following a single line through a rewrite instead of ballooning to
+ * the whole replaced block. Returns null when the whole range was
+ * introduced by this very diff: there is nothing older to follow.
  */
 export function mapRangeToParent(
   regions: readonly ChangeRegion[],
@@ -152,7 +152,17 @@ function mapEdge(regions: readonly ChangeRegion[], line: number, edge: 'start' |
     if (region.newCount > 0) {
       const last = region.newStart + region.newCount - 1;
       if (line >= region.newStart && line <= last) {
-        return edge === 'start' ? region.oldStart : region.oldStart + region.oldCount - 1;
+        // The edge sits on a block of new-side lines.
+        if (region.oldCount === 0) {
+          // Pure insertion — nothing older here. `start` maps to the gap and
+          // `end` one short of it, so a wholly-introduced range yields null.
+          return edge === 'start' ? region.oldStart : region.oldStart - 1;
+        }
+        // Replacement: follow the old line at the same offset within the
+        // block (clamped) rather than expanding to the whole block, so one
+        // traced line stays one line across the rewrite.
+        const offset = Math.min(line - region.newStart, region.oldCount - 1);
+        return region.oldStart + offset;
       }
       if (last >= line) break; // first region beyond the edge — nothing else shifts it
       delta += region.oldCount - region.newCount;

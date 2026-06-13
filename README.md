@@ -94,7 +94,8 @@ renames — see the feature list and roadmap below for what's done and what's ne
   History panel narrows to only the commits that ever changed those lines, `git log -L` in the
   browser. The hunk's line range is followed backwards through every version with the same minimal diff
   blame uses (client-side, so it works for all providers): edits above shift the range,
-  replacements expand it over the replaced block, and the walk stops at the commit that
+  replacements map it to the lines they replaced position by position — so a single traced line
+  keeps following a single line through a rewrite — and the walk stops at the commit that
   introduced the lines. Matches stream in as they are found, the walk pauses at the end of the
   loaded history pages ("Search older commits" continues it), and a banner shows the traced
   range with a one-click way back to the full history. Clicking a filtered commit time-travels
