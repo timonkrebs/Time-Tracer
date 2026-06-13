@@ -47,7 +47,9 @@ export function buildAnnotationCells(
     blame && (blame.status === 'computing' || blame.status === 'ready') ? blame.lines : [];
   const computing = blame?.status === 'computing';
 
-  // Rank unique commit times so annotation colour reflects relative age.
+  // Rank unique commit times so annotation colour reflects relative age, then
+  // resolve every time to its colour up front. A per-line `indexOf` would make
+  // building the cells O(lines × commits); a precomputed map keeps it linear.
   const uniqueTimes = [
     ...new Set(
       owners
@@ -55,11 +57,15 @@ export function buildAnnotationCells(
         .map((o) => Date.parse(o.commit.authoredAt) || 0),
     ),
   ].sort((a, b) => a - b);
-  const colorFor = (time: number): string => {
-    if (uniqueTimes.length <= 1) return AGE_CLASSES[AGE_CLASSES.length - 1];
-    const rank = uniqueTimes.indexOf(time) / (uniqueTimes.length - 1);
-    return AGE_CLASSES[Math.round(rank * (AGE_CLASSES.length - 1))];
-  };
+  const newest = AGE_CLASSES[AGE_CLASSES.length - 1];
+  const colorByTime = new Map<number, string>();
+  if (uniqueTimes.length > 1) {
+    const span = uniqueTimes.length - 1;
+    uniqueTimes.forEach((time, rank) => {
+      colorByTime.set(time, AGE_CLASSES[Math.round((rank / span) * (AGE_CLASSES.length - 1))]);
+    });
+  }
+  const colorFor = (time: number): string => colorByTime.get(time) ?? newest;
 
   return Array.from({ length: count }, (_, index) => {
     const owner = owners[index] ?? null;
@@ -86,14 +92,13 @@ export function buildAnnotationCells(
     }
     const commit = owner.commit;
     const message = commit.message.trim() || commit.summary;
+    const color = colorFor(Date.parse(commit.authoredAt) || 0);
     return {
       sha: commit.sha,
       lineAtCommit: owner.line,
       label: `${shortDate(commit.authoredAt)} ${commit.authorName}`,
       title: `${message}\n\n${shortSha(commit.sha)} · ${commit.authorName} · ${shortDate(commit.authoredAt)} (${relativeTime(commit.authoredAt)})`,
-      labelClass: blockStart
-        ? colorFor(Date.parse(commit.authoredAt) || 0)
-        : `${colorFor(Date.parse(commit.authoredAt) || 0)} opacity-60`,
+      labelClass: blockStart ? color : `${color} opacity-60`,
       pending: false,
     };
   });
