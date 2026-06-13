@@ -156,9 +156,10 @@ export class BitbucketServerProvider implements GitProvider {
 
   private async fetchRaw(slug: RepoSlug, path: string, commit: string): Promise<RepoFile> {
     const encodedPath = path.split('/').map(encodeURIComponent).join('/');
+    // Raw bytes come from the web `/raw/` endpoint, not the `/rest/api/1.0` base.
     const response = await this.fetchChecked(
       slug,
-      `${repoApi(slug)}/raw/${encodedPath}?at=${encodeURIComponent(commit)}`,
+      `${webBase(slug)}/projects/${encodeURIComponent(slug.owner)}/repos/${encodeURIComponent(slug.repo)}/raw/${encodedPath}?at=${encodeURIComponent(commit)}`,
       {
         notFound: `"${path}" does not exist at ${commit.slice(0, 7)} — it may have been added later or deleted by this commit.`,
       },

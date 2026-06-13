@@ -81,7 +81,7 @@ describe('BitbucketServerProvider', () => {
     const file = await provider.getFile(slug, entry);
 
     expect(fetchMock.mock.calls[0][0]).toBe(
-      'https://bitbucket.example.com/rest/api/1.0/projects/ENG/repos/rocket/raw/a.txt?at=c1',
+      'https://bitbucket.example.com/projects/ENG/repos/rocket/raw/a.txt?at=c1',
     );
     expect(file).toMatchObject({ kind: 'text', text: 'content\n', sha: 'c1' });
   });
