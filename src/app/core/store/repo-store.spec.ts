@@ -433,7 +433,11 @@ describe('RepoStore', () => {
       expect(state.diff.removed).toBe(0);
     });
 
-    it('diffs a renamed file against its previous path', async () => {
+    it('shows a file introduced by a rename as added, not diffed against its source', async () => {
+      // The oldest commit of a path's recorded history is where it was born:
+      // present it as an addition rather than diffing it against the file it
+      // was renamed from. That predecessor is reached via the history panel's
+      // "Continue past the rename?" step instead (issue #8).
       provider.commitResult = (sha) => Promise.resolve(commit(sha, ['parent']));
       provider.commitFilesResult = () =>
         Promise.resolve([{ path: 'README.md', status: 'renamed', previousPath: 'docs/README.md' }]);
@@ -454,11 +458,12 @@ describe('RepoStore', () => {
       expect(state?.status).toBe('ready');
       if (state?.status !== 'ready') return;
       expect(state.baseSha).toBe('parent');
-      expect(state.basePath).toBe('docs/README.md');
+      expect(state.basePath).toBeNull();
       expect(state.headPath).toBe('README.md');
-      expect(state.diff.added).toBe(1);
-      expect(state.diff.removed).toBe(1);
-      expect(provider.fileAtRefCalls).toContainEqual({ path: 'docs/README.md', ref: 'parent' });
+      expect(state.diff.added).toBe(3);
+      expect(state.diff.removed).toBe(0);
+      // The file it was renamed from is never fetched as a diff base.
+      expect(provider.fileAtRefCalls).not.toContainEqual({ path: 'docs/README.md', ref: 'parent' });
     });
 
     it('diffs a path renamed away against the new path at the commit', async () => {
