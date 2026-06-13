@@ -43,6 +43,10 @@ renames — see the feature list and roadmap below for what's done and what's ne
 - **Desktop-first split-pane viewer**: resizable file tree (drag the divider, double-click to
   reset, or collapse it entirely with the header toggle — remembered across sessions) next to a
   file view with a line-number gutter that carries the blame annotations.
+- **Quick file finder**: `Ctrl/⌘ P` (or the header's search button) opens a command-palette
+  overlay to fuzzy-find any file by path — filename hits rank first, with boundary- and
+  run-aware scoring and the matched characters highlighted; arrow keys move, Enter opens, Escape
+  dismisses. It searches the tree already in memory, so it costs no extra API requests.
 - **Per-file commit history**: a History panel lists the commits that touched the selected file
   (paginated), with author and relative date. Its open/closed state is remembered, so it can stay
   open permanently across files and sessions.
@@ -188,4 +192,5 @@ npm run build      # production build into dist/
    ✅ Done.
 9. ~~**Access tokens** — an optional personal-access-token input for a higher hosted-API
    budget.~~ ✅ Done (GitHub + Azure DevOps, stored locally, private repositories included).
-10. **Quality of life** — syntax highlighting.
+10. **Quality of life** — fuzzy file finder (✅ done — `Ctrl/⌘ P` quick open with
+    boundary-aware ranking, `core/util/fuzzy.ts`); syntax highlighting next.
