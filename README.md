@@ -117,6 +117,10 @@ renames — see the feature list and roadmap below for what's done and what's ne
   annotations. Blame annotations are on by default; add `blame=0` to share a unified diff or plain
   file view. `base=<path>` diffs the file against a chosen predecessor instead of the commit's own
   changes (what the candidate **Diff** action sets).
+- **Share the view**: **Copy link** puts a permalink to exactly what you're looking at on the
+  clipboard — pinned to a commit sha (the viewed one, or the file's latest) so it never drifts —
+  and **Markdown** copies a citation like `[owner/repo › path:line @ sha](…)`. When a hunk
+  _Trace_ is active, **Copy** in its banner exports the traced commits as a Markdown list.
 - **Honest file handling**: UTF-8 decoding, binary detection (NUL-byte heuristic, like git),
   a 2 MB size guard with a link out to GitHub, and per-snapshot content caching.
 - **Specific error states**: not found, invalid ref, empty repository, network failure, and
@@ -244,8 +248,9 @@ npm run build      # production build into dist/
 19. **Richer content** — render Markdown and show images (with image-vs-image diffs) instead of the
     binary placeholder; in-file find (`Ctrl/⌘ F`) with a minimap marking matches, blame age and
     hunks; an age-heatmap view that tints lines by age.
-20. **Sharing** — copy a permalink or a "cite this line" Markdown snippet, and export a _Trace_ or
-    blame chain as a shareable story.
+20. **Sharing** — ✅ a sha-pinned permalink, a Markdown "cite this line" snippet, and a Markdown
+    export of an active _Trace_ (`core/util/clipboard.ts`, `core/util/trace-export.ts`). Still to
+    come: native provider permalinks (`#L42` on the host) and a re-runnable trace deep link.
 21. **Off-main-thread analysis & more hosts** — move blame/Trace/pickaxe walks to a Web Worker so
     long histories stay responsive, and add Gitea / Forgejo / Codeberg behind the `GitProvider`
     interface.
