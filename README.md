@@ -50,8 +50,9 @@ renames — see the feature list and roadmap below for what's done and what's ne
   "Imported from …" commit so browsing, diffing and annotating work uniformly. Wrapper folders
   like `repo-main/` are stripped automatically.
 - **Desktop-first split-pane viewer**: resizable file tree (drag the divider, double-click to
-  reset, or collapse it entirely with the header toggle — remembered across sessions) next to a
-  file view with a line-number gutter that carries the blame annotations.
+  reset, or collapse it entirely with the header toggle — remembered while you browse, and
+  re-revealed whenever you open another repository) next to a file view with a line-number
+  gutter that carries the blame annotations.
 - **Quick file finder**: `Ctrl/⌘ P` (or the header's search button) opens a command-palette
   overlay to fuzzy-find any file by path — filename hits rank first, with boundary- and
   run-aware scoring and the matched characters highlighted; arrow keys move, Enter opens, Escape
@@ -86,9 +87,11 @@ renames — see the feature list and roadmap below for what's done and what's ne
   commit's diff _scrolled to that exact line_; every hunk in a diff offers **◂ Before** — jump to
   the parent version, annotated, at the hunk's old position. Blame → commit → before → blame
   chains indefinitely, each step deep-linked (`line=` highlights and scrolls).
-- **Per-hunk history filter ("Trace")**: every hunk also offers **Trace** — the History panel
-  narrows to only the commits that ever changed that hunk's lines, `git log -L` in the browser.
-  The hunk's line range is followed backwards through every version with the same minimal diff
+- **Per-hunk history filter ("Trace")**: every hunk offers **Trace**, and the file view's blame
+  gutter line numbers are selectable as well (click, then shift-/click to extend) — so you can
+  trace any range **straight from the current version**, not only from a commit's changes. The
+  History panel narrows to only the commits that ever changed those lines, `git log -L` in the
+  browser. The hunk's line range is followed backwards through every version with the same minimal diff
   blame uses (client-side, so it works for all providers): edits above shift the range,
   replacements expand it over the replaced block, and the walk stops at the commit that
   introduced the lines. Matches stream in as they are found, the walk pauses at the end of the

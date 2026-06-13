@@ -382,6 +382,18 @@ describe('ViewerPage (integration)', () => {
     });
   });
 
+  it('reveals the file tree on load even when it was previously collapsed', async () => {
+    // A remembered collapse must not hide the tree when opening a repository —
+    // the tree is how you start navigating a new codebase.
+    localStorage.setItem('time-tracer.tree-collapsed', '1');
+    await harness.navigateByUrl('/r/acme/rocket');
+
+    await vi.waitFor(async () => {
+      await textOnScreen();
+      expect(harness.routeNativeElement!.querySelector('app-file-tree')).not.toBeNull();
+    });
+  });
+
   it('opens a file when its tree row is clicked and renders the content', async () => {
     await harness.navigateByUrl('/r/acme/rocket');
     await vi.waitFor(async () => {
@@ -814,6 +826,39 @@ describe('ViewerPage (integration)', () => {
     );
     await vi.waitFor(async () => {
       expect(await textOnScreen()).toContain('@@ -1,7 +1,7 @@');
+    });
+
+    harness
+      .routeNativeElement!.querySelector<HTMLButtonElement>('[aria-label="Select line 1"]')!
+      .click();
+    harness
+      .routeNativeElement!.querySelector<HTMLButtonElement>('[aria-label="Select line 7"]')!
+      .click();
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('lines 1–7');
+    });
+
+    clickButton('Trace selection');
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('Tracing lines 1–7');
+      expect(text).toContain('feat: update edge lines');
+      expect(text).toContain('chore: touch middle line');
+    });
+  });
+
+  it('traces a range selected in the current version blame gutter', async () => {
+    // The most valuable case: start a trace straight from the file you are
+    // reading. With no commit selected, the range anchors at the most recent
+    // commit that touched the file (its line numbers match the tip).
+    await harness.navigateByUrl('/r/acme/rocket?path=src%2Fmulti.ts');
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('Current version');
+      expect(
+        harness.routeNativeElement!.querySelector('[aria-label="Select line 1"]'),
+      ).not.toBeNull();
     });
 
     harness

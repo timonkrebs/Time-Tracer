@@ -72,6 +72,25 @@ interface BlameWindow {
           </span>
         }
         <span class="flex-1"></span>
+        @if (selectedRange(); as range) {
+          <span class="shrink-0 text-[11px] text-indigo-300/80">{{ rangeLabel(range) }}</span>
+          <button
+            type="button"
+            class="shrink-0 rounded border border-indigo-300/30 px-1.5 py-0.5 text-[11px] text-indigo-100 transition hover:bg-indigo-300/10"
+            (click)="traceSelection()"
+          >
+            Trace selection
+          </button>
+          <button
+            type="button"
+            class="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-zinc-500 transition hover:bg-zinc-800 hover:text-zinc-200"
+            aria-label="Clear line selection"
+            title="Clear line selection"
+            (click)="clearSelection()"
+          >
+            ×
+          </button>
+        }
         @if (blameComputing()) {
           <span class="shrink-0 text-[11px] text-indigo-300/80">annotating…</span>
         }
@@ -216,10 +235,19 @@ interface BlameWindow {
                     }
                   </span>
                   <span
-                    class="w-10 shrink-0 border-l border-zinc-800/60 pr-2 text-right text-zinc-600 select-none"
-                    aria-hidden="true"
-                    >{{ row.lineNo }}</span
+                    class="w-10 shrink-0 border-l border-zinc-800/60 pr-0 text-right text-zinc-600 select-none"
                   >
+                    <button
+                      type="button"
+                      class="h-6 w-full pr-2 text-right transition hover:bg-indigo-500/10 hover:text-indigo-200"
+                      [class.bg-indigo-500/20]="lineSelected(row.lineNo)"
+                      [class.text-indigo-100]="lineSelected(row.lineNo)"
+                      [attr.aria-label]="'Select line ' + row.lineNo"
+                      (click)="selectLine(row.lineNo, $event)"
+                    >
+                      {{ row.lineNo }}
+                    </button>
+                  </span>
                   <span class="pr-10 pl-3 whitespace-pre text-zinc-200 [tab-size:4]">{{
                     row.text
                   }}</span>
@@ -311,6 +339,8 @@ export class FileView {
   readonly blameToggle = output<void>();
   /** A clicked annotation: the commit plus the line's position at it. */
   readonly blameSelect = output<{ sha: string; line: number }>();
+  /** "Trace selection": follow a chosen gutter line range back through history. */
+  readonly trace = output<LineRange>();
 
   private readonly scroller = viewChild<ElementRef<HTMLElement>>('scroller');
   private lastScrollKey: string | null = null;
@@ -318,6 +348,13 @@ export class FileView {
   /** Scroll position and viewport height of the blame scroller, for windowing. */
   private readonly scrollTop = signal(0);
   private readonly viewportHeight = signal(0);
+
+  /** Gutter line selection, valid only for the file/version it was made in. */
+  private readonly selection = signal<{
+    readonly key: string;
+    readonly anchor: number;
+    readonly range: LineRange;
+  } | null>(null);
 
   protected readonly skeletonWidths = [62, 84, 45, 91, 73, 38, 80, 55, 67, 49, 88, 30];
 
@@ -369,6 +406,54 @@ export class FileView {
     const line = this.highlightLine();
     return line ? { start: line, end: line } : null;
   });
+
+  /** The active gutter selection, dropped once a different file/version renders. */
+  protected readonly selectedRange = computed<LineRange | null>(() => {
+    const key = this.scrollKey();
+    const selection = this.selection();
+    return key && selection?.key === key ? selection.range : null;
+  });
+
+  protected lineSelected(line: number): boolean {
+    const range = this.selectedRange();
+    return !!range && line >= range.start && line <= range.end;
+  }
+
+  /**
+   * Selects a gutter line; shift-clicking (or a follow-up click after a single
+   * line) extends the range from the anchor — mirrors the changes view.
+   */
+  protected selectLine(line: number, event: MouseEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    const key = this.scrollKey();
+    if (!key) return;
+    const current = this.selection();
+    const sameFile = current?.key === key;
+    const extendFromSingleLine =
+      sameFile && current.range.start === current.range.end && current.anchor !== line;
+    const anchor = (sameFile && event.shiftKey) || extendFromSingleLine ? current.anchor : line;
+    this.selection.set({
+      key,
+      anchor,
+      range: { start: Math.min(anchor, line), end: Math.max(anchor, line) },
+    });
+  }
+
+  protected clearSelection(): void {
+    this.selection.set(null);
+  }
+
+  protected traceSelection(): void {
+    const range = this.selectedRange();
+    if (!range) return;
+    this.trace.emit(range);
+    this.clearSelection();
+  }
+
+  protected rangeLabel(range: LineRange): string {
+    return range.start === range.end ? `line ${range.start}` : `lines ${range.start}–${range.end}`;
+  }
 
   protected readonly textInfo = computed(() => {
     const s = this.state();
