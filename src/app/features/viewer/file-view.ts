@@ -4,8 +4,10 @@ import {
   ElementRef,
   afterRenderEffect,
   computed,
+  effect,
   input,
   output,
+  signal,
   viewChild,
 } from '@angular/core';
 
@@ -18,6 +20,17 @@ import { AnnotationCell, buildAnnotationCells } from './blame-annotation';
 /** Line height of code rows (`leading-6`), used for scroll/highlight maths. */
 const LINE_HEIGHT_PX = 24;
 
+/**
+ * Blamed files above this many lines are row-virtualized: only the rows in (or
+ * near) the viewport are in the DOM, kept in place by spacers above and below.
+ * Smaller files render every row as before, so their horizontal scroll width
+ * is exact.
+ */
+const VIRTUALIZE_THRESHOLD = 800;
+
+/** Extra rows rendered beyond the viewport, so fast scrolls stay filled. */
+const ROW_OVERSCAN = 12;
+
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} kB`;
@@ -28,6 +41,13 @@ interface BlameRow {
   readonly lineNo: number;
   readonly text: string;
   readonly cell: AnnotationCell;
+}
+
+/** The rows to render plus the spacer heights that hold the rest of the scroll. */
+interface BlameWindow {
+  readonly rows: readonly BlameRow[];
+  readonly topPad: number;
+  readonly bottomPad: number;
 }
 
 /**
@@ -156,8 +176,8 @@ interface BlameRow {
             {{ notice }}
           </div>
         }
-        @if (blameRows(); as rows) {
-          <div #scroller class="slim-scrollbar min-h-0 flex-1 overflow-auto">
+        @if (blameWindow(); as win) {
+          <div #scroller (scroll)="onBlameScroll($event)" class="slim-scrollbar min-h-0 flex-1 overflow-auto">
             <div class="relative min-w-max font-mono text-[13px] leading-6">
               @if (effectiveHighlightRange(); as range) {
                 <div
@@ -166,7 +186,10 @@ interface BlameRow {
                   [style.height.px]="(range.end - range.start + 1) * 24"
                 ></div>
               }
-              @for (row of rows; track row.lineNo) {
+              @if (win.topPad) {
+                <div aria-hidden="true" [style.height.px]="win.topPad"></div>
+              }
+              @for (row of win.rows; track row.lineNo) {
                 <div class="flex hover:bg-white/[0.02]">
                   <span class="w-52 shrink-0 pl-4 text-xs leading-6 select-none">
                     @if (row.cell.sha; as sha) {
@@ -201,6 +224,9 @@ interface BlameRow {
                     row.text
                   }}</span>
                 </div>
+              }
+              @if (win.bottomPad) {
+                <div aria-hidden="true" [style.height.px]="win.bottomPad"></div>
               }
             </div>
           </div>
@@ -289,6 +315,10 @@ export class FileView {
   private readonly scroller = viewChild<ElementRef<HTMLElement>>('scroller');
   private lastScrollKey: string | null = null;
 
+  /** Scroll position and viewport height of the blame scroller, for windowing. */
+  private readonly scrollTop = signal(0);
+  private readonly viewportHeight = signal(0);
+
   protected readonly skeletonWidths = [62, 84, 45, 91, 73, 38, 80, 55, 67, 49, 88, 30];
 
   constructor() {
@@ -306,6 +336,25 @@ export class FileView {
         this.lastScrollKey = key;
       }
     });
+
+    // Track the scroller's viewport height (it drives the virtual window) and
+    // keep it current as the split pane is resized.
+    effect((onCleanup) => {
+      const el = this.scroller()?.nativeElement;
+      if (!el) return;
+      this.viewportHeight.set(el.clientHeight);
+      this.scrollTop.set(el.scrollTop);
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(() => this.viewportHeight.set(el.clientHeight));
+      observer.observe(el);
+      onCleanup(() => observer.disconnect());
+    });
+  }
+
+  protected onBlameScroll(event: Event): void {
+    const el = event.target as HTMLElement;
+    this.scrollTop.set(el.scrollTop);
+    this.viewportHeight.set(el.clientHeight);
   }
 
   private readonly scrollKey = computed(() => {
@@ -355,6 +404,30 @@ export class FileView {
     const lines = info.text.split('\n');
     const cells = buildAnnotationCells(this.blame(), lines.length);
     return lines.map((text, index) => ({ lineNo: index + 1, text, cell: cells[index] }));
+  });
+
+  /**
+   * The slice of blame rows to actually render. Small files render whole (zero
+   * spacers, exact horizontal width); large files render only the rows in the
+   * viewport, held in place by a top and bottom spacer summing to the rest.
+   */
+  protected readonly blameWindow = computed<BlameWindow | null>(() => {
+    const rows = this.blameRows();
+    if (!rows) return null;
+    const total = rows.length;
+    if (total <= VIRTUALIZE_THRESHOLD) return { rows, topPad: 0, bottomPad: 0 };
+
+    // Before the scroller is measured, fall back to a viewport tall enough to
+    // fill any screen so the first paint is never blank.
+    const height = this.viewportHeight() || 1200;
+    const top = this.scrollTop();
+    const first = Math.max(0, Math.floor(top / LINE_HEIGHT_PX) - ROW_OVERSCAN);
+    const last = Math.min(total, Math.ceil((top + height) / LINE_HEIGHT_PX) + ROW_OVERSCAN);
+    return {
+      rows: rows.slice(first, last),
+      topPad: first * LINE_HEIGHT_PX,
+      bottomPad: (total - last) * LINE_HEIGHT_PX,
+    };
   });
 
   protected formattedSize(bytes: number): string {
