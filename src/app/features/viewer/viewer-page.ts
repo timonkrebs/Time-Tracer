@@ -31,6 +31,7 @@ const TREE_WIDTH_MIN = 200;
 const TREE_WIDTH_MAX = 600;
 const VIEW_MODE_KEY = 'time-tracer.view-mode';
 const HISTORY_OPEN_KEY = 'time-tracer.history-open';
+const TREE_COLLAPSED_KEY = 'time-tracer.tree-collapsed';
 
 /**
  * `/r/:owner/:repo?ref=…&path=…&at=…&view=…&blame=…` — the split-pane
@@ -52,6 +53,30 @@ const HISTORY_OPEN_KEY = 'time-tracer.history-open';
       <header
         class="flex h-12 shrink-0 items-center gap-3 border-b border-zinc-800 bg-zinc-900/60 px-4"
       >
+        @if (store.phase() === 'ready') {
+          <button
+            type="button"
+            class="-ml-1 shrink-0 rounded p-1.5 text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-100"
+            (click)="toggleTree()"
+            [attr.aria-label]="treeCollapsed() ? 'Show file tree' : 'Hide file tree'"
+            [attr.aria-pressed]="!treeCollapsed()"
+            [title]="treeCollapsed() ? 'Show file tree' : 'Hide file tree'"
+          >
+            <svg
+              class="size-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <path d="M9 3v18" />
+            </svg>
+          </button>
+        }
         <a
           routerLink="/"
           class="flex shrink-0 items-center gap-2 text-zinc-100 transition hover:text-white"
@@ -221,35 +246,37 @@ const HISTORY_OPEN_KEY = 'time-tracer.history-open';
         </div>
       } @else {
         <div class="flex min-h-0 flex-1">
-          <aside
-            class="slim-scrollbar shrink-0 overflow-x-hidden overflow-y-auto border-r border-zinc-800 bg-zinc-950 py-2 pr-1 pl-1"
-            [style.width.px]="treeWidth()"
-          >
-            @if (store.tree().length === 0) {
-              <p class="px-3 py-2 text-xs text-zinc-600">This repository has no files.</p>
-            } @else {
-              <app-file-tree
-                [nodes]="store.tree()"
-                [selectedPath]="store.selectedPath()"
-                [expanded]="store.expandedDirs()"
-                (fileSelect)="onFileSelect($event)"
-                (dirToggle)="store.toggleDir($event)"
-              />
-            }
-          </aside>
+          @if (!treeCollapsed()) {
+            <aside
+              class="slim-scrollbar shrink-0 overflow-x-hidden overflow-y-auto border-r border-zinc-800 bg-zinc-950 py-2 pr-1 pl-1"
+              [style.width.px]="treeWidth()"
+            >
+              @if (store.tree().length === 0) {
+                <p class="px-3 py-2 text-xs text-zinc-600">This repository has no files.</p>
+              } @else {
+                <app-file-tree
+                  [nodes]="store.tree()"
+                  [selectedPath]="store.selectedPath()"
+                  [expanded]="store.expandedDirs()"
+                  (fileSelect)="onFileSelect($event)"
+                  (dirToggle)="store.toggleDir($event)"
+                />
+              }
+            </aside>
 
-          <div
-            class="w-1 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-indigo-400/40"
-            [class.bg-indigo-400/40]="dragging()"
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize file tree"
-            (pointerdown)="onDragStart($event)"
-            (pointermove)="onDragMove($event)"
-            (pointerup)="onDragEnd()"
-            (pointercancel)="onDragEnd()"
-            (dblclick)="resetTreeWidth()"
-          ></div>
+            <div
+              class="w-1 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-indigo-400/40"
+              [class.bg-indigo-400/40]="dragging()"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize file tree"
+              (pointerdown)="onDragStart($event)"
+              (pointermove)="onDragMove($event)"
+              (pointerup)="onDragEnd()"
+              (pointercancel)="onDragEnd()"
+              (dblclick)="resetTreeWidth()"
+            ></div>
+          }
 
           <section class="flex min-w-0 flex-1 flex-col bg-zinc-950">
             @if (store.selectedPath()) {
@@ -395,6 +422,7 @@ const HISTORY_OPEN_KEY = 'time-tracer.history-open';
                 (blameToggle)="toggleBlame()"
                 (blameSelect)="onBlameSelect($event)"
                 (historyToggle)="toggleHistory()"
+                (comparisonClear)="onComparisonClear()"
               />
             } @else {
               <app-file-view
@@ -435,6 +463,7 @@ const HISTORY_OPEN_KEY = 'time-tracer.history-open';
                 (closed)="toggleHistory()"
                 (findRenames)="onFindRenames()"
                 (candidateSelect)="onCandidateSelect($event)"
+                (candidateDiff)="onCandidateDiff($event)"
                 (traceClear)="store.clearLineTrace()"
                 (traceOlder)="store.extendLineTrace()"
                 (searchOrigins)="store.searchTraceOrigins($event)"
@@ -469,11 +498,15 @@ export class ViewerPage {
   readonly blame = input<string | undefined>();
   /** 1-based line to highlight and scroll to (file or changes view). */
   readonly line = input<string | undefined>();
+  /** Predecessor path to diff the file against (a chosen rename candidate). */
+  readonly base = input<string | undefined>();
 
   protected readonly treeWidth = signal(restoreTreeWidth());
   protected readonly dragging = signal(false);
   /** Remembered across files and sessions: once opened, History stays open. */
   protected readonly historyOpen = signal(restoreHistoryOpen());
+  /** Remembered across sessions: the file tree can be collapsed to widen the view. */
+  protected readonly treeCollapsed = signal(restoreTreeCollapsed());
   /** Remembered File/Changes choice; Changes is the default. */
   private readonly viewPref = signal<'file' | 'diff'>(restoreViewMode());
   private dragOrigin: { x: number; width: number } | null = null;
@@ -627,8 +660,12 @@ export class ViewerPage {
       const diff = this.diffMode();
       const path = this.path() || null;
       const at = this.at() || null;
+      const base = this.base() || null;
       untracked(() => {
-        if (phase === 'ready' && diff && path && at) void this.store.loadDiff(path, at);
+        // `base` only applies to the changes view; clear it otherwise.
+        const against = diff ? base : null;
+        this.store.setCompareBase(against);
+        if (phase === 'ready' && diff && path && at) void this.store.loadDiff(path, at, against);
       });
     });
 
@@ -661,7 +698,7 @@ export class ViewerPage {
     // `line` belong to the previous file's timeline. Blame mode is sticky.
     void this.router.navigate([], {
       relativeTo: this.route,
-      queryParams: { path, at: null, view: null, line: null },
+      queryParams: { path, at: null, view: null, line: null, base: null },
       queryParamsHandling: 'merge',
     });
   }
@@ -679,6 +716,8 @@ export class ViewerPage {
       at: sha,
       view: sha ? (options?.view ?? this.viewPref()) : null,
       line: options?.line ? String(options.line) : null,
+      // A comparison base belongs to one commit's changes; stepping drops it.
+      base: null,
     };
     if (options?.blame) queryParams['blame'] = options.blame;
     void this.router.navigate([], {
@@ -702,6 +741,7 @@ export class ViewerPage {
         at: hit.commit.sha,
         view: 'diff',
         line: String(hit.range.start),
+        base: null,
       },
       queryParamsHandling: 'merge',
     });
@@ -731,6 +771,7 @@ export class ViewerPage {
           view: 'file',
           blame: null,
           line: String(Math.max(1, target.oldStart)),
+          base: null,
         },
         queryParamsHandling: 'merge',
       });
@@ -787,7 +828,39 @@ export class ViewerPage {
         view: this.viewPref(),
         blame: null,
         line: null,
+        base: null,
       },
+      queryParamsHandling: 'merge',
+    });
+  }
+
+  /**
+   * "Diff" on a rename candidate: compare the file at its creation (the oldest
+   * commit of its recorded history) against the chosen predecessor, by setting
+   * the `base` query param. The candidate lives at the creating commit's first
+   * parent, so it becomes the diff's old side.
+   */
+  protected onCandidateDiff(candidate: RenameCandidate): void {
+    const renames = this.store.selectedRenames();
+    if (renames?.status !== 'ready') return;
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: {
+        at: renames.endCommit.sha,
+        view: 'diff',
+        base: candidate.path,
+        blame: null,
+        line: null,
+      },
+      queryParamsHandling: 'merge',
+    });
+  }
+
+  /** Drops the predecessor comparison, back to the commit's own changes. */
+  protected onComparisonClear(): void {
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { base: null },
       queryParamsHandling: 'merge',
     });
   }
@@ -807,6 +880,7 @@ export class ViewerPage {
         at: anchor?.sha ?? candidate.parentSha,
         view: 'file',
         line: String(candidate.line),
+        base: null,
       },
       queryParamsHandling: 'merge',
     });
@@ -880,6 +954,16 @@ export class ViewerPage {
     this.historyOpen.update((open) => !open);
     try {
       localStorage.setItem(HISTORY_OPEN_KEY, this.historyOpen() ? '1' : '0');
+    } catch {
+      // Best-effort only.
+    }
+  }
+
+  /** Hides or restores the file tree (the resized width is preserved). */
+  protected toggleTree(): void {
+    this.treeCollapsed.update((collapsed) => !collapsed);
+    try {
+      localStorage.setItem(TREE_COLLAPSED_KEY, this.treeCollapsed() ? '1' : '0');
     } catch {
       // Best-effort only.
     }
@@ -978,6 +1062,14 @@ function persistViewMode(mode: 'file' | 'diff'): void {
 function restoreHistoryOpen(): boolean {
   try {
     return localStorage.getItem(HISTORY_OPEN_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function restoreTreeCollapsed(): boolean {
+  try {
+    return localStorage.getItem(TREE_COLLAPSED_KEY) === '1';
   } catch {
     return false;
   }

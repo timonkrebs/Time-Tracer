@@ -363,26 +363,37 @@ import { relativeTime, shortSha } from '../../core/util/relative-time';
                         } @else {
                           <p class="mt-1.5 text-[11px] text-zinc-500">Continue in:</p>
                           @for (candidate of readyCandidates(); track candidate.path) {
-                            <button
-                              type="button"
-                              class="mt-1 block w-full rounded border border-zinc-800 bg-zinc-900/60 px-2 py-1.5 text-left transition hover:border-indigo-400/40 hover:bg-indigo-500/10"
-                              (click)="candidateSelect.emit(candidate)"
-                            >
-                              <span class="block truncate font-mono text-[11px] text-zinc-200">{{
-                                candidate.path
-                              }}</span>
-                              <span class="mt-0.5 flex items-center gap-1.5 text-[10px]">
-                                <span class="text-indigo-300"
-                                  >{{ percent(candidate.confidence) }} match</span
-                                >
-                                @for (reason of candidate.reasons; track reason) {
-                                  <span
-                                    class="rounded-full border border-zinc-700 px-1.5 text-zinc-500"
-                                    >{{ reasonLabel(reason) }}</span
+                            <div class="mt-1 flex items-stretch gap-1">
+                              <button
+                                type="button"
+                                class="min-w-0 flex-1 rounded border border-zinc-800 bg-zinc-900/60 px-2 py-1.5 text-left transition hover:border-indigo-400/40 hover:bg-indigo-500/10"
+                                title="Continue in this file's own timeline"
+                                (click)="candidateSelect.emit(candidate)"
+                              >
+                                <span class="block truncate font-mono text-[11px] text-zinc-200">{{
+                                  candidate.path
+                                }}</span>
+                                <span class="mt-0.5 flex items-center gap-1.5 text-[10px]">
+                                  <span class="text-indigo-300"
+                                    >{{ percent(candidate.confidence) }} match</span
                                   >
-                                }
-                              </span>
-                            </button>
+                                  @for (reason of candidate.reasons; track reason) {
+                                    <span
+                                      class="rounded-full border border-zinc-700 px-1.5 text-zinc-500"
+                                      >{{ reasonLabel(reason) }}</span
+                                    >
+                                  }
+                                </span>
+                              </button>
+                              <button
+                                type="button"
+                                class="shrink-0 self-stretch rounded border border-zinc-800 bg-zinc-900/60 px-2 text-[11px] font-medium text-indigo-200 transition hover:border-indigo-400/40 hover:bg-indigo-500/10"
+                                title="Diff the current file against this predecessor"
+                                (click)="candidateDiff.emit(candidate)"
+                              >
+                                Diff
+                              </button>
+                            </div>
                           }
                         }
                       }
@@ -420,6 +431,8 @@ export class FileHistory {
   readonly closed = output<void>();
   readonly findRenames = output<void>();
   readonly candidateSelect = output<RenameCandidate>();
+  /** "Diff" on a candidate: compare the current file against that predecessor. */
+  readonly candidateDiff = output<RenameCandidate>();
   readonly traceClear = output<void>();
   readonly traceOlder = output<void>();
   readonly searchOrigins = output<HunkOriginScope>();

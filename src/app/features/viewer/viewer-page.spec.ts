@@ -358,6 +358,30 @@ describe('ViewerPage (integration)', () => {
     });
   });
 
+  it('collapses and restores the file tree', async () => {
+    await harness.navigateByUrl('/r/acme/rocket');
+    await vi.waitFor(async () => {
+      await textOnScreen();
+      expect(harness.routeNativeElement!.querySelector('app-file-tree')).not.toBeNull();
+    });
+
+    harness
+      .routeNativeElement!.querySelector<HTMLButtonElement>('[aria-label="Hide file tree"]')!
+      .click();
+    await vi.waitFor(async () => {
+      await textOnScreen();
+      expect(harness.routeNativeElement!.querySelector('app-file-tree')).toBeNull();
+    });
+
+    harness
+      .routeNativeElement!.querySelector<HTMLButtonElement>('[aria-label="Show file tree"]')!
+      .click();
+    await vi.waitFor(async () => {
+      await textOnScreen();
+      expect(harness.routeNativeElement!.querySelector('app-file-tree')).not.toBeNull();
+    });
+  });
+
   it('opens a file when its tree row is clicked and renders the content', async () => {
     await harness.navigateByUrl('/r/acme/rocket');
     await vi.waitFor(async () => {
@@ -867,6 +891,44 @@ describe('ViewerPage (integration)', () => {
       expect(annotated).not.toContain('does not exist at');
     });
     expect(router.url).not.toContain('blame=0');
+  });
+
+  it('diffs the file against a chosen rename candidate, then clears back', async () => {
+    await harness.navigateByUrl('/r/acme/rocket?path=src%2Fengine.ts');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('export const thrust = 1;');
+    });
+
+    clickButton('History');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('Continue past the rename?');
+    });
+    clickButton('Continue past the rename?');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('src/thruster.ts'); // the candidate
+    });
+
+    clickButton('Diff'); // the per-candidate "Diff against this predecessor" action
+
+    await vi.waitFor(async () => {
+      expect(router.url).toContain(`at=${RENAME_SHA}`);
+      expect(router.url).toContain('base=src%2Fthruster.ts');
+      const text = await textOnScreen();
+      expect(text).toContain('export const thrust = 0;'); // predecessor, on the before side
+      expect(text).toContain('export const thrust = 1;'); // the current file, after
+    });
+
+    // Clearing the comparison returns to the commit's own changes (added).
+    harness
+      .routeNativeElement!.querySelector<HTMLButtonElement>('[aria-label="Stop comparing"]')!
+      .click();
+
+    await vi.waitFor(async () => {
+      expect(router.url).not.toContain('base=');
+      const text = await textOnScreen();
+      expect(text).toContain('nothing at parent'); // shown as introduced again
+      expect(text).not.toContain('export const thrust = 0;');
+    });
   });
 
   it('continues past a rename into the predecessor file with blame back on', async () => {

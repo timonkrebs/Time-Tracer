@@ -466,6 +466,57 @@ describe('RepoStore', () => {
       expect(provider.fileAtRefCalls).not.toContainEqual({ path: 'docs/README.md', ref: 'parent' });
     });
 
+    it('diffs against a chosen predecessor when a base path is given', async () => {
+      // "Diff" on a rename candidate: compare the file at its creation against
+      // the selected predecessor at the parent (issue #8 follow-up).
+      provider.commitResult = (sha) => Promise.resolve(commit(sha, ['parent']));
+      provider.fileAtRefResult = (path, ref) => {
+        if (ref === 'parent' && path === 'README.md') {
+          return Promise.reject(new RepoProviderError('absent', 'not-found'));
+        }
+        if (ref === 'parent' && path === 'docs/OLD.md') {
+          return textFile(path, ref, 'a\nold\nc\n');
+        }
+        return textFile(path, ref, 'a\nnew\nc\n');
+      };
+
+      await store.openFile('README.md', 'child');
+      store.setCompareBase('docs/OLD.md');
+      await store.loadDiff('README.md', 'child', 'docs/OLD.md');
+
+      const state = store.selectedDiff();
+      expect(state?.status).toBe('ready');
+      if (state?.status !== 'ready') return;
+      expect(state.baseSha).toBe('parent');
+      expect(state.basePath).toBe('docs/OLD.md');
+      expect(state.headPath).toBe('README.md');
+      expect(state.diff.added).toBe(1);
+      expect(state.diff.removed).toBe(1);
+      expect(provider.fileAtRefCalls).toContainEqual({ path: 'docs/OLD.md', ref: 'parent' });
+    });
+
+    it('caches the commit diff and a predecessor comparison separately', async () => {
+      provider.commitResult = (sha) => Promise.resolve(commit(sha, ['parent']));
+      provider.fileAtRefResult = (path, ref) => {
+        if (ref === 'parent' && path === 'README.md') {
+          return Promise.reject(new RepoProviderError('absent', 'not-found'));
+        }
+        if (ref === 'parent' && path === 'docs/OLD.md') {
+          return textFile(path, ref, 'a\nold\nc\n');
+        }
+        return textFile(path, ref, 'a\nnew\nc\n');
+      };
+
+      await store.openFile('README.md', 'child');
+      await store.loadDiff('README.md', 'child'); // the commit's own changes (added)
+      await store.loadDiff('README.md', 'child', 'docs/OLD.md'); // vs the predecessor
+
+      store.setCompareBase(null);
+      expect(store.selectedDiff()).toMatchObject({ status: 'ready', basePath: null });
+      store.setCompareBase('docs/OLD.md');
+      expect(store.selectedDiff()).toMatchObject({ status: 'ready', basePath: 'docs/OLD.md' });
+    });
+
     it('diffs a path renamed away against the new path at the commit', async () => {
       provider.commitResult = (sha) => Promise.resolve(commit(sha, ['parent']));
       provider.commitFilesResult = () =>
