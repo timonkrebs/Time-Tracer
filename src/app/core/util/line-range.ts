@@ -18,6 +18,28 @@ export interface LineRange {
 }
 
 /**
+ * Parses a `line` query param into a 1-based range. Accepts a single line
+ * (`"18"`) or an inclusive span (`"18-19"`); returns null for anything else,
+ * so a malformed deep link simply highlights nothing.
+ */
+export function parseLineRange(raw: string | null | undefined): LineRange | null {
+  if (!raw) return null;
+  const match = /^(\d+)(?:-(\d+))?$/.exec(raw);
+  if (!match) return null;
+  const start = Number(match[1]);
+  if (!Number.isInteger(start) || start < 1) return null;
+  if (match[2] === undefined) return { start, end: start };
+  const end = Number(match[2]);
+  if (!Number.isInteger(end) || end < start) return null;
+  return { start, end };
+}
+
+/** Formats a range for the `line` query param: `"18"` or `"18-19"`. */
+export function formatLineRange(range: LineRange): string {
+  return range.start === range.end ? String(range.start) : `${range.start}-${range.end}`;
+}
+
+/**
  * One maximal run of non-equal ops: `oldCount` lines starting at `oldStart`
  * were replaced by `newCount` lines starting at `newStart`. A zero-count
  * side marks a pure insertion/removal: the region then sits in the gap
@@ -81,19 +103,22 @@ export function changeRegionRange(region: ChangeRegion): LineRange {
 }
 
 /**
- * Maps a new-side range onto the old side of the same diff. An edge that
- * falls inside a replaced block is mapped to the old line at the *same
- * offset within the block* (clamped to the block), so a single traced line
- * keeps following a single line through a rewrite instead of ballooning to
- * the whole replaced block. Returns null when the whole range was
- * introduced by this very diff: there is nothing older to follow.
+ * Maps a new-side range onto the old side of the same diff. A *single*
+ * traced line follows the old line at the same offset within a replaced
+ * block, so one line keeps tracking one line through a rewrite. A
+ * *multi-line* range instead keeps the whole block together: an edge inside
+ * a replaced block expands to the block's old extent (as git's line-log
+ * does), so the range never narrows below the selection across a rewrite.
+ * Returns null when the whole range was introduced by this very diff: there
+ * is nothing older to follow.
  */
 export function mapRangeToParent(
   regions: readonly ChangeRegion[],
   range: LineRange,
 ): LineRange | null {
-  const start = Math.max(1, mapEdge(regions, range.start, 'start'));
-  const end = mapEdge(regions, range.end, 'end');
+  const single = range.start === range.end;
+  const start = Math.max(1, mapEdge(regions, range.start, 'start', single));
+  const end = mapEdge(regions, range.end, 'end', single);
   return start > end ? null : { start, end };
 }
 
@@ -146,7 +171,12 @@ export function movedLinePairs(ops: readonly DiffOp[]): ReadonlyMap<number, numb
   return pairs;
 }
 
-function mapEdge(regions: readonly ChangeRegion[], line: number, edge: 'start' | 'end'): number {
+function mapEdge(
+  regions: readonly ChangeRegion[],
+  line: number,
+  edge: 'start' | 'end',
+  single: boolean,
+): number {
   let delta = 0;
   for (const region of regions) {
     if (region.newCount > 0) {
@@ -158,11 +188,16 @@ function mapEdge(regions: readonly ChangeRegion[], line: number, edge: 'start' |
           // `end` one short of it, so a wholly-introduced range yields null.
           return edge === 'start' ? region.oldStart : region.oldStart - 1;
         }
-        // Replacement: follow the old line at the same offset within the
-        // block (clamped) rather than expanding to the whole block, so one
-        // traced line stays one line across the rewrite.
-        const offset = Math.min(line - region.newStart, region.oldCount - 1);
-        return region.oldStart + offset;
+        if (single) {
+          // One traced line stays one line: follow the old line at the same
+          // offset within the block (clamped), not the whole block.
+          const offset = Math.min(line - region.newStart, region.oldCount - 1);
+          return region.oldStart + offset;
+        }
+        // A multi-line range keeps the block together: an edge inside a
+        // replaced block expands to the block's old extent, so the range
+        // never narrows below the selection across a rewrite.
+        return edge === 'start' ? region.oldStart : region.oldStart + region.oldCount - 1;
       }
       if (last >= line) break; // first region beyond the edge — nothing else shifts it
       delta += region.oldCount - region.newCount;

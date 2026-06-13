@@ -19,7 +19,7 @@ import {
   RenameCandidate,
   RepoStore,
 } from '../../core/store/repo-store';
-import { LineRange } from '../../core/util/line-range';
+import { LineRange, formatLineRange, parseLineRange } from '../../core/util/line-range';
 import { relativeTime, shortSha } from '../../core/util/relative-time';
 import { DiffView } from './diff-view';
 import { FileFinder } from './file-finder';
@@ -622,10 +622,10 @@ export class ViewerPage {
     return this.store.files().filter((f) => f.path.startsWith(prefix)).length;
   });
 
-  protected readonly lineNumber = computed<number | null>(() => {
-    const parsed = Number(this.line());
-    return Number.isInteger(parsed) && parsed >= 1 ? parsed : null;
-  });
+  /** The `line` query param parsed as a range (`"18"` or `"18-19"`). */
+  private readonly urlRange = computed<LineRange | null>(() => parseLineRange(this.line()));
+
+  protected readonly lineNumber = computed<number | null>(() => this.urlRange()?.start ?? null);
 
   protected readonly activeHighlightRange = computed<LineRange | null>(() => {
     const trace = this.store.lineTrace();
@@ -636,8 +636,8 @@ export class ViewerPage {
       if (hit) return hit.range;
       if (trace.path === path && trace.anchorSha === at) return trace.range;
     }
-    const line = this.lineNumber();
-    return line ? { start: line, end: line } : null;
+    // No active trace for this version: fall back to the deep-linked range.
+    return this.urlRange();
   });
 
   protected readonly leftBlame = computed(() => {
@@ -903,7 +903,7 @@ export class ViewerPage {
         path: hit.path,
         at: hit.commit.sha,
         view: 'diff',
-        line: String(hit.range.start),
+        line: formatLineRange(hit.range),
         base: null,
       },
       queryParamsHandling: 'merge',
@@ -967,6 +967,12 @@ export class ViewerPage {
     if (!path || !at) return;
     if (!this.historyOpen()) this.toggleHistory();
     void this.store.startLineTrace(path, at, range);
+    // Deep-link the traced range so reloads and shared links keep it.
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { line: formatLineRange(range) },
+      queryParamsHandling: 'merge',
+    });
   }
 
   /**
@@ -986,6 +992,12 @@ export class ViewerPage {
     }
     if (!this.historyOpen()) this.toggleHistory();
     void this.store.startLineTrace(path, anchor, range);
+    // Deep-link the traced range so reloads and shared links keep it.
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { line: formatLineRange(range) },
+      queryParamsHandling: 'merge',
+    });
   }
 
   protected onFindRenames(): void {
@@ -1054,6 +1066,10 @@ export class ViewerPage {
    * blame and the steppers keep working in the source file's timeline.
    */
   protected async onOriginSelect(candidate: HunkOriginCandidate): Promise<void> {
+    // Highlight the whole block at the match, sized from the traced range.
+    const origin = this.store.lineTrace()?.origin;
+    const span = origin ? origin.range.end - origin.range.start : 0;
+    const range: LineRange = { start: candidate.line, end: candidate.line + span };
     const anchor = await this.store.lastTouch(candidate.path, candidate.parentSha);
     void this.router.navigate([], {
       relativeTo: this.route,
@@ -1061,7 +1077,7 @@ export class ViewerPage {
         path: candidate.path,
         at: anchor?.sha ?? candidate.parentSha,
         view: 'file',
-        line: String(candidate.line),
+        line: formatLineRange(range),
         base: null,
       },
       queryParamsHandling: 'merge',

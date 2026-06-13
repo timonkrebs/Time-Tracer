@@ -2,9 +2,11 @@ import { computeFileDiff, diffLines, splitLines } from './diff';
 import {
   LineRange,
   changeRegions,
+  formatLineRange,
   hunkChangeRanges,
   hunkChangedRange,
   mapRangeToParent,
+  parseLineRange,
   regionTouchesRange,
 } from './line-range';
 
@@ -92,20 +94,28 @@ describe('mapRangeToParent', () => {
     expect(mapRangeToParent(removed, { start: 1, end: 2 })).toEqual({ start: 2, end: 3 });
   });
 
-  it('maps edges inside a replaced block to their positional predecessor', () => {
+  it('maps a single line inside a replaced block to its positional predecessor', () => {
     // Old 2..5 replaced by new 2..3.
     const regions = regionsOf('a\nb\nc\nd\ne\nf\n', 'a\nX\nY\nf\n');
     // New 3 (Y) is at offset 1 of the new block → old 3, not the whole 2..5:
     // a single traced line keeps following a single line.
     expect(mapRangeToParent(regions, { start: 3, end: 3 })).toEqual({ start: 3, end: 3 });
-    // New 2 (X, offset 0) → old 2; line 1 sits untouched above the block.
-    expect(mapRangeToParent(regions, { start: 1, end: 2 })).toEqual({ start: 1, end: 2 });
+    // New 2 (X, offset 0) → old 2.
+    expect(mapRangeToParent(regions, { start: 2, end: 2 })).toEqual({ start: 2, end: 2 });
   });
 
   it('keeps a single line single when a block collapses to one line', () => {
     // Old 2..5 (four lines) collapse into the single new line 2.
     const regions = regionsOf('a\nb\nc\nd\ne\nf\n', 'a\nZ\nf\n');
     expect(mapRangeToParent(regions, { start: 2, end: 2 })).toEqual({ start: 2, end: 2 });
+  });
+
+  it('expands a multi-line range over a replaced block to keep it whole', () => {
+    // Old 2..5 replaced by new 2..3; the range keeps covering the block.
+    const regions = regionsOf('a\nb\nc\nd\ne\nf\n', 'a\nX\nY\nf\n');
+    expect(mapRangeToParent(regions, { start: 2, end: 3 })).toEqual({ start: 2, end: 5 });
+    // A range only reaching into the block still expands to the block's end.
+    expect(mapRangeToParent(regions, { start: 1, end: 2 })).toEqual({ start: 1, end: 5 });
   });
 
   it('covers a removal gap inside the range', () => {
@@ -207,5 +217,40 @@ describe('range tracking across versions (integration)', () => {
     expect(touched).toEqual(['v4', 'v2']);
     // The walk ended where the block was introduced.
     expect(range).toBeNull();
+  });
+});
+
+describe('parseLineRange', () => {
+  it('parses a single line', () => {
+    expect(parseLineRange('18')).toEqual({ start: 18, end: 18 });
+  });
+
+  it('parses an inclusive span', () => {
+    expect(parseLineRange('18-19')).toEqual({ start: 18, end: 19 });
+  });
+
+  it('rejects malformed, empty and inverted input', () => {
+    expect(parseLineRange(undefined)).toBeNull();
+    expect(parseLineRange('')).toBeNull();
+    expect(parseLineRange('0')).toBeNull();
+    expect(parseLineRange('abc')).toBeNull();
+    expect(parseLineRange('19-18')).toBeNull();
+    expect(parseLineRange('1-2-3')).toBeNull();
+  });
+});
+
+describe('formatLineRange', () => {
+  it('round-trips through parseLineRange', () => {
+    for (const range of [
+      { start: 1, end: 1 },
+      { start: 18, end: 19 },
+    ]) {
+      expect(parseLineRange(formatLineRange(range))).toEqual(range);
+    }
+  });
+
+  it('collapses a single-line range to one number', () => {
+    expect(formatLineRange({ start: 7, end: 7 })).toBe('7');
+    expect(formatLineRange({ start: 7, end: 9 })).toBe('7-9');
   });
 });

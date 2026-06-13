@@ -941,6 +941,18 @@ describe('ViewerPage (integration)', () => {
     });
   });
 
+  it('highlights a deep-linked line range with no active trace', async () => {
+    // The range lives in the URL (`line=1-7`), so a shared link or reload
+    // highlights the whole span — not just its first line — without a trace.
+    await harness.navigateByUrl(
+      `/r/acme/rocket?path=src%2Fmulti.ts&at=${RUN_SHA}&view=diff&blame=0&line=1-7`,
+    );
+    await vi.waitFor(() => {
+      const highlighted = harness.routeNativeElement!.querySelectorAll('.trace-highlight-row');
+      expect(highlighted.length).toBeGreaterThan(1);
+    });
+  });
+
   it('traces moved lines and highlights their range in filtered commits', async () => {
     await harness.navigateByUrl(
       `/r/acme/rocket?path=src%2Fmove.ts&at=${MOVE_EDIT_SHA}&view=diff&blame=0`,
