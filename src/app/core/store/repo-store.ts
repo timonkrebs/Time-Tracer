@@ -406,8 +406,13 @@ export class RepoStore {
 
   /**
    * Computes what the commit `at` changed in `path`: the file at the commit
-   * diffed against its first parent. Rename commits may use a different path
-   * on either side. Cached per `<commit, path>`; reuses file-content caches.
+   * diffed against its first parent. A file the commit renamed *away* keeps
+   * its new path on the head side; a file the commit *introduced* (absent at
+   * the parent under this path) is shown as added rather than diffed against
+   * the file it was renamed from — that predecessor is reached through the
+   * history panel's "Continue past the rename?" step, so the oldest commit of
+   * a path's recorded history reads as the file's creation. Cached per
+   * `<commit, path>`; reuses file-content caches.
    */
   async loadDiff(path: string, at: string): Promise<void> {
     const key = fileKey(path, at);
@@ -479,20 +484,15 @@ export class RepoStore {
         headPath = null;
       }
 
-      let basePath: string | null =
+      // A file absent at the parent under this path was introduced by this
+      // commit: diff it against empty (shown as added), even when the provider
+      // reports it as a rename. Following the rename here would contradict the
+      // history panel, which presents this — the oldest commit of the path's
+      // recorded history — as the start and offers an explicit "Continue past
+      // the rename?" step into the predecessor's own timeline.
+      const basePath: string | null =
         samePathBaseState && samePathBaseState.status === 'ready' ? path : null;
-      let baseState = samePathBaseState;
-      if (baseSha && baseState?.status === 'error' && baseState.kind === 'not-found') {
-        const previousPath = (await commitFiles()).find(
-          (c) => c.path === (headPath ?? path) && c.previousPath,
-        )?.previousPath;
-        if (seq !== this.loadSeq) return;
-        if (previousPath) {
-          baseState = await this.ensureFile(previousPath, baseSha);
-          if (seq !== this.loadSeq) return;
-          basePath = baseState.status === 'ready' ? previousPath : null;
-        }
-      }
+      const baseState = samePathBaseState;
 
       let baseText = '';
       if (baseState) {

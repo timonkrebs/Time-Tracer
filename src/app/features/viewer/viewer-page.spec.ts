@@ -843,22 +843,28 @@ describe('ViewerPage (integration)', () => {
     });
   });
 
-  it('renders a rename commit against the predecessor path and keeps blame working', async () => {
+  it('shows a file introduced by a rename as added, with the predecessor offered in history', async () => {
+    // The oldest commit of a path's recorded history reads as the file's
+    // creation: it is shown as added, not diffed against the file it was
+    // renamed from, which the history offers via "Continue past the rename?"
+    // instead (issue #8).
     await harness.navigateByUrl(`/r/acme/rocket?path=src%2Fengine.ts&at=${RENAME_SHA}&view=diff`);
     await vi.waitFor(async () => {
       const text = await textOnScreen();
-      expect(text).toContain('src/thruster.ts');
-      expect(text).toContain('export const thrust = 0;');
-      expect(text).toContain('export const thrust = 1;');
+      expect(text).toContain('export const thrust = 1;'); // the introduced file
+      expect(text).toContain('nothing at parent'); // no previous version under this path
       expect(text).toContain('refactor: rename thruster to engine'); // history loaded
+      expect(text).toContain('Continue past the rename?'); // the explicit way across
     });
-    expect(await textOnScreen()).toContain('◂ Before');
+    const text = await textOnScreen();
+    // The rename is not pre-empted in the diff: no predecessor content, no step before.
+    expect(text).not.toContain('export const thrust = 0;');
+    expect(text).not.toContain('◂ Before');
 
     await vi.waitFor(async () => {
-      const text = await textOnScreen();
-      expect(text).toContain('01.01.2026 Grace'); // annotated predecessor version
-      expect(text).toContain('01.03.2026 Ada'); // annotated at this newest version
-      expect(text).not.toContain('does not exist at');
+      const annotated = await textOnScreen();
+      expect(annotated).toContain('01.03.2026 Ada'); // the introduced version, annotated
+      expect(annotated).not.toContain('does not exist at');
     });
     expect(router.url).not.toContain('blame=0');
   });
