@@ -87,12 +87,16 @@ renames — see the feature list and roadmap below for what's done and what's ne
   Content comparisons use a line-structured fuzzy similarity (exact lines via the minimal diff,
   edited lines via per-line Levenshtein), so a rename that also touched up lines still scores
   high. Picking a candidate continues the journey in the predecessor's own timeline (anchored at
-  its last change before the rename), with history, blame and steppers all working there.
+  its last change before the rename), with history, blame and steppers all working there — or hit
+  **Diff** on a candidate to compare the file _as it was introduced_ against that predecessor
+  directly (the file's first commit otherwise reads as a plain creation, so the rename diff is
+  opt-in rather than guessed).
 - **Deep-linkable state**:
   `/r/:owner/:repo?ref=<ref>&path=<file>&at=<sha>&view=diff&line=42` — refresh, share, and use
   browser back/forward to step through previously viewed files, historical versions, diffs and
   annotations. Blame annotations are on by default; add `blame=0` to share a unified diff or plain
-  file view.
+  file view. `base=<path>` diffs the file against a chosen predecessor instead of the commit's own
+  changes (what the candidate **Diff** action sets).
 - **Honest file handling**: UTF-8 decoding, binary detection (NUL-byte heuristic, like git),
   a 2 MB size guard with a link out to GitHub, and per-snapshot content caching.
 - **Specific error states**: not found, invalid ref, empty repository, network failure, and

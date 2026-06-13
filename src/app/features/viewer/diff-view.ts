@@ -74,16 +74,43 @@ interface SplitRow {
             <span class="text-emerald-400">+{{ s.diff.added }}</span>
             <span class="ml-1 text-rose-400">−{{ s.diff.removed }}</span>
           </span>
-          <span class="hidden shrink-0 text-[11px] text-zinc-600 lg:block">
-            @if (s.baseSha; as base) {
-              vs {{ abbrev(base) }}
-              @if (s.commit.parentShas.length > 1) {
-                (merge commit — first parent)
+          @if (comparingPath(); as cmp) {
+            <span
+              class="flex min-w-0 shrink items-center gap-1 rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[11px] text-amber-200"
+            >
+              <span class="truncate" [title]="'Comparing against ' + cmp">vs {{ cmp }}</span>
+              <button
+                type="button"
+                class="shrink-0 rounded p-0.5 text-amber-200/70 transition hover:bg-white/10 hover:text-amber-100"
+                (click)="comparisonClear.emit()"
+                aria-label="Stop comparing"
+                title="Back to this commit's own changes"
+              >
+                <svg
+                  class="size-3"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  aria-hidden="true"
+                >
+                  <path d="M18 6 6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </span>
+          } @else {
+            <span class="hidden shrink-0 text-[11px] text-zinc-600 lg:block">
+              @if (s.baseSha; as base) {
+                vs {{ abbrev(base) }}
+                @if (s.commit.parentShas.length > 1) {
+                  (merge commit — first parent)
+                }
+              } @else {
+                initial commit — everything is new
               }
-            } @else {
-              initial commit — everything is new
-            }
-          </span>
+            </span>
+          }
         }
         <span class="flex-1"></span>
         @if (selectedRange(); as range) {
@@ -508,6 +535,8 @@ export class DiffView {
   readonly blameToggle = output<void>();
   /** A clicked annotation: the commit plus the line's position at it. */
   readonly blameSelect = output<{ sha: string; line: number }>();
+  /** Clears a predecessor comparison, back to the commit's own changes. */
+  readonly comparisonClear = output<void>();
 
   private readonly scroller = viewChild<ElementRef<HTMLElement>>('scroller');
   private lastScrollKey: string | null = null;
@@ -535,6 +564,13 @@ export class DiffView {
   protected readonly canStepBefore = computed(() => {
     const s = this.state();
     return s?.status === 'ready' && s.baseSha !== null && this.beforeAvailable();
+  });
+
+  /** Predecessor path when the diff compares against one, else null. */
+  protected readonly comparingPath = computed<string | null>(() => {
+    const s = this.state();
+    if (s?.status !== 'ready') return null;
+    return s.basePath && s.basePath !== this.path() ? s.basePath : null;
   });
 
   protected readonly blameComputing = computed(

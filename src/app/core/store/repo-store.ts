@@ -214,8 +214,10 @@ export class RepoStore {
   private readonly _expanded = signal<ReadonlySet<string>>(new Set());
   /** Every commit seen so far (history pages, single lookups), by sha. */
   private readonly _commitsBySha = signal<ReadonlyMap<string, CommitInfo>>(new Map());
-  /** Diff states keyed by `<sha>::<path>`. */
+  /** Diff states keyed by {@link diffStateKey} (`<sha>::<path>`, plus base). */
   private readonly _diffs = signal<ReadonlyMap<string, DiffState>>(new Map());
+  /** Predecessor path the changes view diffs against, or null for the commit's own changes. */
+  private readonly _compareBase = signal<string | null>(null);
   /** Blame states keyed by `<sha|tip>::<path>`. */
   private readonly _blames = signal<ReadonlyMap<string, BlameState>>(new Map());
   /** Blame computations currently running, by the same key. */
@@ -293,7 +295,7 @@ export class RepoStore {
     const path = this._selectedPath();
     const at = this._viewAt();
     if (!path || !at) return null;
-    return this._diffs().get(fileKey(path, at)) ?? null;
+    return this._diffs().get(diffStateKey(path, at, this._compareBase())) ?? null;
   });
 
   /** Blame of the selected file at the current view ref, if requested. */
@@ -344,6 +346,7 @@ export class RepoStore {
     this._expanded.set(new Set());
     this._commitsBySha.set(new Map());
     this._diffs.set(new Map());
+    this._compareBase.set(null);
     this._blames.set(new Map());
     this._renames.set(new Map());
     this.blameRuns.clear();
@@ -405,17 +408,28 @@ export class RepoStore {
   }
 
   /**
+   * Sets (or clears with null) the predecessor path the changes view diffs
+   * against, instead of the commit's own first-parent diff. Driven by the
+   * `base` query param; the diff itself is computed by {@link loadDiff}.
+   */
+  setCompareBase(base: string | null): void {
+    this._compareBase.set(base);
+  }
+
+  /**
    * Computes what the commit `at` changed in `path`: the file at the commit
    * diffed against its first parent. A file the commit renamed *away* keeps
    * its new path on the head side; a file the commit *introduced* (absent at
    * the parent under this path) is shown as added rather than diffed against
    * the file it was renamed from — that predecessor is reached through the
    * history panel's "Continue past the rename?" step, so the oldest commit of
-   * a path's recorded history reads as the file's creation. Cached per
-   * `<commit, path>`; reuses file-content caches.
+   * a path's recorded history reads as the file's creation. Pass `base` to
+   * diff against a chosen predecessor instead: that path at the parent becomes
+   * the old side (used by "Diff" on a rename candidate). Cached per
+   * `<commit, path, base>`; reuses file-content caches.
    */
-  async loadDiff(path: string, at: string): Promise<void> {
-    const key = fileKey(path, at);
+  async loadDiff(path: string, at: string, base: string | null = null): Promise<void> {
+    const key = diffStateKey(path, at, base);
     const existing = this._diffs().get(key);
     if (existing && existing.status !== 'error') return;
     const slug = this._slug();
@@ -435,11 +449,14 @@ export class RepoStore {
         return changes;
       };
 
+      // The base side defaults to this same path at the parent; `base`
+      // overrides it to diff against a chosen predecessor candidate there.
+      const baseFetchPath = base ?? path;
       let currentState: FileState | null;
-      let samePathBaseState: FileState | null;
-      [currentState, samePathBaseState] = await Promise.all([
+      let baseState: FileState | null;
+      [currentState, baseState] = await Promise.all([
         this.ensureFile(path, at),
-        baseSha ? this.ensureFile(path, baseSha) : Promise.resolve(null),
+        baseSha ? this.ensureFile(baseFetchPath, baseSha) : Promise.resolve(null),
       ]);
       if (seq !== this.loadSeq) return;
 
@@ -484,15 +501,11 @@ export class RepoStore {
         headPath = null;
       }
 
-      // A file absent at the parent under this path was introduced by this
-      // commit: diff it against empty (shown as added), even when the provider
-      // reports it as a rename. Following the rename here would contradict the
-      // history panel, which presents this — the oldest commit of the path's
-      // recorded history — as the start and offers an explicit "Continue past
-      // the rename?" step into the predecessor's own timeline.
-      const basePath: string | null =
-        samePathBaseState && samePathBaseState.status === 'ready' ? path : null;
-      const baseState = samePathBaseState;
+      // With no `base`, a file absent at the parent under this path was
+      // introduced by this commit and is shown as added (issue #8) — never
+      // auto-diffed against the file it was renamed from; the history panel's
+      // "Continue past the rename?" step explores that predecessor instead.
+      const basePath: string | null = baseState?.status === 'ready' ? baseFetchPath : null;
 
       let baseText = '';
       if (baseState) {
@@ -1370,6 +1383,7 @@ export class RepoStore {
   clearSelection(): void {
     this._selectedPath.set(null);
     this._viewAt.set(null);
+    this._compareBase.set(null);
     this.clearLineTrace();
   }
 
@@ -1543,4 +1557,14 @@ function extensionOf(path: string): string {
  */
 function fileKey(path: string, at: string | null): string {
   return `${at ?? 'tip'}::${path}`;
+}
+
+/**
+ * Cache key for a diff state. `base`, when set, diffs `path@at` against that
+ * predecessor path at the parent (a chosen rename candidate) rather than the
+ * commit's own changes, so the two are cached separately. The NUL separator
+ * cannot occur in a git path, keeping the keys unambiguous.
+ */
+function diffStateKey(path: string, at: string, base: string | null): string {
+  return base ? `${fileKey(path, at)}\u0000${base}` : fileKey(path, at);
 }
