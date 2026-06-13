@@ -1,4 +1,5 @@
-import { OwnedLine, summarizeOwnership } from './ownership';
+import { TreeEntry } from '../models';
+import { OwnedLine, selectOwnershipFiles, summarizeOwnership } from './ownership';
 
 function line(authorName: string, authoredAt: string, sha = authorName + authoredAt): OwnedLine {
   return { commit: { sha, authorName, authoredAt } };
@@ -68,5 +69,61 @@ describe('summarizeOwnership', () => {
     expect(s.latest).toEqual({ authorName: 'Ada', authoredAt: '2024-06-01T00:00:00Z', sha: 'a2' });
     expect(s.authors.find((a) => a.name === 'Ada')?.lastSha).toBe('a2');
     expect(s.authors.find((a) => a.name === 'Bob')?.lastSha).toBe('b1');
+  });
+});
+
+function file(path: string, size: number): TreeEntry {
+  return { path, name: path.slice(path.lastIndexOf('/') + 1), kind: 'file', sha: path, size };
+}
+
+function dir(path: string): TreeEntry {
+  return { path, name: path.slice(path.lastIndexOf('/') + 1), kind: 'dir', sha: '' };
+}
+
+describe('selectOwnershipFiles', () => {
+  const entries: TreeEntry[] = [
+    file('src/app/small.ts', 10),
+    file('src/app/big.ts', 90),
+    file('src/app/mid.ts', 50),
+    dir('src/app'),
+    file('src/appx/other.ts', 999), // sibling folder with a confusable prefix
+    file('src/main.ts', 5),
+    file('docs/readme.md', 200),
+  ];
+
+  it('keeps only the files directly under the folder, largest first', () => {
+    const { files, capped } = selectOwnershipFiles(entries, 'src/app', 100);
+    expect(files.map((f) => f.path)).toEqual([
+      'src/app/big.ts',
+      'src/app/mid.ts',
+      'src/app/small.ts',
+    ]);
+    expect(capped).toBe(false);
+  });
+
+  it('caps to the largest files and reports the cut', () => {
+    const { files, capped } = selectOwnershipFiles(entries, 'src/app', 2);
+    expect(files.map((f) => f.path)).toEqual(['src/app/big.ts', 'src/app/mid.ts']);
+    expect(capped).toBe(true);
+  });
+
+  it('treats the empty folder path as the whole repository', () => {
+    const { files } = selectOwnershipFiles(entries, '', 100);
+    expect(files.map((f) => f.path)).toEqual([
+      'src/appx/other.ts',
+      'docs/readme.md',
+      'src/app/big.ts',
+      'src/app/mid.ts',
+      'src/app/small.ts',
+      'src/main.ts',
+    ]);
+  });
+
+  it('orders files with an unknown size last', () => {
+    const mixed: TreeEntry[] = [
+      { path: 'a.ts', name: 'a.ts', kind: 'file', sha: 'a' }, // no size
+      file('b.ts', 1),
+    ];
+    expect(selectOwnershipFiles(mixed, '', 100).files.map((f) => f.path)).toEqual(['b.ts', 'a.ts']);
   });
 });

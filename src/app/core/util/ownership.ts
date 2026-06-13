@@ -7,6 +7,8 @@
  * loaded history, or `null` for lines still being attributed.
  */
 
+import type { TreeEntry } from '../models';
+
 /** A blame line, reduced to the fields the summary needs. */
 export type OwnedLine =
   | {
@@ -131,4 +133,23 @@ export function summarizeOwnership(lines: Iterable<OwnedLine>): OwnershipSummary
     busFactor,
     latest,
   };
+}
+
+/**
+ * Picks the files under `folderPath` to blame for a folder ownership scan,
+ * **largest first** so a cap keeps the files holding the most code (and so the
+ * most ownership signal) rather than an arbitrary alphabetical slice. Size is
+ * the only ranking signal available without a per-file request. `folderPath`
+ * is '' for the repository root; the result says whether the cap dropped any.
+ */
+export function selectOwnershipFiles(
+  entries: readonly TreeEntry[],
+  folderPath: string,
+  cap: number,
+): { files: TreeEntry[]; capped: boolean } {
+  const prefix = folderPath ? `${folderPath.replace(/\/+$/, '')}/` : '';
+  const matching = entries
+    .filter((e) => e.kind === 'file' && e.path.startsWith(prefix))
+    .sort((a, b) => (b.size ?? 0) - (a.size ?? 0) || a.path.localeCompare(b.path));
+  return { files: matching.slice(0, cap), capped: matching.length > cap };
 }

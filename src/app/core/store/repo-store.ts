@@ -22,7 +22,7 @@ import {
   regionTouchesRange,
 } from '../util/line-range';
 import { findBlockOrigin, fuzzyLineSimilarity } from '../util/similarity';
-import { OwnershipSummary, summarizeOwnership } from '../util/ownership';
+import { OwnershipSummary, selectOwnershipFiles, summarizeOwnership } from '../util/ownership';
 import { ancestorsOf, buildTree } from '../util/tree';
 import { RecentRepos } from './recent-repos';
 
@@ -980,12 +980,11 @@ export class RepoStore {
    */
   async computeFolderOwnership(folderPath: string): Promise<void> {
     if (this._phase() !== 'ready') return;
-    const prefix = folderPath ? `${folderPath.replace(/\/+$/, '')}/` : '';
-    const matching = this._entries()
-      .filter((e) => e.kind === 'file' && e.path.startsWith(prefix))
-      .sort((a, b) => a.path.localeCompare(b.path));
-    const capped = matching.length > FOLDER_OWNERSHIP_CAP;
-    const files = matching.slice(0, FOLDER_OWNERSHIP_CAP);
+    const { files, capped } = selectOwnershipFiles(
+      this._entries(),
+      folderPath,
+      FOLDER_OWNERSHIP_CAP,
+    );
 
     const run = ++this.folderRun;
     const seq = this.loadSeq;

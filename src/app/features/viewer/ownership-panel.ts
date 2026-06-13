@@ -189,8 +189,8 @@ export class OwnershipSummaryView {
             </button>
           } @else {
             <p class="mt-1 mb-2 text-[11px] leading-4 text-zinc-600">
-              Blame every file in this folder (up to {{ folderCap() }}) and combine it — one history
-              walk per file, so it can use a lot of API requests.
+              Blame this folder's files (up to {{ folderCap() }}, largest first) and combine them —
+              one history walk per file, so it can use a lot of API requests.
             </p>
             <button
               type="button"
