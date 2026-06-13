@@ -24,7 +24,6 @@ import { DiffView } from './diff-view';
 import { FileHistory } from './file-history';
 import { FileTree } from './file-tree';
 import { FileView } from './file-view';
-import { HeatLegend } from './heat-legend';
 
 const TREE_WIDTH_KEY = 'time-tracer.tree-width';
 const TREE_WIDTH_DEFAULT = 300;
@@ -47,7 +46,7 @@ const TREE_COLLAPSED_KEY = 'time-tracer.tree-collapsed';
 @Component({
   selector: 'app-viewer-page',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [RouterLink, FileTree, FileView, FileHistory, DiffView, HeatLegend],
+  imports: [RouterLink, FileTree, FileView, FileHistory, DiffView],
   host: { class: 'block h-full' },
   template: `
     <div class="flex h-full flex-col" [class.select-none]="dragging()">
@@ -249,29 +248,20 @@ const TREE_COLLAPSED_KEY = 'time-tracer.tree-collapsed';
         <div class="flex min-h-0 flex-1">
           @if (!treeCollapsed()) {
             <aside
-              class="flex shrink-0 flex-col border-r border-zinc-800 bg-zinc-950"
+              class="slim-scrollbar shrink-0 overflow-x-hidden overflow-y-auto border-r border-zinc-800 bg-zinc-950 py-2 pr-1 pl-1"
               [style.width.px]="treeWidth()"
             >
-              <div
-                class="slim-scrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto py-2 pr-1 pl-1"
-              >
-                @if (store.tree().length === 0) {
-                  <p class="px-3 py-2 text-xs text-zinc-600">This repository has no files.</p>
-                } @else {
-                  <app-file-tree
-                    [nodes]="store.tree()"
-                    [selectedPath]="store.selectedPath()"
-                    [expanded]="store.expandedDirs()"
-                    [metrics]="store.fileMetrics()"
-                    (fileSelect)="onFileSelect($event)"
-                    (dirToggle)="store.toggleDir($event)"
-                  />
-                }
-              </div>
-              @if (store.fileMetrics().size > 0) {
-                <div class="shrink-0 border-t border-zinc-800 px-2.5 py-2">
-                  <app-heat-legend />
-                </div>
+              @if (store.tree().length === 0) {
+                <p class="px-3 py-2 text-xs text-zinc-600">This repository has no files.</p>
+              } @else {
+                <app-file-tree
+                  [nodes]="store.tree()"
+                  [selectedPath]="store.selectedPath()"
+                  [expanded]="store.expandedDirs()"
+                  [metrics]="store.fileMetrics()"
+                  (fileSelect)="onFileSelect($event)"
+                  (dirToggle)="store.toggleDir($event)"
+                />
               }
             </aside>
 

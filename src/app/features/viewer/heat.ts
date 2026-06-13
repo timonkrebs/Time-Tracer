@@ -1,9 +1,9 @@
 /**
  * Heat palette for hotspot heat levels (0 = cold … 4 = hot), shared by the
- * file-tree badges and the {@link ./heat-legend HeatLegend} scale so the two
+ * file-tree badges and the {@link ./heat-popup HeatPopup} card so the two
  * never drift. `badge` carries background + text colour for the per-file
- * badge; `swatch` is a more saturated background-only fill for the legend bar
- * and popup scale; `label` names the band for the hover popup.
+ * badge; `swatch` is a more saturated background-only fill for the popup's
+ * heat scale; `label` names the band for the popup.
  */
 export const HEAT_STYLES: readonly {
   readonly badge: string;

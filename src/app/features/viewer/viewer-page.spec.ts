@@ -397,7 +397,7 @@ describe('ViewerPage (integration)', () => {
     });
   });
 
-  it('badges an opened file with its change heat and shows the scale legend', async () => {
+  it('badges an opened file with its change-heat metric', async () => {
     await harness.navigateByUrl('/r/acme/rocket?path=README.md');
     await vi.waitFor(async () => {
       expect(await textOnScreen()).toContain('# Rocket');
@@ -416,13 +416,6 @@ describe('ViewerPage (integration)', () => {
       expect(label).toContain('2 authors');
       expect(badge!.textContent!.trim()).not.toBe('');
     });
-
-    // The cold→hot scale legend appears beneath the tree once a file is badged.
-    const legend = harness.routeNativeElement!.querySelector<HTMLElement>('app-heat-legend');
-    expect(legend).not.toBeNull();
-    expect(legend!.textContent).toContain('Change heat');
-    expect(legend!.textContent).toContain('cold');
-    expect(legend!.textContent).toContain('hot');
   });
 
   it('deep-links straight to a nested file via the path query param', async () => {
