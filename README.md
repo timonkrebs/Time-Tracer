@@ -220,3 +220,25 @@ npm run build      # production build into dist/
     ✅ Done.
 12. **Quality of life** — fuzzy file finder (✅ done — `Ctrl/⌘ P` quick open with
     boundary-aware ranking, `core/util/fuzzy.ts`); syntax highlighting next.
+13. **Keyboard shortcuts** — step older/newer, toggle blame, history and the file tree, and dismiss
+    overlays from the keyboard; a natural companion to the `Ctrl/⌘ P` finder.
+14. **Word-level diff** — intra-line +added/−removed highlighting layered on the line-level Myers
+    engine in `core/util/diff.ts`.
+15. **Code ownership** — fold the per-line blame attribution into a per-file and per-folder
+    authorship summary (share by author, last touched, bus-factor) — "who do I ask about this?".
+16. **Pickaxe search** — `git log -S`/`-G` in the browser: the commits that added or removed a
+    string or regex, reusing the diff engine and per-version cache the _Trace_ walk already relies
+    on.
+17. **Function/symbol history** — follow a function's line range backwards through time
+    (`git log -L :func:file`), extending the range-tracking walk in `core/util/line-range.ts`.
+18. **Commit & release context** — a per-commit page listing everything a commit touched
+    (`getCommitFiles` already exists) and a "first tag/release that contains this commit" lookup,
+    answering "which version shipped this line?".
+19. **Richer content** — render Markdown and show images (with image-vs-image diffs) instead of the
+    binary placeholder; in-file find (`Ctrl/⌘ F`) with a minimap marking matches, blame age and
+    hunks; an age-heatmap view that tints lines by age.
+20. **Sharing** — copy a permalink or a "cite this line" Markdown snippet, and export a _Trace_ or
+    blame chain as a shareable story.
+21. **Off-main-thread analysis & more hosts** — move blame/Trace/pickaxe walks to a Web Worker so
+    long histories stay responsive, and add Gitea / Forgejo / Codeberg behind the `GitProvider`
+    interface.
