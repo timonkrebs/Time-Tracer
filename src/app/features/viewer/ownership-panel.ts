@@ -173,35 +173,60 @@ export class OwnershipSummaryView {
               @if (fo.status === 'computing') {
                 Scanning {{ fo.filesScanned }}/{{ fo.filesTotal }} files…
               } @else {
-                {{ fo.filesScanned }} {{ fo.filesScanned === 1 ? 'file' : 'files' }} scanned{{
-                  fo.capped ? ' (capped at ' + fo.filesTotal + ')' : ''
-                }}
+                <span
+                  class="cursor-help underline decoration-dotted underline-offset-2"
+                  [title]="tooltip(fo.files)"
+                  >{{ fo.filesScanned }}
+                  {{ fo.filesScanned === 1 ? 'file' : 'files' }} scanned</span
+                >{{ fo.capped ? ' · largest ' + fo.filesTotal + ' of ' + fo.matchedTotal : '' }}
               }
             </p>
             @if (fo.message) {
               <p class="mb-2 text-xs text-zinc-600">{{ fo.message }}</p>
             }
             <app-ownership-summary [summary]="fo.summary" />
-            <button
-              type="button"
-              class="mt-3 rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-400 transition hover:border-zinc-500 hover:text-zinc-200"
-              (click)="clearFolder.emit()"
-            >
-              Clear
-            </button>
+            <div class="mt-3 flex flex-wrap items-center gap-2">
+              @if (fo.capped) {
+                <button
+                  type="button"
+                  class="rounded border border-indigo-400/30 bg-indigo-500/10 px-2 py-1 text-[11px] font-medium text-indigo-200 transition hover:bg-indigo-500/20"
+                  (click)="scanAll.emit()"
+                >
+                  Scan all {{ fo.matchedTotal }} files
+                </button>
+              }
+              <button
+                type="button"
+                class="rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-400 transition hover:border-zinc-500 hover:text-zinc-200"
+                (click)="clearFolder.emit()"
+              >
+                Clear
+              </button>
+            </div>
           } @else {
             <p class="mt-1 mb-2 text-[11px] leading-4 text-zinc-600">
               Blame the files under this folder (subfolders included, up to {{ folderCap() }},
               largest first) and combine them — one history walk per file, so it can use a lot of
               API requests.
             </p>
-            <button
-              type="button"
-              class="rounded-lg border border-indigo-400/30 bg-indigo-500/10 px-3 py-1.5 text-xs font-medium text-indigo-200 transition hover:bg-indigo-500/20"
-              (click)="scanFolder.emit()"
-            >
-              Scan this folder
-            </button>
+            <div class="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                class="rounded-lg border border-indigo-400/30 bg-indigo-500/10 px-3 py-1.5 text-xs font-medium text-indigo-200 transition hover:bg-indigo-500/20"
+                (click)="scanFolder.emit()"
+              >
+                Scan this folder
+              </button>
+              @if (folderFileCount() > folderCap()) {
+                <button
+                  type="button"
+                  class="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100"
+                  (click)="scanAll.emit()"
+                >
+                  Scan all {{ folderFileCount() }}
+                </button>
+              }
+            </div>
           }
         </section>
       } @else {
@@ -220,10 +245,19 @@ export class OwnershipPanel {
   readonly folderPath = input<string>('');
   readonly folder = input<FolderOwnershipState | null>(null);
   readonly folderCap = input<number>(30);
+  /** Total files under the folder (so the prompt can offer an uncapped scan). */
+  readonly folderFileCount = input<number>(0);
 
   readonly closed = output<void>();
   readonly scanFolder = output<void>();
+  /** Request an uncapped scan of every file under the folder. */
+  readonly scanAll = output<void>();
   readonly clearFolder = output<void>();
+
+  /** Newline-joined file list for the "files scanned" tooltip. */
+  protected tooltip(files: readonly string[]): string {
+    return files.join('\n');
+  }
 
   protected readonly baseName = computed(() => {
     const path = this.path() ?? '';

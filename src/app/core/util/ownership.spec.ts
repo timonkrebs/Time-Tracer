@@ -101,10 +101,11 @@ describe('selectOwnershipFiles', () => {
     expect(capped).toBe(false);
   });
 
-  it('caps to the largest files and reports the cut', () => {
-    const { files, capped } = selectOwnershipFiles(entries, 'src/app', 2);
+  it('caps to the largest files and reports the cut and pre-cap total', () => {
+    const { files, capped, total } = selectOwnershipFiles(entries, 'src/app', 2);
     expect(files.map((f) => f.path)).toEqual(['src/app/big.ts', 'src/app/mid.ts']);
     expect(capped).toBe(true);
+    expect(total).toBe(3); // three files matched before the cap
   });
 
   it('treats the empty folder path as the whole repository', () => {

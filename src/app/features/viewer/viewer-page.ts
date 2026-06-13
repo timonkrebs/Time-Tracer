@@ -494,8 +494,10 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
                 [folderPath]="selectedFolder()"
                 [folder]="store.folderOwnership()"
                 [folderCap]="folderCap"
+                [folderFileCount]="folderFileCount()"
                 (closed)="toggleOwners()"
                 (scanFolder)="onScanFolder()"
+                (scanAll)="onScanAllFolder()"
                 (clearFolder)="store.clearFolderOwnership()"
               />
             </aside>
@@ -609,6 +611,13 @@ export class ViewerPage {
       return blame.message ?? 'Blame is not available for this file.';
     }
     return null;
+  });
+
+  /** Files under the selected file's folder — drives the "scan all" option. */
+  protected readonly folderFileCount = computed(() => {
+    const folder = this.selectedFolder();
+    const prefix = folder ? `${folder}/` : '';
+    return this.store.files().filter((f) => f.path.startsWith(prefix)).length;
   });
 
   protected readonly lineNumber = computed<number | null>(() => {
@@ -1101,9 +1110,14 @@ export class ViewerPage {
     }
   }
 
-  /** Blames the selected file's folder and aggregates its authorship. */
+  /** Blames the selected file's folder (capped) and aggregates its authorship. */
   protected onScanFolder(): void {
     void this.store.computeFolderOwnership(this.selectedFolder());
+  }
+
+  /** Blames every file under the folder, no cap — the "load all" option. */
+  protected onScanAllFolder(): void {
+    void this.store.computeFolderOwnership(this.selectedFolder(), { all: true });
   }
 
   /** Hides or restores the file tree (the resized width is preserved). */

@@ -140,16 +140,17 @@ export function summarizeOwnership(lines: Iterable<OwnedLine>): OwnershipSummary
  * **largest first** so a cap keeps the files holding the most code (and so the
  * most ownership signal) rather than an arbitrary alphabetical slice. Size is
  * the only ranking signal available without a per-file request. `folderPath`
- * is '' for the repository root; the result says whether the cap dropped any.
+ * is '' for the repository root. Returns the capped selection, the total
+ * number that matched (before the cap) and whether the cap dropped any.
  */
 export function selectOwnershipFiles(
   entries: readonly TreeEntry[],
   folderPath: string,
   cap: number,
-): { files: TreeEntry[]; capped: boolean } {
+): { files: TreeEntry[]; capped: boolean; total: number } {
   const prefix = folderPath ? `${folderPath.replace(/\/+$/, '')}/` : '';
   const matching = entries
     .filter((e) => e.kind === 'file' && e.path.startsWith(prefix))
     .sort((a, b) => (b.size ?? 0) - (a.size ?? 0) || a.path.localeCompare(b.path));
-  return { files: matching.slice(0, cap), capped: matching.length > cap };
+  return { files: matching.slice(0, cap), capped: matching.length > cap, total: matching.length };
 }

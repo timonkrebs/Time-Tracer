@@ -193,8 +193,12 @@ export interface FolderOwnershipState {
   /** Files to scan (after the cap) and how many are done. */
   readonly filesTotal: number;
   readonly filesScanned: number;
+  /** Files under the folder before any cap (what "scan all" would cover). */
+  readonly matchedTotal: number;
   /** True when the folder held more files than the cap. */
   readonly capped: boolean;
+  /** Paths included in this scan, for the "files scanned" tooltip. */
+  readonly files: readonly string[];
   readonly message?: string;
 }
 
@@ -996,13 +1000,11 @@ export class RepoStore {
    * so files already annotated are free, and is cancelled by navigation or a
    * superseding scan via the run/sequence guards.
    */
-  async computeFolderOwnership(folderPath: string): Promise<void> {
+  async computeFolderOwnership(folderPath: string, options?: { all?: boolean }): Promise<void> {
     if (this._phase() !== 'ready') return;
-    const { files, capped } = selectOwnershipFiles(
-      this._entries(),
-      folderPath,
-      FOLDER_OWNERSHIP_CAP,
-    );
+    const cap = options?.all ? Number.POSITIVE_INFINITY : FOLDER_OWNERSHIP_CAP;
+    const { files, capped, total } = selectOwnershipFiles(this._entries(), folderPath, cap);
+    const paths = files.map((f) => f.path);
 
     const run = ++this.folderRun;
     const seq = this.loadSeq;
@@ -1017,7 +1019,9 @@ export class RepoStore {
         summary: summarizeOwnership(owners),
         filesTotal: files.length,
         filesScanned: scanned,
+        matchedTotal: total,
         capped,
+        files: paths,
         message,
       });
 

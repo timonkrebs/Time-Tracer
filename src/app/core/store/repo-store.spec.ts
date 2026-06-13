@@ -1188,12 +1188,27 @@ describe('RepoStore', () => {
       // Two files under the root (README.md and the nested src/deep/main.ts).
       expect(state?.filesTotal).toBe(2);
       expect(state?.filesScanned).toBe(2);
+      expect(state?.matchedTotal).toBe(2);
       expect(state?.capped).toBe(false);
+      // Largest first: src/deep/main.ts (size 10) before README.md (size 5).
+      expect(state?.files).toEqual(['src/deep/main.ts', 'README.md']);
       expect(state?.summary.attributedLines).toBe(2); // one content line per file
       expect(state?.summary.authors).toEqual([
         expect.objectContaining({ name: 'Ada', lines: 2, share: 1 }),
       ]);
       expect(state?.summary.busFactor).toBe(1);
+    });
+
+    it('scans every file uncapped when asked to load all', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c1')]);
+
+      await store.computeFolderOwnership('', { all: true });
+
+      const state = store.folderOwnership();
+      expect(state?.status).toBe('ready');
+      expect(state?.capped).toBe(false);
+      expect(state?.filesScanned).toBe(state?.matchedTotal);
+      expect(state?.files).toEqual(['src/deep/main.ts', 'README.md']);
     });
 
     it('scans recursively under a subfolder', async () => {
