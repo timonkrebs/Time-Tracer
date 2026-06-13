@@ -59,6 +59,10 @@ renames — see the feature list and roadmap below for what's done and what's ne
 - **Per-file commit history**: a History panel lists the commits that touched the selected file
   (paginated), with author and relative date. Its open/closed state is remembered, so it can stay
   open permanently across files and sessions.
+- **Code ownership ("Owners" panel)**: folds the per-line blame into an authorship summary for the
+  selected file — share by author, bus factor and who last touched it ("who do I ask about
+  this?") — for free from the blame already computed. An opt-in, capped folder scan blames the
+  sibling files and aggregates them, streaming as each is added.
 - **Time travel**: pick any commit to see the file exactly as it was, with a banner showing where
   in time you are and a one-click way back to the tip. The ← Older / Newer → steppers are always
   visible (only the dead direction is disabled) and work straight from the current version,
@@ -224,8 +228,10 @@ npm run build      # production build into dist/
     overlays from the keyboard; a natural companion to the `Ctrl/⌘ P` finder.
 14. **Word-level diff** — intra-line +added/−removed highlighting layered on the line-level Myers
     engine in `core/util/diff.ts`.
-15. **Code ownership** — fold the per-line blame attribution into a per-file and per-folder
-    authorship summary (share by author, last touched, bus-factor) — "who do I ask about this?".
+15. ~~**Code ownership** — fold the per-line blame attribution into a per-file and per-folder
+    authorship summary (share by author, last touched, bus-factor) — "who do I ask about this?".~~
+    ✅ Done (`core/util/ownership.ts`, surfaced as the _Owners_ panel; the per-file summary is free
+    from blame, the per-folder scan is opt-in and capped).
 16. **Pickaxe search** — `git log -S`/`-G` in the browser: the commits that added or removed a
     string or regex, reusing the diff engine and per-version cache the _Trace_ walk already relies
     on.
