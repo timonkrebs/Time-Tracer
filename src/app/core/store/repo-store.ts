@@ -23,6 +23,7 @@ import {
   regionTouchesRange,
 } from '../util/line-range';
 import { findBlockOrigin, fuzzyLineSimilarity } from '../util/similarity';
+import { OwnershipSummary, selectOwnershipFiles, summarizeOwnership } from '../util/ownership';
 import { ancestorsOf, buildTree } from '../util/tree';
 import { RecentRepos } from './recent-repos';
 
@@ -34,6 +35,8 @@ const ORIGIN_COMMIT_CAP = 20;
 const ORIGIN_SNAPSHOT_CAP = 30;
 /** Hunk-origin candidates kept after ranking. */
 const ORIGIN_RESULT_CAP = 8;
+/** Files blamed for a per-folder ownership summary (it is request-heavy). */
+export const FOLDER_OWNERSHIP_CAP = 30;
 
 /** Lifecycle of the per-file commit history panel. */
 export type HistoryStatus = 'idle' | 'loading' | 'loading-more' | 'ready' | 'error';
@@ -176,6 +179,29 @@ export interface HunkOriginState {
   readonly message?: string;
 }
 
+/**
+ * Async state of the per-folder ownership scan: blame is computed for the
+ * folder's files (up to {@link FOLDER_OWNERSHIP_CAP}) and their attribution
+ * aggregated into one summary, streaming as each file is added.
+ */
+export interface FolderOwnershipState {
+  readonly status: 'computing' | 'ready' | 'error';
+  /** Folder path scanned; '' for the repository root. */
+  readonly path: string;
+  /** Aggregated authorship of the files scanned so far. */
+  readonly summary: OwnershipSummary;
+  /** Files to scan (after the cap) and how many are done. */
+  readonly filesTotal: number;
+  readonly filesScanned: number;
+  /** Files under the folder before any cap (what "scan all" would cover). */
+  readonly matchedTotal: number;
+  /** True when the folder held more files than the cap. */
+  readonly capped: boolean;
+  /** Paths included in this scan, for the "files scanned" tooltip. */
+  readonly files: readonly string[];
+  readonly message?: string;
+}
+
 interface HistorySnapshot {
   commits: readonly CommitInfo[];
   hasMore: boolean;
@@ -252,6 +278,10 @@ export class RepoStore {
   private readonly _traceOrigins = signal<HunkOriginState | null>(null);
   /** Bumped to cancel a superseded or cleared origin search. */
   private originRun = 0;
+  /** Per-folder ownership scan, when started. */
+  private readonly _folderOwnership = signal<FolderOwnershipState | null>(null);
+  /** Bumped to cancel a superseded or cleared folder scan. */
+  private folderRun = 0;
 
   readonly phase = this._phase.asReadonly();
   readonly error = this._error.asReadonly();
@@ -269,6 +299,7 @@ export class RepoStore {
   readonly historyHasMore = this._historyHasMore.asReadonly();
   readonly lineTrace = this._lineTrace.asReadonly();
   readonly traceOrigins = this._traceOrigins.asReadonly();
+  readonly folderOwnership = this._folderOwnership.asReadonly();
   readonly fileMetrics = this._fileMetrics.asReadonly();
 
   /** Ref shown in the viewer: the requested one, or the default branch. */
@@ -317,6 +348,16 @@ export class RepoStore {
     const path = this._selectedPath();
     if (!path) return null;
     return this._blames().get(fileKey(path, this._viewAt())) ?? null;
+  });
+
+  /**
+   * Authorship of the selected file, folded from its blame — free, reactive,
+   * and streaming as blame fills in. Null until blame has begun computing.
+   */
+  readonly selectedOwnership = computed<OwnershipSummary | null>(() => {
+    const blame = this.selectedBlame();
+    if (!blame || (blame.status !== 'ready' && blame.status !== 'computing')) return null;
+    return summarizeOwnership(blame.lines);
   });
 
   /**
@@ -377,6 +418,7 @@ export class RepoStore {
     this._error.set(null);
     this.resetHistory();
     this.clearLineTrace();
+    this.clearFolderOwnership();
     this._phase.set('metadata');
 
     try {
@@ -943,6 +985,63 @@ export class RepoStore {
     this._lineTrace.set(null);
     this.originRun++;
     this._traceOrigins.set(null);
+  }
+
+  /** Drops any per-folder ownership result and cancels a scan in progress. */
+  clearFolderOwnership(): void {
+    this.folderRun++;
+    this._folderOwnership.set(null);
+  }
+
+  /**
+   * Blames every file under `folderPath` (capped — this is request-heavy) and
+   * folds their attribution into one authorship summary, publishing after each
+   * file so the panel fills in progressively. Reuses the per-file blame cache,
+   * so files already annotated are free, and is cancelled by navigation or a
+   * superseding scan via the run/sequence guards.
+   */
+  async computeFolderOwnership(folderPath: string, options?: { all?: boolean }): Promise<void> {
+    if (this._phase() !== 'ready') return;
+    const cap = options?.all ? Number.POSITIVE_INFINITY : FOLDER_OWNERSHIP_CAP;
+    const { files, capped, total } = selectOwnershipFiles(this._entries(), folderPath, cap);
+    const paths = files.map((f) => f.path);
+
+    const run = ++this.folderRun;
+    const seq = this.loadSeq;
+    const live = (): boolean => seq === this.loadSeq && run === this.folderRun;
+
+    const owners: BlameOwner[] = [];
+    let scanned = 0;
+    const publish = (status: FolderOwnershipState['status'], message?: string): void =>
+      this._folderOwnership.set({
+        status,
+        path: folderPath,
+        summary: summarizeOwnership(owners),
+        filesTotal: files.length,
+        filesScanned: scanned,
+        matchedTotal: total,
+        capped,
+        files: paths,
+        message,
+      });
+
+    if (files.length === 0) {
+      publish('ready', 'No files in this folder.');
+      return;
+    }
+
+    publish('computing');
+    for (const entry of files) {
+      await this.loadBlame(entry.path, null);
+      if (!live()) return;
+      const blame = this._blames().get(fileKey(entry.path, null));
+      if (blame && (blame.status === 'ready' || blame.status === 'computing')) {
+        owners.push(...blame.lines);
+      }
+      scanned++;
+      publish('computing');
+    }
+    publish('ready');
   }
 
   /**

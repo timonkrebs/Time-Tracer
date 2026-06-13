@@ -657,6 +657,30 @@ describe('ViewerPage (integration)', () => {
     });
   });
 
+  it('toggles the Owners panel, persists it, and folds blame even with blame display off', async () => {
+    await harness.navigateByUrl('/r/acme/rocket?path=README.md&blame=0');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('# Rocket'); // file renders, blame gutter off
+    });
+
+    clickButton('Owners');
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('Ownership'); // panel is open
+      // Authorship folded from blame, which the panel forces on despite blame=0.
+      expect(text).toContain('Bus factor');
+      expect(text).toContain('Ada');
+    });
+    expect(localStorage.getItem('time-tracer.owners-open')).toBe('1');
+
+    clickButton('Owners');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).not.toContain('Ownership');
+    });
+    expect(localStorage.getItem('time-tracer.owners-open')).toBe('0');
+  });
+
   it('splits the changes view with blame on both sides', async () => {
     await harness.navigateByUrl(`/r/acme/rocket?path=README.md&at=${NEW_SHA}&view=diff`);
 

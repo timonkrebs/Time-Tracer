@@ -13,6 +13,7 @@ import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 
 import { LocalRepos } from '../../core/git/local/local-repos';
 import {
+  FOLDER_OWNERSHIP_CAP,
   HunkOriginCandidate,
   LineTraceHit,
   RenameCandidate,
@@ -25,6 +26,7 @@ import { FileFinder } from './file-finder';
 import { FileHistory } from './file-history';
 import { FileTree } from './file-tree';
 import { FileView } from './file-view';
+import { OwnershipPanel } from './ownership-panel';
 
 const TREE_WIDTH_KEY = 'time-tracer.tree-width';
 const TREE_WIDTH_DEFAULT = 300;
@@ -33,6 +35,7 @@ const TREE_WIDTH_MAX = 600;
 const VIEW_MODE_KEY = 'time-tracer.view-mode';
 const HISTORY_OPEN_KEY = 'time-tracer.history-open';
 const TREE_COLLAPSED_KEY = 'time-tracer.tree-collapsed';
+const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
 
 /**
  * `/r/:owner/:repo?ref=…&path=…&at=…&view=…&blame=…` — the split-pane
@@ -47,7 +50,7 @@ const TREE_COLLAPSED_KEY = 'time-tracer.tree-collapsed';
 @Component({
   selector: 'app-viewer-page',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [RouterLink, FileTree, FileView, FileHistory, DiffView, FileFinder],
+  imports: [RouterLink, FileTree, FileView, FileHistory, DiffView, FileFinder, OwnershipPanel],
   host: { class: 'block h-full', '(document:keydown)': 'onGlobalKeydown($event)' },
   template: `
     <div class="flex h-full flex-col" [class.select-none]="dragging()">
@@ -349,6 +352,22 @@ const TREE_COLLAPSED_KEY = 'time-tracer.tree-collapsed';
                   }
                 </span>
                 <span class="flex-1"></span>
+                <button
+                  type="button"
+                  class="shrink-0 rounded border px-2 py-0.5 transition"
+                  [class]="
+                    ownersOpen()
+                      ? 'border-indigo-400/40 bg-indigo-500/20 text-indigo-200'
+                      : store.viewAt()
+                        ? 'border-amber-300/30 hover:bg-amber-300/10'
+                        : 'border-zinc-700 hover:bg-white/10'
+                  "
+                  [attr.aria-pressed]="ownersOpen()"
+                  (click)="toggleOwners()"
+                  title="Who wrote this file and folder — folded from blame"
+                >
+                  Owners
+                </button>
                 <div
                   class="flex shrink-0 overflow-hidden rounded border"
                   [class]="store.viewAt() ? 'border-amber-300/30' : 'border-zinc-700'"
@@ -466,6 +485,24 @@ const TREE_COLLAPSED_KEY = 'time-tracer.tree-collapsed';
             }
           </section>
 
+          @if (ownersOpen()) {
+            <aside class="w-80 shrink-0 border-l border-zinc-800 bg-zinc-950">
+              <app-ownership-panel
+                [path]="store.selectedPath()"
+                [fileSummary]="store.selectedOwnership()"
+                [blameUnavailable]="fileBlameUnavailable()"
+                [folderPath]="selectedFolder()"
+                [folder]="store.folderOwnership()"
+                [folderCap]="folderCap"
+                [folderFileCount]="folderFileCount()"
+                (closed)="toggleOwners()"
+                (scanFolder)="onScanFolder()"
+                (scanAll)="onScanAllFolder()"
+                (clearFolder)="store.clearFolderOwnership()"
+              />
+            </aside>
+          }
+
           @if (historyOpen()) {
             <aside class="w-80 shrink-0 border-l border-zinc-800 bg-zinc-950">
               <app-file-history
@@ -542,6 +579,9 @@ export class ViewerPage {
   protected readonly treeCollapsed = signal(restoreTreeCollapsed());
   /** Quick-open file finder overlay (Ctrl/⌘ P). */
   protected readonly finderOpen = signal(false);
+  /** Remembered across sessions: the "Owners" authorship panel. */
+  protected readonly ownersOpen = signal(restoreOwnersOpen());
+  protected readonly folderCap = FOLDER_OWNERSHIP_CAP;
   /** Remembered File/Changes choice; Changes is the default. */
   private readonly viewPref = signal<'file' | 'diff'>(restoreViewMode());
   private dragOrigin: { x: number; width: number } | null = null;
@@ -556,6 +596,29 @@ export class ViewerPage {
 
   /** Blame is available in both views: gutter in File, split in Changes. */
   protected readonly blameOn = computed(() => this.blame() !== '0');
+
+  /** Parent folder of the selected file ('' for the repository root). */
+  protected readonly selectedFolder = computed(() => {
+    const path = this.store.selectedPath() ?? '';
+    const slash = path.lastIndexOf('/');
+    return slash >= 0 ? path.slice(0, slash) : '';
+  });
+
+  /** Reason the file's authorship can't be shown (binary/too-large/error), or null. */
+  protected readonly fileBlameUnavailable = computed(() => {
+    const blame = this.store.selectedBlame();
+    if (blame && (blame.status === 'unavailable' || blame.status === 'error')) {
+      return blame.message ?? 'Blame is not available for this file.';
+    }
+    return null;
+  });
+
+  /** Files under the selected file's folder — drives the "scan all" option. */
+  protected readonly folderFileCount = computed(() => {
+    const folder = this.selectedFolder();
+    const prefix = folder ? `${folder}/` : '';
+    return this.store.files().filter((f) => f.path.startsWith(prefix)).length;
+  });
 
   protected readonly lineNumber = computed<number | null>(() => {
     const parsed = Number(this.line());
@@ -661,8 +724,8 @@ export class ViewerPage {
       const repo = this.repo();
       const host = this.host() || undefined;
       const ref = this.ref() || undefined;
-      untracked(() =>
-        void this.store.loadRepo({ provider, owner, repo, ...(host ? { host } : {}) }, ref),
+      untracked(
+        () => void this.store.loadRepo({ provider, owner, repo, ...(host ? { host } : {}) }, ref),
       );
     });
 
@@ -728,6 +791,28 @@ export class ViewerPage {
     effect(() => {
       const fullName = this.store.metadata()?.fullName;
       if (fullName) this.title.setTitle(`${fullName} · Time Tracer`);
+    });
+
+    // The Owners panel folds blame, so make sure blame is computed for the
+    // selected file even when its gutter display is turned off.
+    effect(() => {
+      const open = this.ownersOpen();
+      const phase = this.store.phase();
+      const path = this.path() || null;
+      const at = this.at() || null;
+      untracked(() => {
+        if (open && phase === 'ready' && path) void this.store.loadBlame(path, at);
+      });
+    });
+
+    // A folder ownership result belongs to one folder; drop it (cancelling any
+    // scan) once the selection moves to a different folder.
+    effect(() => {
+      const folder = this.selectedFolder();
+      untracked(() => {
+        const result = this.store.folderOwnership();
+        if (result && result.path !== folder) this.store.clearFolderOwnership();
+      });
     });
   }
 
@@ -1016,6 +1101,25 @@ export class ViewerPage {
     }
   }
 
+  protected toggleOwners(): void {
+    this.ownersOpen.update((open) => !open);
+    try {
+      localStorage.setItem(OWNERS_OPEN_KEY, this.ownersOpen() ? '1' : '0');
+    } catch {
+      // Best-effort only.
+    }
+  }
+
+  /** Blames the selected file's folder (capped) and aggregates its authorship. */
+  protected onScanFolder(): void {
+    void this.store.computeFolderOwnership(this.selectedFolder());
+  }
+
+  /** Blames every file under the folder, no cap — the "load all" option. */
+  protected onScanAllFolder(): void {
+    void this.store.computeFolderOwnership(this.selectedFolder(), { all: true });
+  }
+
   /** Hides or restores the file tree (the resized width is preserved). */
   protected toggleTree(): void {
     this.treeCollapsed.update((collapsed) => !collapsed);
@@ -1127,6 +1231,14 @@ function restoreHistoryOpen(): boolean {
 function restoreTreeCollapsed(): boolean {
   try {
     return localStorage.getItem(TREE_COLLAPSED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function restoreOwnersOpen(): boolean {
+  try {
+    return localStorage.getItem(OWNERS_OPEN_KEY) === '1';
   } catch {
     return false;
   }
