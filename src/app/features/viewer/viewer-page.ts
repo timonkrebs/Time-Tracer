@@ -283,6 +283,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
                   [nodes]="store.tree()"
                   [selectedPath]="store.selectedPath()"
                   [expanded]="store.expandedDirs()"
+                  [metrics]="store.fileMetrics()"
                   (fileSelect)="onFileSelect($event)"
                   (dirToggle)="store.toggleDir($event)"
                 />

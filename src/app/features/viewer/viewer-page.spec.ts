@@ -397,6 +397,27 @@ describe('ViewerPage (integration)', () => {
     });
   });
 
+  it('badges an opened file with its change-heat metric', async () => {
+    await harness.navigateByUrl('/r/acme/rocket?path=README.md');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('# Rocket');
+    });
+
+    // README.md has two commits by two authors; opening it loads that history,
+    // which the store turns into a hotspot badge on the tree row.
+    await vi.waitFor(async () => {
+      await textOnScreen();
+      const badge = harness.routeNativeElement!.querySelector<HTMLElement>(
+        'app-file-tree .heat-badge',
+      );
+      expect(badge).not.toBeNull();
+      const label = badge!.getAttribute('aria-label') ?? '';
+      expect(label).toContain('2 changes');
+      expect(label).toContain('2 authors');
+      expect(badge!.textContent!.trim()).not.toBe('');
+    });
+  });
+
   it('deep-links straight to a nested file via the path query param', async () => {
     await harness.navigateByUrl('/r/acme/rocket?path=src%2Fengine.ts');
 
