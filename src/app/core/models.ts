@@ -13,6 +13,13 @@ export interface RepoSlug {
   readonly provider: string;
   readonly owner: string;
   readonly repo: string;
+  /**
+   * Base origin of a self-hosted / custom instance (GitHub Enterprise,
+   * self-hosted GitLab, Bitbucket Server), e.g. `https://git.example.com`.
+   * Absent for the public hosts (github.com, gitlab.com, bitbucket.org,
+   * Azure DevOps), where the provider uses its built-in API base.
+   */
+  readonly host?: string;
 }
 
 /** Result of parsing user input (URL, `owner/repo` shorthand, …). */
@@ -23,6 +30,8 @@ export interface ParsedRepoUrl {
   readonly ref?: string;
   /** File or directory path if the input pointed at one. */
   readonly path?: string;
+  /** Custom instance origin, when parsed from a self-hosted URL. */
+  readonly host?: string;
 }
 
 /** A `<ref>/<path>` split confirmed against the provider's actual refs. */

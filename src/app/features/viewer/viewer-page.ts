@@ -488,6 +488,8 @@ export class ViewerPage {
   readonly repo = input.required<string>();
   /** Provider id, bound from the route's data (github/gitlab/local). */
   readonly provider = input('github');
+  /** Custom instance origin for self-hosted GitHub/GitLab/Bitbucket Server. */
+  readonly host = input<string | undefined>();
   readonly ref = input<string | undefined>();
   readonly path = input<string | undefined>();
   /** Commit sha the selected file is viewed at (time travel). */
@@ -624,8 +626,11 @@ export class ViewerPage {
       const provider = this.provider() || 'github';
       const owner = this.owner();
       const repo = this.repo();
+      const host = this.host() || undefined;
       const ref = this.ref() || undefined;
-      untracked(() => void this.store.loadRepo({ provider, owner, repo }, ref));
+      untracked(() =>
+        void this.store.loadRepo({ provider, owner, repo, ...(host ? { host } : {}) }, ref),
+      );
     });
 
     effect(() => {

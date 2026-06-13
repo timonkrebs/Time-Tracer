@@ -57,4 +57,25 @@ describe('parseGithubUrl', () => {
       path: 'docs/my file.md',
     });
   });
+
+  describe('GitHub Enterprise host', () => {
+    const host = 'https://github.example.com';
+
+    it.each([
+      ['a/b', { owner: 'a', repo: 'b', host }],
+      ['https://github.example.com/a/b', { owner: 'a', repo: 'b', host }],
+      ['github.example.com/a/b', { owner: 'a', repo: 'b', host }],
+      [
+        'https://github.example.com/a/b/blob/main/src/x.ts',
+        { owner: 'a', repo: 'b', ref: 'main', path: 'src/x.ts', host },
+      ],
+      ['git@github.example.com:a/b.git', { owner: 'a', repo: 'b', host }],
+    ])('parses %s against the host', (input, expected) => {
+      expect(parseGithubUrl(input, host)).toEqual(expected);
+    });
+
+    it('rejects a URL on a different host', () => {
+      expect(parseGithubUrl('https://github.com/a/b', host)).toBeNull();
+    });
+  });
 });

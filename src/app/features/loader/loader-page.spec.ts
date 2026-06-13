@@ -114,8 +114,35 @@ describe('LoaderPage', () => {
 
     expect(navigateSpy).not.toHaveBeenCalled();
     expect((fixture.nativeElement as HTMLElement).textContent).toContain(
-      'does not look like a GitHub or GitLab repository',
+      'does not look like a hosted repository',
     );
+  });
+
+  it('opens a self-hosted instance with the host query param', async () => {
+    const element = fixture.nativeElement as HTMLElement;
+    const toggle = Array.from(element.querySelectorAll('button')).find((b) =>
+      (b.textContent ?? '').includes('Self-hosted / custom instance'),
+    )!;
+    toggle.click();
+    await fixture.whenStable();
+
+    const host = element.querySelector<HTMLInputElement>('#custom-host')!;
+    host.value = 'https://github.example.com';
+    host.dispatchEvent(new Event('input'));
+    const repo = element.querySelector<HTMLInputElement>('#custom-repo')!;
+    repo.value = 'acme/rocket';
+    repo.dispatchEvent(new Event('input'));
+    await fixture.whenStable();
+
+    const open = Array.from(element.querySelectorAll('button')).find((b) =>
+      (b.textContent ?? '').includes('Open instance repository'),
+    )!;
+    open.click();
+    await fixture.whenStable();
+
+    expect(navigateSpy).toHaveBeenCalledWith(['/r', 'acme', 'rocket'], {
+      queryParams: { host: 'https://github.example.com' },
+    });
   });
 
   it('shows an error for empty input', async () => {

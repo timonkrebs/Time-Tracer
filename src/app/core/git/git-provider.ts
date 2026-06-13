@@ -36,6 +36,14 @@ export interface GitProvider {
   parseUrl(input: string): ParsedRepoUrl | null;
 
   /**
+   * Parses a repo reference on a self-hosted / custom instance at `host`
+   * (GitHub Enterprise, self-hosted GitLab, Bitbucket Server). Accepts a full
+   * URL on the host or a bare repo path; the result carries the host. Only
+   * implemented by providers that support custom hosts.
+   */
+  parseHostedUrl?(input: string, host: string): ParsedRepoUrl | null;
+
+  /**
    * Splits the combined `<ref>/<path>` tail of a tree/blob URL by matching it
    * against the repository's actual branches and tags, so refs containing `/`
    * (e.g. `feature/foo`) resolve correctly. Best-effort: resolves to null
