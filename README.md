@@ -62,7 +62,8 @@ renames — see the feature list and roadmap below for what's done and what's ne
 - **Code ownership ("Owners" panel)**: folds the per-line blame into an authorship summary for the
   selected file — share by author, bus factor and who last touched it ("who do I ask about
   this?") — for free from the blame already computed. An opt-in, capped folder scan blames the
-  sibling files and aggregates them, streaming as each is added.
+  files under the folder (subfolders included), largest first, and aggregates them — streaming as
+  each is added.
 - **Time travel**: pick any commit to see the file exactly as it was, with a banner showing where
   in time you are and a one-click way back to the tip. The ← Older / Newer → steppers are always
   visible (only the dead direction is disabled) and work straight from the current version,

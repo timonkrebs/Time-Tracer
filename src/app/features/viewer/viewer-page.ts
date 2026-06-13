@@ -490,6 +490,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
               <app-ownership-panel
                 [path]="store.selectedPath()"
                 [fileSummary]="store.selectedOwnership()"
+                [blameUnavailable]="fileBlameUnavailable()"
                 [folderPath]="selectedFolder()"
                 [folder]="store.folderOwnership()"
                 [folderCap]="folderCap"
@@ -599,6 +600,15 @@ export class ViewerPage {
     const path = this.store.selectedPath() ?? '';
     const slash = path.lastIndexOf('/');
     return slash >= 0 ? path.slice(0, slash) : '';
+  });
+
+  /** Reason the file's authorship can't be shown (binary/too-large/error), or null. */
+  protected readonly fileBlameUnavailable = computed(() => {
+    const blame = this.store.selectedBlame();
+    if (blame && (blame.status === 'unavailable' || blame.status === 'error')) {
+      return blame.message ?? 'Blame is not available for this file.';
+    }
+    return null;
   });
 
   protected readonly lineNumber = computed<number | null>(() => {

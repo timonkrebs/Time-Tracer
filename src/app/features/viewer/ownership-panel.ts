@@ -157,6 +157,8 @@ export class OwnershipSummaryView {
           </p>
           @if (fileSummary(); as s) {
             <app-ownership-summary [summary]="s" />
+          } @else if (blameUnavailable(); as reason) {
+            <p class="text-xs text-zinc-600">{{ reason }}</p>
           } @else {
             <p class="text-xs text-zinc-600">Annotating this file…</p>
           }
@@ -189,8 +191,9 @@ export class OwnershipSummaryView {
             </button>
           } @else {
             <p class="mt-1 mb-2 text-[11px] leading-4 text-zinc-600">
-              Blame this folder's files (up to {{ folderCap() }}, largest first) and combine them —
-              one history walk per file, so it can use a lot of API requests.
+              Blame the files under this folder (subfolders included, up to {{ folderCap() }},
+              largest first) and combine them — one history walk per file, so it can use a lot of
+              API requests.
             </p>
             <button
               type="button"
@@ -211,6 +214,8 @@ export class OwnershipPanel {
   /** Selected file path; null when nothing is selected. */
   readonly path = input<string | null>(null);
   readonly fileSummary = input<OwnershipSummary | null>(null);
+  /** Reason the file's authorship can't be shown (binary/too-large/error), or null. */
+  readonly blameUnavailable = input<string | null>(null);
   /** Parent folder of the selected file ('' for the repository root). */
   readonly folderPath = input<string>('');
   readonly folder = input<FolderOwnershipState | null>(null);

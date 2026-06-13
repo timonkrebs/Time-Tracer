@@ -48,6 +48,13 @@ describe('OwnershipPanel', () => {
     expect(text()).toContain('Annotating this file');
   });
 
+  it('surfaces the reason when blame is unavailable rather than annotating forever', async () => {
+    fixture.componentRef.setInput('blameUnavailable', 'Blame is only available for text files.');
+    await fixture.whenStable();
+    expect(text()).toContain('Blame is only available for text files.');
+    expect(text()).not.toContain('Annotating this file');
+  });
+
   it('renders per-author shares and the bus factor once a summary is set', async () => {
     fixture.componentRef.setInput('fileSummary', FILE_SUMMARY);
     await fixture.whenStable();
