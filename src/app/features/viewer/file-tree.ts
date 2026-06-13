@@ -3,6 +3,7 @@ import { ChangeDetectionStrategy, Component, input, output } from '@angular/core
 import { TreeNode } from '../../core/models';
 import { FileMetric, heatLevel } from '../../core/util/hotspots';
 import { relativeTime } from '../../core/util/relative-time';
+import { HEAT_STYLES } from './heat';
 
 /** Maps a file name to a Tailwind text colour class for its icon. */
 function fileIconColor(name: string): string {
@@ -46,15 +47,6 @@ function fileIconColor(name: string): string {
       return 'text-zinc-500';
   }
 }
-
-/** Tailwind classes for each hotspot heat level (0 = cold … 4 = hot). */
-const HEAT_CLASSES: readonly string[] = [
-  'bg-zinc-800 text-zinc-500',
-  'bg-sky-500/15 text-sky-300',
-  'bg-amber-500/15 text-amber-300',
-  'bg-orange-500/20 text-orange-300',
-  'bg-rose-500/25 text-rose-200',
-];
 
 /**
  * One level of the repository tree; renders itself recursively for expanded
@@ -205,7 +197,7 @@ export class FileTree {
   }
 
   protected heatClass(score: number): string {
-    return HEAT_CLASSES[heatLevel(score)];
+    return HEAT_STYLES[heatLevel(score)].badge;
   }
 
   protected metricTitle(m: FileMetric): string {
