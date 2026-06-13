@@ -2,6 +2,7 @@ import { Injectable, computed, inject, signal } from '@angular/core';
 
 import { ProviderRegistry, RepoWebLinks } from '../git/git-provider';
 import {
+  CommitFileChange,
   CommitInfo,
   FileState,
   RepoFile,
@@ -12,11 +13,26 @@ import {
   TreeEntry,
   toRepoProviderError,
 } from '../models';
-import { FileDiff, computeFileDiff, diffLines, lineSimilarity, splitLines } from '../util/diff';
+import { FileDiff, computeFileDiff, diffLines, splitLines } from '../util/diff';
+import {
+  LineRange,
+  changeRegions,
+  mapRangeToParentIncludingMoves,
+  movedLinePairs,
+  regionTouchesRange,
+} from '../util/line-range';
+import { findBlockOrigin, fuzzyLineSimilarity } from '../util/similarity';
 import { ancestorsOf, buildTree } from '../util/tree';
 import { RecentRepos } from './recent-repos';
 
 const HISTORY_PAGE_SIZE = 30;
+/** Files the creating commit deleted that get a content comparison. */
+const RENAME_DELETED_CAP = 8;
+/** Files compared per hunk-origin search, by scope. */
+const ORIGIN_COMMIT_CAP = 20;
+const ORIGIN_SNAPSHOT_CAP = 30;
+/** Hunk-origin candidates kept after ranking. */
+const ORIGIN_RESULT_CAP = 8;
 
 /** Lifecycle of the per-file commit history panel. */
 export type HistoryStatus = 'idle' | 'loading' | 'loading-more' | 'ready' | 'error';
@@ -30,6 +46,10 @@ export type DiffState =
       readonly commit: CommitInfo;
       /** Parent commit the diff is against; null for a root commit. */
       readonly baseSha: string | null;
+      /** Path that supplied the old side; null when the old side is empty. */
+      readonly basePath: string | null;
+      /** Path that supplied the new side; null when the commit deleted it. */
+      readonly headPath: string | null;
     }
   | { readonly status: 'unavailable'; readonly reason: string }
   | { readonly status: 'error'; readonly message: string };
@@ -51,6 +71,7 @@ export interface RenameCandidate {
   readonly confidence: number;
   readonly reasons: readonly (
     | 'github-rename'
+    | 'deleted-in-commit'
     | 'identical-content'
     | 'similar-content'
     | 'heuristic'
@@ -80,6 +101,77 @@ export interface BlameState {
   readonly truncated: boolean;
   /** History steps consumed so far — used to extend after loading more. */
   readonly processed: number;
+  readonly message?: string;
+}
+
+/** One commit surfaced by an active line trace, with the range it changed. */
+export interface LineTraceHit {
+  readonly commit: CommitInfo;
+  readonly path: string;
+  /** New-side coordinates in {@link commit}'s version. */
+  readonly range: LineRange;
+}
+
+/**
+ * Async state of the per-hunk history filter: a line range anchored at one
+ * version, followed backwards through the file's history (the moral
+ * equivalent of `git log -L`). Only commits whose diff touched the tracked
+ * range are collected.
+ */
+export interface LineTraceState {
+  readonly status: 'computing' | 'ready' | 'error';
+  readonly path: string;
+  /** Commit whose version the range coordinates refer to. */
+  readonly anchorSha: string;
+  /** 1-based inclusive line range at the anchor version. */
+  readonly range: LineRange;
+  /** Commits that changed lines inside the tracked range, newest first. */
+  readonly commits: readonly CommitInfo[];
+  /** Commit/range pairs for navigation and line highlighting. */
+  readonly hits: readonly LineTraceHit[];
+  /** History steps examined so far — progress feedback while computing. */
+  readonly scanned: number;
+  /** True when the walk paused at the end of the loaded history pages. */
+  readonly truncated: boolean;
+  /**
+   * Where the walk ended: the commit that introduced the tracked lines and
+   * the range in that version's coordinates. Null while computing, after an
+   * error and while the trail is truncated.
+   */
+  readonly origin: { readonly sha: string; readonly range: LineRange } | null;
+  readonly message?: string;
+}
+
+/** Search space of a hunk-origin search. */
+export type HunkOriginScope = 'commit' | 'snapshot';
+
+/** A place the traced lines may have moved from, at the parent commit. */
+export interface HunkOriginCandidate {
+  readonly path: string;
+  /** 1-based line of the best match, in the file at {@link parentSha}. */
+  readonly line: number;
+  /** 0..1 — how much of the traced block matches there. */
+  readonly score: number;
+  /** True when the introducing commit deleted this file. */
+  readonly deleted: boolean;
+  /** The searched repo state: the introducing commit's first parent. */
+  readonly parentSha: string;
+}
+
+/**
+ * Async state of the hunk-origin search: where did a trace's introduced
+ * lines come from? Searches the introducing commit's other files
+ * (`'commit'` scope) or the whole snapshot just before it (`'snapshot'`).
+ */
+export interface HunkOriginState {
+  readonly status: 'searching' | 'ready' | 'unavailable' | 'error';
+  readonly scope: HunkOriginScope;
+  readonly candidates: readonly HunkOriginCandidate[];
+  /** Files compared so far / to compare, for progress feedback. */
+  readonly scanned: number;
+  readonly total: number;
+  /** True when the candidate file list was cut at the search cap. */
+  readonly capped: boolean;
   readonly message?: string;
 }
 
@@ -122,8 +214,10 @@ export class RepoStore {
   private readonly _expanded = signal<ReadonlySet<string>>(new Set());
   /** Every commit seen so far (history pages, single lookups), by sha. */
   private readonly _commitsBySha = signal<ReadonlyMap<string, CommitInfo>>(new Map());
-  /** Diff states keyed by `<sha>::<path>`. */
+  /** Diff states keyed by {@link diffStateKey} (`<sha>::<path>`, plus base). */
   private readonly _diffs = signal<ReadonlyMap<string, DiffState>>(new Map());
+  /** Predecessor path the changes view diffs against, or null for the commit's own changes. */
+  private readonly _compareBase = signal<string | null>(null);
   /** Blame states keyed by `<sha|tip>::<path>`. */
   private readonly _blames = signal<ReadonlyMap<string, BlameState>>(new Map());
   /** Blame computations currently running, by the same key. */
@@ -142,6 +236,17 @@ export class RepoStore {
   private readonly _historyHasMore = signal(false);
   private historyPage = 1;
 
+  /** The active per-hunk history filter, if any (one at a time). */
+  private readonly _lineTrace = signal<LineTraceState | null>(null);
+  /** Bumped to cancel a superseded or cleared trace walk. */
+  private traceRun = 0;
+  /** Where a truncated trace walk continues once more history is loaded. */
+  private traceResume: { index: number; range: LineRange } | null = null;
+  /** Origin search of the active trace, if started. */
+  private readonly _traceOrigins = signal<HunkOriginState | null>(null);
+  /** Bumped to cancel a superseded or cleared origin search. */
+  private originRun = 0;
+
   readonly phase = this._phase.asReadonly();
   readonly error = this._error.asReadonly();
   readonly slug = this._slug.asReadonly();
@@ -156,6 +261,8 @@ export class RepoStore {
   readonly historyStatus = this._historyStatus.asReadonly();
   readonly historyError = this._historyError.asReadonly();
   readonly historyHasMore = this._historyHasMore.asReadonly();
+  readonly lineTrace = this._lineTrace.asReadonly();
+  readonly traceOrigins = this._traceOrigins.asReadonly();
 
   /** Ref shown in the viewer: the requested one, or the default branch. */
   readonly ref = computed(() => this._requestedRef() ?? this._metadata()?.defaultBranch ?? null);
@@ -188,7 +295,7 @@ export class RepoStore {
     const path = this._selectedPath();
     const at = this._viewAt();
     if (!path || !at) return null;
-    return this._diffs().get(fileKey(path, at)) ?? null;
+    return this._diffs().get(diffStateKey(path, at, this._compareBase())) ?? null;
   });
 
   /** Blame of the selected file at the current view ref, if requested. */
@@ -239,6 +346,7 @@ export class RepoStore {
     this._expanded.set(new Set());
     this._commitsBySha.set(new Map());
     this._diffs.set(new Map());
+    this._compareBase.set(null);
     this._blames.set(new Map());
     this._renames.set(new Map());
     this.blameRuns.clear();
@@ -247,6 +355,7 @@ export class RepoStore {
     this.inflight.clear();
     this._error.set(null);
     this.resetHistory();
+    this.clearLineTrace();
     this._phase.set('metadata');
 
     try {
@@ -289,6 +398,9 @@ export class RepoStore {
    */
   async openFile(path: string, at?: string | null): Promise<void> {
     const atRef = at ?? null;
+    // The hunk filter belongs to one file's timeline; switching files ends it.
+    const trace = this._lineTrace();
+    if (trace && trace.path !== path) this.clearLineTrace();
     this._selectedPath.set(path);
     this._viewAt.set(atRef);
     this.revealPath(path);
@@ -296,12 +408,28 @@ export class RepoStore {
   }
 
   /**
-   * Computes what the commit `at` changed in `path`: the file at the commit
-   * diffed against the same path at the commit's first parent. Cached per
-   * `<commit, path>`; reuses file-content caches for both sides.
+   * Sets (or clears with null) the predecessor path the changes view diffs
+   * against, instead of the commit's own first-parent diff. Driven by the
+   * `base` query param; the diff itself is computed by {@link loadDiff}.
    */
-  async loadDiff(path: string, at: string): Promise<void> {
-    const key = fileKey(path, at);
+  setCompareBase(base: string | null): void {
+    this._compareBase.set(base);
+  }
+
+  /**
+   * Computes what the commit `at` changed in `path`: the file at the commit
+   * diffed against its first parent. A file the commit renamed *away* keeps
+   * its new path on the head side; a file the commit *introduced* (absent at
+   * the parent under this path) is shown as added rather than diffed against
+   * the file it was renamed from — that predecessor is reached through the
+   * history panel's "Continue past the rename?" step, so the oldest commit of
+   * a path's recorded history reads as the file's creation. Pass `base` to
+   * diff against a chosen predecessor instead: that path at the parent becomes
+   * the old side (used by "Diff" on a rename candidate). Cached per
+   * `<commit, path, base>`; reuses file-content caches.
+   */
+  async loadDiff(path: string, at: string, base: string | null = null): Promise<void> {
+    const key = diffStateKey(path, at, base);
     const existing = this._diffs().get(key);
     if (existing && existing.status !== 'error') return;
     const slug = this._slug();
@@ -314,32 +442,70 @@ export class RepoStore {
       if (seq !== this.loadSeq) return;
       const baseSha = commit.parentShas[0] ?? null;
 
-      const [currentState, baseState] = await Promise.all([
+      const provider = this.registry.byId(slug.provider);
+      let changes: readonly CommitFileChange[] | null = null;
+      const commitFiles = async (): Promise<readonly CommitFileChange[]> => {
+        changes ??= await provider.getCommitFiles(slug, at);
+        return changes;
+      };
+
+      // The base side defaults to this same path at the parent; `base`
+      // overrides it to diff against a chosen predecessor candidate there.
+      const baseFetchPath = base ?? path;
+      let currentState: FileState | null;
+      let baseState: FileState | null;
+      [currentState, baseState] = await Promise.all([
         this.ensureFile(path, at),
-        baseSha ? this.ensureFile(path, baseSha) : Promise.resolve(null),
+        baseSha ? this.ensureFile(baseFetchPath, baseSha) : Promise.resolve(null),
       ]);
       if (seq !== this.loadSeq) return;
 
-      if (currentState.status !== 'ready') {
-        this.setDiffState(key, {
-          status: 'error',
-          message:
-            currentState.status === 'error'
-              ? currentState.message
-              : 'The file content could not be loaded.',
-        });
-        return;
+      let headPath: string | null = currentState.status === 'ready' ? path : null;
+      if (baseSha && currentState.status === 'error' && currentState.kind === 'not-found') {
+        const movedTo = (await commitFiles()).find((c) => c.previousPath === path);
+        if (seq !== this.loadSeq) return;
+        if (movedTo) {
+          currentState = await this.ensureFile(movedTo.path, at);
+          if (seq !== this.loadSeq) return;
+          headPath = currentState.status === 'ready' ? movedTo.path : null;
+        } else {
+          const removed = changes!.some((c) => c.path === path && c.status === 'removed');
+          if (removed) currentState = null;
+        }
       }
-      if (currentState.file.kind !== 'text') {
-        this.setDiffState(key, {
-          status: 'unavailable',
-          reason:
-            currentState.file.kind === 'binary'
-              ? 'Binary file — no text diff.'
-              : 'The file is too large to diff here.',
-        });
-        return;
+
+      let currentText = '';
+      if (currentState) {
+        if (currentState.status !== 'ready') {
+          this.setDiffState(key, {
+            status: 'error',
+            message:
+              currentState.status === 'error'
+                ? currentState.message
+                : 'The file content could not be loaded.',
+          });
+          return;
+        }
+        if (currentState.file.kind !== 'text') {
+          this.setDiffState(key, {
+            status: 'unavailable',
+            reason:
+              currentState.file.kind === 'binary'
+                ? 'Binary file — no text diff.'
+                : 'The file is too large to diff here.',
+          });
+          return;
+        }
+        currentText = currentState.file.text;
+      } else {
+        headPath = null;
       }
+
+      // With no `base`, a file absent at the parent under this path was
+      // introduced by this commit and is shown as added (issue #8) — never
+      // auto-diffed against the file it was renamed from; the history panel's
+      // "Continue past the rename?" step explores that predecessor instead.
+      const basePath: string | null = baseState?.status === 'ready' ? baseFetchPath : null;
 
       let baseText = '';
       if (baseState) {
@@ -366,8 +532,8 @@ export class RepoStore {
         }
       }
 
-      const diff = computeFileDiff(baseText, currentState.file.text);
-      this.setDiffState(key, { status: 'ready', diff, commit, baseSha });
+      const diff = computeFileDiff(baseText, currentText);
+      this.setDiffState(key, { status: 'ready', diff, commit, baseSha, basePath, headPath });
     } catch (error) {
       if (seq !== this.loadSeq) return;
       this.setDiffState(key, { status: 'error', message: toRepoProviderError(error).message });
@@ -416,8 +582,9 @@ export class RepoStore {
   }
 
   private canExtendBlame(path: string, at: string | null, state: BlameState): boolean {
-    if (this._historyPath() !== path || this._historyStatus() !== 'ready') return false;
-    const history = this._history();
+    const cached = this.historyCache.get(path);
+    if (!cached) return false;
+    const history = cached.commits;
     const anchor = at ? history.findIndex((c) => c.sha === at) : 0;
     if (anchor === -1) return false;
     return history.length - anchor > state.processed;
@@ -428,14 +595,16 @@ export class RepoStore {
     const fail = (status: 'unavailable' | 'error', message: string): void =>
       this.setBlameState(key, { status, lines: [], truncated: false, processed: 0, message });
 
-    await this.loadHistory(path);
+    if (this._selectedPath() === path) await this.loadHistory(path);
+    const historyState = await this.historyFor(path);
     if (seq !== this.loadSeq) return;
-    if (this._historyPath() !== path || this._historyStatus() !== 'ready') {
-      fail('error', this._historyError() ?? 'The file history could not be loaded.');
+    if (!historyState) {
+      fail('error', 'The file history could not be loaded.');
       return;
     }
-    const anchor = at ? this._history().findIndex((c) => c.sha === at) : 0;
-    if (this._history().length === 0) {
+    const history = historyState.commits;
+    const anchor = at ? history.findIndex((c) => c.sha === at) : 0;
+    if (history.length === 0) {
       fail('unavailable', 'No commit history found for this file.');
       return;
     }
@@ -469,11 +638,11 @@ export class RepoStore {
     let newerLines = blamedLines;
 
     for (let i = anchor; pending > 0; i++) {
-      const newer = this._history()[i];
-      const older = this._history()[i + 1];
+      const newer = history[i];
+      const older = history[i + 1];
 
       if (!older) {
-        if (this._historyHasMore()) {
+        if (historyState.hasMore) {
           // The trail continues past the loaded pages.
           for (let j = 0; j < owners.length; j++) if (owners[j] === null) owners[j] = 'older';
           publish('ready', true);
@@ -485,15 +654,6 @@ export class RepoStore {
         }
         processed++;
         publish('ready', false);
-        return;
-      }
-
-      // Soft-stop when the user switched files; partial state stays cached
-      // and the walk resumes (cheaply) when the version is needed again.
-      // Note: only the path is checked — the split changes view blames the
-      // parent version while `viewAt` points at the commit itself.
-      if (this._selectedPath() !== path) {
-        publish('computing', false);
         return;
       }
 
@@ -521,11 +681,16 @@ export class RepoStore {
 
       const olderLines = splitLines(olderState.file.text);
       const ops = diffLines(olderLines, newerLines);
+      const moved = movedLinePairs(ops);
       const newToOld = new Map<number, number>();
       const added = new Set<number>();
       for (const op of ops) {
         if (op.kind === 'equal') newToOld.set(op.newLine - 1, op.oldLine - 1);
-        else if (op.kind === 'add') added.add(op.newLine - 1);
+        else if (op.kind === 'add') {
+          const oldLine = moved.get(op.newLine);
+          if (oldLine !== undefined) newToOld.set(op.newLine - 1, oldLine - 1);
+          else added.add(op.newLine - 1);
+        }
       }
 
       for (let j = 0; j < blamedLines.length; j++) {
@@ -645,12 +810,368 @@ export class RepoStore {
     void this.loadHistory(path);
   }
 
+  private async historyFor(
+    path: string,
+  ): Promise<{ commits: readonly CommitInfo[]; hasMore: boolean; page: number } | null> {
+    const cached = this.historyCache.get(path);
+    if (cached) return cached;
+    const slug = this._slug();
+    if (!slug || this._phase() !== 'ready') return null;
+    try {
+      const commits = await this.registry.byId(slug.provider).listCommits(slug, {
+        ref: this.ref() ?? undefined,
+        path,
+        perPage: HISTORY_PAGE_SIZE,
+      });
+      this.cacheCommits(commits);
+      const entry = { commits, hasMore: commits.length === HISTORY_PAGE_SIZE, page: 1 };
+      this.historyCache.set(path, entry);
+      return entry;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Filters the history panel to the commits that changed a line range:
+   * starting at `anchorSha` (whose version the range refers to), the file's
+   * history is walked pairwise with the minimal diff — `git log -L` in
+   * spirit. A commit is kept when its step touched the tracked range; the
+   * range is then remapped onto the older version and followed further.
+   * The walk ends where the range was introduced, or pauses at the end of
+   * the loaded history pages ({@link extendLineTrace} continues it).
+   */
+  async startLineTrace(path: string, anchorSha: string, range: LineRange): Promise<void> {
+    if (!this._slug() || this._phase() !== 'ready') return;
+    const active = this._lineTrace();
+    if (
+      active &&
+      active.status !== 'error' &&
+      active.path === path &&
+      active.anchorSha === anchorSha &&
+      active.range.start === range.start &&
+      active.range.end === range.end
+    ) {
+      return;
+    }
+
+    const run = ++this.traceRun;
+    this.traceResume = null;
+    this.originRun++;
+    this._traceOrigins.set(null);
+    this._lineTrace.set({
+      status: 'computing',
+      path,
+      anchorSha,
+      range,
+      commits: [],
+      hits: [],
+      scanned: 0,
+      truncated: false,
+      origin: null,
+    });
+    const fail = (message: string): void =>
+      this._lineTrace.set({ ...this._lineTrace()!, status: 'error', message });
+
+    const seq = this.loadSeq;
+    await this.loadHistory(path);
+    if (seq !== this.loadSeq || run !== this.traceRun) return;
+    if (this._historyPath() !== path || this._historyStatus() !== 'ready') {
+      fail(this._historyError() ?? 'The file history could not be loaded.');
+      return;
+    }
+    const anchor = this._history().findIndex((c) => c.sha === anchorSha);
+    if (anchor === -1) {
+      fail('This version is not part of the loaded history of the file.');
+      return;
+    }
+    await this.walkLineTrace(run, path, anchor, range);
+  }
+
+  /** Continues a trace that paused at the end of the loaded history pages. */
+  async extendLineTrace(): Promise<void> {
+    const state = this._lineTrace();
+    const resume = this.traceResume;
+    if (!state || state.status !== 'ready' || !state.truncated || !resume) return;
+
+    const run = ++this.traceRun;
+    this._lineTrace.set({ ...state, status: 'computing', truncated: false });
+    const seq = this.loadSeq;
+    await this.loadMoreHistory();
+    if (seq !== this.loadSeq || run !== this.traceRun || !this._lineTrace()) return;
+    if (this._historyStatus() !== 'ready') {
+      this._lineTrace.set({
+        ...this._lineTrace()!,
+        status: 'error',
+        message: this._historyError() ?? 'More history could not be loaded.',
+      });
+      return;
+    }
+    await this.walkLineTrace(run, state.path, resume.index, resume.range);
+  }
+
+  /** Drops the per-hunk history filter and any walk still running. */
+  clearLineTrace(): void {
+    this.traceRun++;
+    this.traceResume = null;
+    this._lineTrace.set(null);
+    this.originRun++;
+    this._traceOrigins.set(null);
+  }
+
+  /**
+   * The trace walk itself: examines pairs `(history[i], history[i+1])` from
+   * `index` on, collecting touching commits and publishing after every step
+   * so matches appear as they are found. One (cached) file request per step,
+   * shared with blame and the diff views.
+   */
+  private async walkLineTrace(
+    run: number,
+    path: string,
+    index: number,
+    range: LineRange,
+  ): Promise<void> {
+    const seq = this.loadSeq;
+    const live = (): boolean =>
+      seq === this.loadSeq && run === this.traceRun && this._lineTrace() !== null;
+
+    const state = this._lineTrace()!;
+    const commits = [...state.commits];
+    const hits = [...state.hits];
+    let scanned = state.scanned;
+    const publish = (patch: Partial<LineTraceState>): void =>
+      this._lineTrace.set({
+        ...this._lineTrace()!,
+        commits: [...commits],
+        hits: [...hits],
+        scanned,
+        ...patch,
+      });
+    const finish = (origin: LineTraceState['origin']): void => {
+      this.traceResume = null;
+      publish({ status: 'ready', truncated: false, origin });
+    };
+    const recordHit = (commit: CommitInfo, hitRange: LineRange): void => {
+      commits.push(commit);
+      hits.push({ commit, path, range: hitRange });
+    };
+
+    let newerLines: readonly string[] | null = null;
+    let r = range;
+    for (let i = index; ; i++) {
+      const newer = this._history()[i];
+      const older = this._history()[i + 1];
+
+      if (!older) {
+        if (this._historyHasMore()) {
+          this.traceResume = { index: i, range: r };
+          publish({ status: 'ready', truncated: true });
+          return;
+        }
+        // Complete history: the oldest commit introduced the tracked lines.
+        recordHit(newer, r);
+        finish({ sha: newer.sha, range: r });
+        return;
+      }
+
+      if (newerLines === null) {
+        const newerFile = await this.ensureFile(path, newer.sha);
+        if (!live()) return;
+        if (newerFile.status !== 'ready') {
+          publish({
+            status: 'error',
+            message:
+              newerFile.status === 'error'
+                ? newerFile.message
+                : 'The file content could not be loaded.',
+          });
+          return;
+        }
+        if (newerFile.file.kind !== 'text') {
+          publish({ status: 'error', message: 'Tracing is only available for text files.' });
+          return;
+        }
+        newerLines = splitLines(newerFile.file.text);
+      }
+
+      const olderFile = await this.ensureFile(path, older.sha);
+      if (!live()) return;
+      if (olderFile.status !== 'ready') {
+        publish({
+          status: 'error',
+          message:
+            olderFile.status === 'error'
+              ? olderFile.message
+              : 'A previous version could not be loaded.',
+        });
+        return;
+      }
+      if (olderFile.file.kind !== 'text') {
+        // The file was binary before this point; `newer` (re)introduced the
+        // text lines, so the trail ends with it.
+        recordHit(newer, r);
+        scanned++;
+        finish({ sha: newer.sha, range: r });
+        return;
+      }
+
+      const olderLines = splitLines(olderFile.file.text);
+      const ops = diffLines(olderLines, newerLines);
+      const regions = changeRegions(ops);
+      if (regions.some((region) => regionTouchesRange(region, r))) recordHit(newer, r);
+      scanned++;
+
+      const mapped = mapRangeToParentIncludingMoves(ops, regions, r);
+      if (!mapped) {
+        // The whole range was introduced by `newer` — nothing older to follow.
+        finish({ sha: newer.sha, range: r });
+        return;
+      }
+      r = mapped;
+      newerLines = olderLines;
+      publish({ status: 'computing' });
+    }
+  }
+
+  /**
+   * Searches for where a finished trace's lines came from: the block the
+   * introducing commit added is located inside other files *as they were
+   * just before that commit* (its first parent), with a line-level local
+   * alignment. `'commit'` scope compares only the files the introducing
+   * commit touched — a moved block's source shrank or vanished right there,
+   * so deleted files are prime suspects. `'snapshot'` scope widens to the
+   * whole parent tree (same-extension files first, capped).
+   */
+  async searchTraceOrigins(scope: HunkOriginScope): Promise<void> {
+    const slug = this._slug();
+    const trace = this._lineTrace();
+    if (!slug || this._phase() !== 'ready') return;
+    if (!trace || trace.status !== 'ready' || !trace.origin) return;
+    const origin = trace.origin;
+
+    const run = ++this.originRun;
+    const seq = this.loadSeq;
+    const live = (): boolean => seq === this.loadSeq && run === this.originRun;
+    const base: HunkOriginState = {
+      status: 'searching',
+      scope,
+      candidates: [],
+      scanned: 0,
+      total: 0,
+      capped: false,
+    };
+    this._traceOrigins.set(base);
+    const fail = (status: 'unavailable' | 'error', message: string): void =>
+      this._traceOrigins.set({ ...base, status, message });
+
+    try {
+      const commit = await this.resolveCommit(slug, origin.sha);
+      if (!live()) return;
+      const parentSha = commit.parentShas[0] ?? null;
+      if (!parentSha) {
+        fail(
+          'unavailable',
+          "These lines arrived with the repository's first commit — there is nothing earlier to search.",
+        );
+        return;
+      }
+
+      const blockState = await this.ensureFile(trace.path, origin.sha);
+      if (!live()) return;
+      if (blockState.status !== 'ready' || blockState.file.kind !== 'text') {
+        fail('error', 'The traced lines could not be loaded.');
+        return;
+      }
+      const block = splitLines(blockState.file.text).slice(
+        origin.range.start - 1,
+        origin.range.end,
+      );
+      if (block.length === 0) {
+        fail('unavailable', 'The traced range is empty at its introducing commit.');
+        return;
+      }
+
+      const changes = await this.registry.byId(slug.provider).getCommitFiles(slug, commit.sha);
+      if (!live()) return;
+      const deleted = new Set(
+        changes.filter((c) => c.status === 'removed').map((change) => change.path),
+      );
+
+      let paths: string[];
+      let capped: boolean;
+      if (scope === 'commit') {
+        // Renamed entries live under their previous path at the parent.
+        const touched = changes
+          .filter((c) => c.status !== 'added')
+          .map((c) => (c.status === 'renamed' && c.previousPath ? c.previousPath : c.path))
+          .filter((p) => p !== trace.path);
+        const unique = [...new Set(touched)];
+        capped = unique.length > ORIGIN_COMMIT_CAP;
+        paths = unique.slice(0, ORIGIN_COMMIT_CAP);
+      } else {
+        const entries = await this.treeAt(slug, parentSha);
+        if (!live()) return;
+        const ext = extensionOf(trace.path);
+        const all = entries
+          .filter((entry) => entry.kind === 'file' && entry.path !== trace.path)
+          .sort((a, b) => {
+            const extDelta =
+              Number(extensionOf(b.path) === ext) - Number(extensionOf(a.path) === ext);
+            return extDelta !== 0 ? extDelta : a.path.localeCompare(b.path);
+          })
+          .map((entry) => entry.path);
+        capped = all.length > ORIGIN_SNAPSHOT_CAP;
+        paths = all.slice(0, ORIGIN_SNAPSHOT_CAP);
+      }
+
+      const candidates: HunkOriginCandidate[] = [];
+      let scanned = 0;
+      const publish = (status: 'searching' | 'ready'): void => {
+        const top = [...candidates].sort((a, b) => b.score - a.score).slice(0, ORIGIN_RESULT_CAP);
+        this._traceOrigins.set({
+          status,
+          scope,
+          candidates: top,
+          scanned,
+          total: paths.length,
+          capped,
+        });
+      };
+      publish('searching');
+      for (const path of paths) {
+        const state = await this.ensureFile(path, parentSha);
+        if (!live()) return;
+        scanned++;
+        if (state.status === 'ready' && state.file.kind === 'text') {
+          const match = findBlockOrigin(block, splitLines(state.file.text));
+          if (match) {
+            candidates.push({
+              path,
+              line: match.line,
+              score: match.score,
+              deleted: deleted.has(path),
+              parentSha,
+            });
+          }
+        }
+        publish('searching');
+      }
+      publish('ready');
+    } catch (error) {
+      if (!live()) return;
+      fail('error', toRepoProviderError(error).message);
+    }
+  }
+
   /**
    * Searches for predecessor files where `path`'s recorded history ends:
-   * the provider's own rename detection at the creating commit, identical
-   * blobs in the parent commit's tree, and heuristically similar files
-   * refined by actual content similarity (top three, one request each).
-   * Requires the complete history of the path to be loaded.
+   * the provider's own rename detection at the creating commit, files the
+   * creating commit *deleted* (prime rename sources, content-compared one
+   * by one), identical blobs in the parent commit's tree, and heuristically
+   * similar files refined by actual content similarity (top three, one
+   * request each). Content comparisons use the line-structured fuzzy score,
+   * so a rename that also edited lines still ranks high. Requires the
+   * complete history of the path to be loaded.
    */
   async loadRenameCandidates(path: string): Promise<void> {
     const existing = this._renames().get(path);
@@ -738,6 +1259,34 @@ export class RepoStore {
         }
       }
 
+      // 3.5 Files the creating commit deleted: when a rename happens without
+      // the provider noticing, the old path disappears in this very commit —
+      // compare each deleted file's content directly.
+      const deletedPaths = changes
+        .filter((c) => c.status === 'removed' && c.path !== path)
+        .map((c) => c.path)
+        .slice(0, RENAME_DELETED_CAP);
+      for (const deletedPath of deletedPaths) {
+        const entry = files.find((e) => e.path === deletedPath);
+        let similarity = 0;
+        if (v0Text !== null) {
+          const deletedState = await this.ensureFile(deletedPath, parentSha);
+          if (seq !== this.loadSeq) return;
+          if (deletedState.status === 'ready' && deletedState.file.kind === 'text') {
+            similarity = fuzzyLineSimilarity(deletedState.file.text, v0Text);
+          }
+        }
+        const reasons: ('deleted-in-commit' | 'similar-content')[] =
+          similarity >= 0.5 ? ['deleted-in-commit', 'similar-content'] : ['deleted-in-commit'];
+        add({
+          path: deletedPath,
+          sha: entry?.sha ?? '',
+          ...(entry?.size !== undefined ? { size: entry.size } : {}),
+          confidence: Math.min(0.98, 0.15 + similarity * 0.85),
+          reasons,
+        });
+      }
+
       // 4. Heuristic candidates, refined by content similarity for the top few.
       const name = path.slice(path.lastIndexOf('/') + 1);
       const ext = name.includes('.') ? name.slice(name.lastIndexOf('.')) : '';
@@ -772,7 +1321,7 @@ export class RepoStore {
           const candidateState = await this.ensureFile(entry.path, parentSha);
           if (seq !== this.loadSeq) return;
           if (candidateState.status === 'ready' && candidateState.file.kind === 'text') {
-            const similarity = lineSimilarity(candidateState.file.text, v0Text);
+            const similarity = fuzzyLineSimilarity(candidateState.file.text, v0Text);
             confidence = Math.max(confidence, similarity);
             if (similarity >= 0.5) reasons.unshift('similar-content');
           }
@@ -834,6 +1383,8 @@ export class RepoStore {
   clearSelection(): void {
     this._selectedPath.set(null);
     this._viewAt.set(null);
+    this._compareBase.set(null);
+    this.clearLineTrace();
   }
 
   toggleDir(path: string): void {
@@ -992,6 +1543,13 @@ function sharedPrefixLength(a: readonly string[], b: readonly string[]): number 
   return i;
 }
 
+/** File extension including the dot, or '' when there is none. */
+function extensionOf(path: string): string {
+  const name = path.slice(path.lastIndexOf('/') + 1);
+  const dot = name.lastIndexOf('.');
+  return dot > 0 ? name.slice(dot) : '';
+}
+
 /**
  * Cache key for file content and diffs. The prefix is either `tip` or a
  * commit sha, so paths (which can contain anything) cannot collide across
@@ -999,4 +1557,14 @@ function sharedPrefixLength(a: readonly string[], b: readonly string[]): number 
  */
 function fileKey(path: string, at: string | null): string {
   return `${at ?? 'tip'}::${path}`;
+}
+
+/**
+ * Cache key for a diff state. `base`, when set, diffs `path@at` against that
+ * predecessor path at the parent (a chosen rename candidate) rather than the
+ * commit's own changes, so the two are cached separately. The NUL separator
+ * cannot occur in a git path, keeping the keys unambiguous.
+ */
+function diffStateKey(path: string, at: string, base: string | null): string {
+  return base ? `${fileKey(path, at)}\u0000${base}` : fileKey(path, at);
 }

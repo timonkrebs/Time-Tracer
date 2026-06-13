@@ -1,6 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 
 import { RepoSlug } from '../../models';
+import { AccessTokens } from '../access-tokens';
 import { AzdProvider } from './azd-provider';
 
 const slug: RepoSlug = { provider: 'azd', owner: 'fhnw/Services', repo: 'A1418-CIT.IAM.EBC' };
@@ -18,6 +19,7 @@ describe('AzdProvider', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    localStorage.clear();
     fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     provider = TestBed.inject(AzdProvider);
@@ -175,6 +177,38 @@ describe('AzdProvider', () => {
     await expect(provider.getMetadata(slug)).rejects.toMatchObject({
       kind: 'not-found',
       message: expect.stringContaining('sign-in'),
+    });
+  });
+
+  it('authenticates with a stored personal access token (Basic, empty user)', async () => {
+    TestBed.inject(AccessTokens).setToken('azd', 'azd-pat');
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        name: 'A1418-CIT.IAM.EBC',
+        defaultBranch: 'refs/heads/main',
+        webUrl: 'https://dev.azure.com/fhnw/Services/_git/A1418-CIT.IAM.EBC',
+        project: { name: 'Services' },
+      }),
+    );
+
+    await provider.getMetadata(slug);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: `Basic ${btoa(':azd-pat')}` }),
+      }),
+    );
+  });
+
+  it('explains a rejected token instead of blaming anonymity', async () => {
+    TestBed.inject(AccessTokens).setToken('azd', 'expired-pat');
+    fetchMock.mockResolvedValue(
+      new Response('{}', { status: 401, headers: { 'content-type': 'application/json' } }),
+    );
+
+    await expect(provider.getMetadata(slug)).rejects.toMatchObject({
+      message: expect.stringContaining('rejected the access token'),
     });
   });
 

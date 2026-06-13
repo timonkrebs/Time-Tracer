@@ -10,12 +10,18 @@ import { ViewerPage } from './viewer-page';
 const NEW_SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
 const OLD_SHA = 'ffeeddccbbaa99887766554433221100ffeeddcc';
 const RENAME_SHA = 'beadfeedbeadfeedbeadfeedbeadfeedbeadfeed';
+const RUN_SHA = '1111111111111111111111111111111111111111';
+const MIDDLE_SHA = '2222222222222222222222222222222222222222';
+const ROOT_SHA = '3333333333333333333333333333333333333333';
+const MOVE_EDIT_SHA = '4444444444444444444444444444444444444444';
+const MOVE_SHA = '5555555555555555555555555555555555555555';
+const MOVE_ROOT_SHA = '6666666666666666666666666666666666666666';
 
 const NEW_COMMIT = {
   sha: NEW_SHA,
   html_url: `https://github.com/acme/rocket/commit/${NEW_SHA}`,
   commit: {
-    message: 'docs: update readme',
+    message: 'docs: update readme\n\nExplain why the launch text changed.',
     author: { name: 'Ada', email: 'ada@example.com', date: '2026-06-01T00:00:00Z' },
   },
   parents: [{ sha: OLD_SHA }],
@@ -39,6 +45,66 @@ const RENAME_COMMIT = {
     author: { name: 'Ada', email: 'ada@example.com', date: '2026-03-01T00:00:00Z' },
   },
   parents: [{ sha: OLD_SHA }],
+};
+
+const RUN_COMMIT = {
+  sha: RUN_SHA,
+  html_url: `https://github.com/acme/rocket/commit/${RUN_SHA}`,
+  commit: {
+    message: 'feat: update edge lines',
+    author: { name: 'Ada', email: 'ada@example.com', date: '2026-07-01T00:00:00Z' },
+  },
+  parents: [{ sha: MIDDLE_SHA }],
+};
+
+const MIDDLE_COMMIT = {
+  sha: MIDDLE_SHA,
+  html_url: `https://github.com/acme/rocket/commit/${MIDDLE_SHA}`,
+  commit: {
+    message: 'chore: touch middle line',
+    author: { name: 'Grace', email: 'grace@example.com', date: '2026-06-20T00:00:00Z' },
+  },
+  parents: [{ sha: ROOT_SHA }],
+};
+
+const ROOT_COMMIT = {
+  sha: ROOT_SHA,
+  html_url: `https://github.com/acme/rocket/commit/${ROOT_SHA}`,
+  commit: {
+    message: 'feat: add multi file',
+    author: { name: 'Grace', email: 'grace@example.com', date: '2026-06-10T00:00:00Z' },
+  },
+  parents: [],
+};
+
+const MOVE_EDIT_COMMIT = {
+  sha: MOVE_EDIT_SHA,
+  html_url: `https://github.com/acme/rocket/commit/${MOVE_EDIT_SHA}`,
+  commit: {
+    message: 'fix: edit moved line',
+    author: { name: 'Ada', email: 'ada@example.com', date: '2026-08-03T00:00:00Z' },
+  },
+  parents: [{ sha: MOVE_SHA }],
+};
+
+const MOVE_COMMIT = {
+  sha: MOVE_SHA,
+  html_url: `https://github.com/acme/rocket/commit/${MOVE_SHA}`,
+  commit: {
+    message: 'refactor: move line block',
+    author: { name: 'Grace', email: 'grace@example.com', date: '2026-08-02T00:00:00Z' },
+  },
+  parents: [{ sha: MOVE_ROOT_SHA }],
+};
+
+const MOVE_ROOT_COMMIT = {
+  sha: MOVE_ROOT_SHA,
+  html_url: `https://github.com/acme/rocket/commit/${MOVE_ROOT_SHA}`,
+  commit: {
+    message: 'feat: add move fixture',
+    author: { name: 'Grace', email: 'grace@example.com', date: '2026-08-01T00:00:00Z' },
+  },
+  parents: [],
 };
 
 /**
@@ -69,6 +135,8 @@ describe('ViewerPage (integration)', () => {
       tree: [
         { path: 'src', type: 'tree', sha: 'tree1' },
         { path: 'src/engine.ts', type: 'blob', sha: 'blob1', size: 24 },
+        { path: 'src/multi.ts', type: 'blob', sha: 'blob-multi', size: 14 },
+        { path: 'src/move.ts', type: 'blob', sha: 'blob-move', size: 18 },
         { path: 'README.md', type: 'blob', sha: 'blob2', size: 14 },
       ],
     },
@@ -84,12 +152,29 @@ describe('ViewerPage (integration)', () => {
       content: btoa('export const thrust = 1;'),
       encoding: 'base64',
     },
+    '/repos/acme/rocket/git/blobs/blob-multi': {
+      sha: 'blob-multi',
+      size: 14,
+      content: btoa('A\nb\nc\nd\ne\nf\nG\n'),
+      encoding: 'base64',
+    },
+    '/repos/acme/rocket/git/blobs/blob-move': {
+      sha: 'blob-move',
+      size: 18,
+      content: btoa('A\nC\nB changed\n'),
+      encoding: 'base64',
+    },
     // Per-path histories: engine.ts was created by a rename; thruster.ts is
     // its predecessor, last touched at the root commit.
     '/repos/acme/rocket/commits': (url: URL) => {
       const path = url.searchParams.get('path');
+      const ref = url.searchParams.get('sha');
       if (path === 'src/engine.ts') return [RENAME_COMMIT];
-      if (path === 'src/thruster.ts') return [OLD_COMMIT];
+      if (path === 'src/thruster.ts')
+        return ref === OLD_SHA ? [OLD_COMMIT] : [RENAME_COMMIT, OLD_COMMIT];
+      if (path === 'src/multi.ts') return [RUN_COMMIT, MIDDLE_COMMIT, ROOT_COMMIT];
+      if (path === 'src/move.ts') return [MOVE_EDIT_COMMIT, MOVE_COMMIT, MOVE_ROOT_COMMIT];
+      if (path === 'NOTES.md') return [OLD_COMMIT];
       return [NEW_COMMIT, OLD_COMMIT];
     },
     '/repos/acme/rocket/contents/README.md': (url: URL) => {
@@ -122,14 +207,78 @@ describe('ViewerPage (integration)', () => {
       return {
         type: 'file',
         path: 'src/thruster.ts',
-        sha: 'blob1',
+        sha: 'blob0',
         size: 24,
-        content: btoa('export const thrust = 1;'),
+        content: btoa('export const thrust = 0;'),
         encoding: 'base64',
       };
     },
-    [`/repos/acme/rocket/commits/${NEW_SHA}`]: NEW_COMMIT,
+    '/repos/acme/rocket/contents/src/multi.ts': (url: URL) => {
+      const ref = url.searchParams.get('ref');
+      const text =
+        ref === RUN_SHA
+          ? 'A\nb\nc\nd\ne\nf\nG\n'
+          : ref === MIDDLE_SHA
+            ? 'a\nb\nc\nd\ne\nf\ng\n'
+            : ref === ROOT_SHA
+              ? 'a\nb\nc\nD\ne\nf\ng\n'
+              : null;
+      if (text === null) return undefined;
+      return {
+        type: 'file',
+        path: 'src/multi.ts',
+        sha: `blob-multi-${ref}`,
+        size: text.length,
+        content: btoa(text),
+        encoding: 'base64',
+      };
+    },
+    '/repos/acme/rocket/contents/src/move.ts': (url: URL) => {
+      const ref = url.searchParams.get('ref');
+      const text =
+        ref === MOVE_EDIT_SHA
+          ? 'A\nC\nB changed\n'
+          : ref === MOVE_SHA
+            ? 'A\nC\nB\n'
+            : ref === MOVE_ROOT_SHA
+              ? 'A\nB\nC\n'
+              : null;
+      if (text === null) return undefined;
+      return {
+        type: 'file',
+        path: 'src/move.ts',
+        sha: `blob-move-${ref}`,
+        size: text.length,
+        content: btoa(text),
+        encoding: 'base64',
+      };
+    },
+    // The README change also deleted NOTES.md — the traced lines' source.
+    [`/repos/acme/rocket/commits/${NEW_SHA}`]: {
+      ...NEW_COMMIT,
+      files: [
+        { filename: 'README.md', status: 'modified' },
+        { filename: 'NOTES.md', status: 'removed' },
+      ],
+    },
     [`/repos/acme/rocket/commits/${OLD_SHA}`]: OLD_COMMIT,
+    [`/repos/acme/rocket/commits/${RUN_SHA}`]: RUN_COMMIT,
+    [`/repos/acme/rocket/commits/${MIDDLE_SHA}`]: MIDDLE_COMMIT,
+    [`/repos/acme/rocket/commits/${ROOT_SHA}`]: ROOT_COMMIT,
+    [`/repos/acme/rocket/commits/${MOVE_EDIT_SHA}`]: MOVE_EDIT_COMMIT,
+    [`/repos/acme/rocket/commits/${MOVE_SHA}`]: MOVE_COMMIT,
+    [`/repos/acme/rocket/commits/${MOVE_ROOT_SHA}`]: MOVE_ROOT_COMMIT,
+    '/repos/acme/rocket/contents/NOTES.md': (url: URL) => {
+      if (url.searchParams.get('ref') !== OLD_SHA) return undefined;
+      return {
+        type: 'file',
+        path: 'NOTES.md',
+        sha: 'blob-notes',
+        size: 12,
+        content: btoa('hello\n\nGo!\n'),
+        encoding: 'base64',
+      };
+    },
     [`/repos/acme/rocket/commits/${RENAME_SHA}`]: {
       ...RENAME_COMMIT,
       files: [
@@ -145,7 +294,7 @@ describe('ViewerPage (integration)', () => {
       truncated: false,
       tree: [
         { path: 'src', type: 'tree', sha: 'tree0' },
-        { path: 'src/thruster.ts', type: 'blob', sha: 'blob1', size: 24 },
+        { path: 'src/thruster.ts', type: 'blob', sha: 'blob0', size: 24 },
         { path: 'README.md', type: 'blob', sha: 'blob2', size: 17 },
       ],
     },
@@ -205,7 +354,31 @@ describe('ViewerPage (integration)', () => {
       expect(text).toContain('acme/rocket');
       expect(text).toContain('README.md');
       expect(text).toContain('src');
-      expect(text).toContain('2 files · 1 folders');
+      expect(text).toContain('4 files · 1 folders');
+    });
+  });
+
+  it('collapses and restores the file tree', async () => {
+    await harness.navigateByUrl('/r/acme/rocket');
+    await vi.waitFor(async () => {
+      await textOnScreen();
+      expect(harness.routeNativeElement!.querySelector('app-file-tree')).not.toBeNull();
+    });
+
+    harness
+      .routeNativeElement!.querySelector<HTMLButtonElement>('[aria-label="Hide file tree"]')!
+      .click();
+    await vi.waitFor(async () => {
+      await textOnScreen();
+      expect(harness.routeNativeElement!.querySelector('app-file-tree')).toBeNull();
+    });
+
+    harness
+      .routeNativeElement!.querySelector<HTMLButtonElement>('[aria-label="Show file tree"]')!
+      .click();
+    await vi.waitFor(async () => {
+      await textOnScreen();
+      expect(harness.routeNativeElement!.querySelector('app-file-tree')).not.toBeNull();
     });
   });
 
@@ -440,18 +613,17 @@ describe('ViewerPage (integration)', () => {
 
   it('annotates lines with blame and jumps to the introducing commit', async () => {
     await harness.navigateByUrl('/r/acme/rocket?path=README.md');
-    await vi.waitFor(async () => {
-      expect(await textOnScreen()).toContain('Go!');
-    });
-
-    clickButton('Blame');
 
     await vi.waitFor(async () => {
-      expect(router.url).toContain('blame=1');
+      expect(router.url).not.toContain('blame=0');
       const text = await textOnScreen();
       expect(text).toContain('01.01.2026 Grace'); // line 1: introduced by the root commit
       expect(text).toContain('01.06.2026 Ada'); // lines 2-3: introduced by the newest commit
     });
+    const adaBlame = Array.from(
+      harness.routeNativeElement!.querySelectorAll<HTMLButtonElement>('button'),
+    ).find((button) => (button.textContent ?? '').includes('01.06.2026 Ada'));
+    expect(adaBlame?.title).toContain('Explain why the launch text changed.');
 
     clickButton('01.01.2026 Grace');
 
@@ -466,15 +638,9 @@ describe('ViewerPage (integration)', () => {
 
   it('splits the changes view with blame on both sides', async () => {
     await harness.navigateByUrl(`/r/acme/rocket?path=README.md&at=${NEW_SHA}&view=diff`);
-    await vi.waitFor(async () => {
-      expect(await textOnScreen()).toContain('@@ -1,1 +1,3 @@');
-    });
-
-    // The Blame toggle is available in the changes view too.
-    clickButton('Blame');
 
     await vi.waitFor(async () => {
-      expect(router.url).toContain('blame=1');
+      expect(router.url).not.toContain('blame=0');
       const text = await textOnScreen();
       // Split header: parent on the left, the commit on the right.
       expect(text).toContain('Before');
@@ -501,7 +667,7 @@ describe('ViewerPage (integration)', () => {
     // Turning blame off returns to the unified diff.
     clickButton('Blame');
     await vi.waitFor(async () => {
-      expect(router.url).not.toContain('blame=1');
+      expect(router.url).toContain('blame=0');
       expect(await textOnScreen()).toContain('@@ -1,1 +1,3 @@');
     });
   });
@@ -547,30 +713,233 @@ describe('ViewerPage (integration)', () => {
     });
   });
 
-  it('omits Before when the commit created the file and keeps blame working', async () => {
-    // engine.ts was created by the rename commit — there is nothing before.
+  it('traces a hunk to only the commits that changed its lines', async () => {
+    await harness.navigateByUrl(`/r/acme/rocket?path=README.md&at=${NEW_SHA}&view=diff`);
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('@@ -1,1 +1,3 @@');
+      expect(text).toContain('docs: initial readme'); // full history in the panel
+    });
+
+    clickButton('Trace');
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      // The hunk added lines 2–3; only the commit that introduced them stays.
+      expect(text).toContain('Tracing lines 2–3');
+      expect(text).toContain('docs: update readme');
+      expect(text).not.toContain('docs: initial readme');
+      expect(text).toContain('The oldest commit above introduced these lines.');
+    });
+
+    harness
+      .routeNativeElement!.querySelector<HTMLButtonElement>('[aria-label="Stop tracing"]')!
+      .click();
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).not.toContain('Tracing lines');
+      expect(text).toContain('docs: initial readme'); // full history is back
+    });
+  });
+
+  it('traces a single change run inside a merged display hunk', async () => {
+    await harness.navigateByUrl(
+      `/r/acme/rocket?path=src%2Fmulti.ts&at=${RUN_SHA}&view=diff&blame=0`,
+    );
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('@@ -1,7 +1,7 @@');
+      expect(text).toContain('chore: touch middle line'); // full history in the panel
+    });
+
+    clickButton('Trace');
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('Tracing line 1');
+      expect(text).toContain('feat: update edge lines');
+      expect(text).not.toContain('chore: touch middle line');
+    });
+  });
+
+  it('traces a manually selected line range', async () => {
+    await harness.navigateByUrl(
+      `/r/acme/rocket?path=src%2Fmulti.ts&at=${RUN_SHA}&view=diff&blame=0`,
+    );
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('@@ -1,7 +1,7 @@');
+    });
+
+    harness
+      .routeNativeElement!.querySelector<HTMLButtonElement>('[aria-label="Select line 1"]')!
+      .click();
+    harness
+      .routeNativeElement!.querySelector<HTMLButtonElement>('[aria-label="Select line 7"]')!
+      .click();
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('lines 1–7');
+    });
+
+    clickButton('Trace selection');
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('Tracing lines 1–7');
+      expect(text).toContain('feat: update edge lines');
+      expect(text).toContain('chore: touch middle line');
+    });
+  });
+
+  it('traces moved lines and highlights their range in filtered commits', async () => {
+    await harness.navigateByUrl(
+      `/r/acme/rocket?path=src%2Fmove.ts&at=${MOVE_EDIT_SHA}&view=diff&blame=0`,
+    );
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('@@ -1,3 +1,3 @@');
+      expect(text).toContain('fix: edit moved line');
+    });
+
+    clickButton('Trace');
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('Tracing line 3');
+      expect(text).toContain('fix: edit moved line');
+      expect(text).toContain('refactor: move line block');
+      expect(text).toContain('feat: add move fixture');
+    });
+
+    clickButton('refactor: move line block');
+
+    await vi.waitFor(async () => {
+      expect(router.url).toContain(`at=${MOVE_SHA}`);
+      expect(router.url).toContain('line=3');
+      const highlighted = Array.from(
+        harness.routeNativeElement!.querySelectorAll<HTMLElement>('.trace-highlight-row'),
+      );
+      expect(highlighted.some((row) => (row.textContent ?? '').includes('B'))).toBe(true);
+    });
+
+    clickButton('feat: add move fixture');
+
+    await vi.waitFor(async () => {
+      expect(router.url).toContain(`at=${MOVE_ROOT_SHA}`);
+      expect(router.url).toContain('line=2');
+      const highlighted = Array.from(
+        harness.routeNativeElement!.querySelectorAll<HTMLElement>('.trace-highlight-row'),
+      );
+      expect(highlighted.some((row) => (row.textContent ?? '').includes('B'))).toBe(true);
+    });
+  });
+
+  it('searches where traced lines came from and jumps to the source', async () => {
+    await harness.navigateByUrl(`/r/acme/rocket?path=README.md&at=${NEW_SHA}&view=diff`);
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('@@ -1,1 +1,3 @@');
+    });
+
+    clickButton('Trace');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('The oldest commit above introduced these lines.');
+    });
+
+    clickButton('Where did these lines come from?');
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      // NOTES.md was deleted by the same commit and contains the block.
+      expect(text).toContain('NOTES.md');
+      expect(text).toContain('100% match');
+      expect(text).toContain('line 2');
+      expect(text).toContain('deleted');
+    });
+
+    clickButton('NOTES.md');
+
+    await vi.waitFor(async () => {
+      expect(router.url).toContain('path=NOTES.md');
+      expect(router.url).toContain(`at=${OLD_SHA}`);
+      expect(router.url).toContain('line=2');
+      // The source file renders at its pre-deletion version.
+      expect(await textOnScreen()).toContain('hello');
+    });
+  });
+
+  it('shows a file introduced by a rename as added, with the predecessor offered in history', async () => {
+    // The oldest commit of a path's recorded history reads as the file's
+    // creation: it is shown as added, not diffed against the file it was
+    // renamed from, which the history offers via "Continue past the rename?"
+    // instead (issue #8).
     await harness.navigateByUrl(`/r/acme/rocket?path=src%2Fengine.ts&at=${RENAME_SHA}&view=diff`);
     await vi.waitFor(async () => {
       const text = await textOnScreen();
-      expect(text).toContain('export const thrust = 1;');
+      expect(text).toContain('export const thrust = 1;'); // the introduced file
+      expect(text).toContain('nothing at parent'); // no previous version under this path
       expect(text).toContain('refactor: rename thruster to engine'); // history loaded
+      expect(text).toContain('Continue past the rename?'); // the explicit way across
     });
-    // No dead-end button that would error with "does not exist at …".
-    expect(await textOnScreen()).not.toContain('◂ Before');
+    const text = await textOnScreen();
+    // The rename is not pre-empted in the diff: no predecessor content, no step before.
+    expect(text).not.toContain('export const thrust = 0;');
+    expect(text).not.toContain('◂ Before');
 
-    clickButton('Blame');
     await vi.waitFor(async () => {
-      const text = await textOnScreen();
-      expect(text).toContain('01.03.2026 Ada'); // annotated at this newest version
-      expect(text).not.toContain('does not exist at');
+      const annotated = await textOnScreen();
+      expect(annotated).toContain('01.03.2026 Ada'); // the introduced version, annotated
+      expect(annotated).not.toContain('does not exist at');
     });
-    expect(router.url).toContain('blame=1');
+    expect(router.url).not.toContain('blame=0');
   });
 
-  it('continues past a rename into the predecessor file', async () => {
+  it('diffs the file against a chosen rename candidate, then clears back', async () => {
     await harness.navigateByUrl('/r/acme/rocket?path=src%2Fengine.ts');
     await vi.waitFor(async () => {
       expect(await textOnScreen()).toContain('export const thrust = 1;');
+    });
+
+    clickButton('History');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('Continue past the rename?');
+    });
+    clickButton('Continue past the rename?');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('src/thruster.ts'); // the candidate
+    });
+
+    clickButton('Diff'); // the per-candidate "Diff against this predecessor" action
+
+    await vi.waitFor(async () => {
+      expect(router.url).toContain(`at=${RENAME_SHA}`);
+      expect(router.url).toContain('base=src%2Fthruster.ts');
+      const text = await textOnScreen();
+      expect(text).toContain('export const thrust = 0;'); // predecessor, on the before side
+      expect(text).toContain('export const thrust = 1;'); // the current file, after
+    });
+
+    // Clearing the comparison returns to the commit's own changes (added).
+    harness
+      .routeNativeElement!.querySelector<HTMLButtonElement>('[aria-label="Stop comparing"]')!
+      .click();
+
+    await vi.waitFor(async () => {
+      expect(router.url).not.toContain('base=');
+      const text = await textOnScreen();
+      expect(text).toContain('nothing at parent'); // shown as introduced again
+      expect(text).not.toContain('export const thrust = 0;');
+    });
+  });
+
+  it('continues past a rename into the predecessor file with blame back on', async () => {
+    await harness.navigateByUrl('/r/acme/rocket?path=src%2Fengine.ts');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('export const thrust = 1;');
+    });
+
+    clickButton('Blame');
+    await vi.waitFor(() => {
+      expect(router.url).toContain('blame=0');
     });
 
     clickButton('History');
@@ -585,9 +954,8 @@ describe('ViewerPage (integration)', () => {
     await vi.waitFor(async () => {
       const text = await textOnScreen();
       expect(text).toContain('src/thruster.ts');
-      expect(text).toContain('100% match');
+      expect(text).toContain('99% match');
       expect(text).toContain('rename');
-      expect(text).toContain('identical');
     });
 
     clickButton('src/thruster.ts');
@@ -595,8 +963,46 @@ describe('ViewerPage (integration)', () => {
     await vi.waitFor(async () => {
       expect(router.url).toContain('path=src%2Fthruster.ts');
       expect(router.url).toContain(`at=${OLD_SHA}`);
+      expect(router.url).not.toContain('blame=0');
       // The predecessor's own timeline: a root commit, everything new.
-      expect(await textOnScreen()).toContain('initial commit — everything is new');
+      const text = await textOnScreen();
+      expect(text).toContain('initial commit — everything is new');
+      expect(text).toContain('01.01.2026 Grace');
+    });
+  });
+
+  it('renders the rename-away commit from the predecessor history', async () => {
+    await harness.navigateByUrl('/r/acme/rocket?path=src%2Fengine.ts');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('export const thrust = 1;');
+    });
+
+    clickButton('History');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('Continue past the rename?');
+    });
+
+    clickButton('Continue past the rename?');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('src/thruster.ts');
+    });
+    clickButton('src/thruster.ts');
+
+    await vi.waitFor(() => {
+      expect(router.url).toContain('path=src%2Fthruster.ts');
+      expect(router.url).toContain(`at=${OLD_SHA}`);
+    });
+
+    clickButton('refactor: rename thruster to engine');
+
+    await vi.waitFor(async () => {
+      expect(router.url).toContain('path=src%2Fthruster.ts');
+      expect(router.url).toContain(`at=${RENAME_SHA}`);
+      const text = await textOnScreen();
+      expect(text).toContain('src/engine.ts');
+      expect(text).toContain('export const thrust = 0;');
+      expect(text).toContain('export const thrust = 1;');
+      expect(text).not.toContain('does not exist at');
     });
   });
 });

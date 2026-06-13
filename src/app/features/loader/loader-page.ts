@@ -1,6 +1,7 @@
-import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { Router } from '@angular/router';
 
+import { AccessTokens, TokenProviderId } from '../../core/git/access-tokens';
 import { ProviderRegistry } from '../../core/git/git-provider';
 import { LocalRepos, supportsLocalRepos } from '../../core/git/local/local-repos';
 import { ZipRepos } from '../../core/git/local/zip-repos';
@@ -136,6 +137,97 @@ const COMMIT_SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
           }
         </div>
 
+        <section class="mt-8">
+          <button
+            type="button"
+            class="flex items-center gap-1.5 text-xs text-zinc-500 transition hover:text-zinc-300"
+            (click)="tokensOpen.set(!tokensOpen())"
+            [attr.aria-expanded]="tokensOpen()"
+          >
+            <svg
+              class="size-3 transition-transform"
+              [class.rotate-90]="tokensOpen()"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="m9 18 6-6-6-6" />
+            </svg>
+            Personal access tokens
+            @if (hasAnyToken()) {
+              <span
+                class="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-1.5 text-[10px] text-emerald-300"
+                >set</span
+              >
+            }
+          </button>
+          @if (tokensOpen()) {
+            <div class="mt-2 space-y-4 rounded-xl border border-zinc-800 bg-zinc-900/40 p-4">
+              <p class="text-xs leading-5 text-zinc-500">
+                Optional — raises API rate limits and unlocks private repositories. Tokens are
+                stored only in this browser and sent only to the matching provider's API.
+              </p>
+              <div>
+                <label class="mb-1 block text-xs font-medium text-zinc-400" for="github-token"
+                  >GitHub</label
+                >
+                <input
+                  id="github-token"
+                  type="password"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="ghp_… or github_pat_…"
+                  class="h-9 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 font-mono text-xs text-zinc-100 placeholder:text-zinc-600 outline-none transition focus:border-indigo-400/60 focus:ring-2 focus:ring-indigo-400/20"
+                  [value]="tokens.tokenFor('github')"
+                  (input)="saveToken('github', $event)"
+                />
+                <p class="mt-1 text-[11px] leading-4 text-zinc-600">
+                  Raises the limit from 60 to 5,000 requests/hour; private repos need the
+                  <span class="font-mono">repo</span> scope.
+                  <a
+                    class="text-indigo-300/80 transition hover:text-indigo-200 hover:underline"
+                    href="https://github.com/settings/tokens"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    >Create one ↗</a
+                  >
+                </p>
+              </div>
+              <div>
+                <label class="mb-1 block text-xs font-medium text-zinc-400" for="azd-token"
+                  >Azure DevOps</label
+                >
+                <input
+                  id="azd-token"
+                  type="password"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="Personal access token"
+                  class="h-9 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 font-mono text-xs text-zinc-100 placeholder:text-zinc-600 outline-none transition focus:border-indigo-400/60 focus:ring-2 focus:ring-indigo-400/20"
+                  [value]="tokens.tokenFor('azd')"
+                  (input)="saveToken('azd', $event)"
+                />
+                <p class="mt-1 text-[11px] leading-4 text-zinc-600">
+                  Unlocks private projects — create it with the
+                  <span class="font-mono">Code (Read)</span> scope in your organization's user
+                  settings.
+                  <a
+                    class="text-indigo-300/80 transition hover:text-indigo-200 hover:underline"
+                    href="https://learn.microsoft.com/en-us/azure/devops/organizations/accounts/use-personal-access-tokens-to-authenticate"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    >How ↗</a
+                  >
+                </p>
+              </div>
+            </div>
+          }
+        </section>
+
         @if (recents.entries().length > 0) {
           <section class="mt-10">
             <h2 class="mb-2 text-xs font-medium tracking-wide text-zinc-500 uppercase">Recent</h2>
@@ -193,8 +285,8 @@ const COMMIT_SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
         }
 
         <p class="mt-10 text-center text-xs leading-5 text-zinc-600">
-          Client-only — data comes straight from the GitHub/GitLab public APIs (rate-limited when
-          unauthenticated) or your own disk. No server, nothing leaves your browser.
+          Client-only — data comes straight from the GitHub/GitLab/Azure DevOps APIs or your own
+          disk. No server: repository content and access tokens never go anywhere else.
         </p>
       </div>
     </main>
@@ -206,16 +298,26 @@ export class LoaderPage {
   private readonly localRepos = inject(LocalRepos);
   private readonly zipRepos = inject(ZipRepos);
   protected readonly recents = inject(RecentRepos);
+  protected readonly tokens = inject(AccessTokens);
 
   protected readonly examples = EXAMPLES;
   protected readonly query = signal('');
   protected readonly error = signal<string | null>(null);
   protected readonly busy = signal(false);
   protected readonly canOpenLocal = supportsLocalRepos();
+  protected readonly tokensOpen = signal(false);
+  protected readonly hasAnyToken = computed(
+    () => !!(this.tokens.tokenFor('github') || this.tokens.tokenFor('azd')),
+  );
 
   protected onInput(event: Event): void {
     this.query.set((event.target as HTMLInputElement).value);
     this.error.set(null);
+  }
+
+  /** Persists a token as it is typed; an emptied field clears it. */
+  protected saveToken(provider: TokenProviderId, event: Event): void {
+    this.tokens.setToken(provider, (event.target as HTMLInputElement).value);
   }
 
   protected async open(event: Event): Promise<void> {

@@ -1,6 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 
 import { RepoProviderError, RepoSlug, TreeEntry } from '../../models';
+import { AccessTokens } from '../access-tokens';
 import { GithubProvider, MAX_FILE_SIZE_BYTES } from './github-provider';
 
 const slug: RepoSlug = { provider: 'github', owner: 'acme', repo: 'rocket' };
@@ -18,6 +19,7 @@ describe('GithubProvider', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    localStorage.clear();
     fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     provider = TestBed.inject(GithubProvider);
@@ -173,6 +175,38 @@ describe('GithubProvider', () => {
     expect(error).toBeInstanceOf(RepoProviderError);
     expect(error as RepoProviderError).toMatchObject({ kind: 'rate-limited' });
     expect((error as RepoProviderError).rateLimitResetAt).toEqual(new Date(resetEpoch * 1000));
+    // Anonymous exhaustion points to the fix.
+    expect((error as RepoProviderError).message).toContain('personal access token');
+  });
+
+  it('authenticates with a stored personal access token', async () => {
+    TestBed.inject(AccessTokens).setToken('github', 'ghp_secret');
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        { message: 'API rate limit exceeded' },
+        { status: 403, headers: { 'x-ratelimit-remaining': '0' } },
+      ),
+    );
+
+    const error = await provider.getMetadata(slug).catch((e: unknown) => e as RepoProviderError);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.github.com/repos/acme/rocket',
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: 'Bearer ghp_secret' }),
+      }),
+    );
+    // The rate-limit explanation no longer suggests adding a token.
+    expect((error as RepoProviderError).message).not.toContain('personal access token');
+  });
+
+  it('explains a rejected token on 401', async () => {
+    TestBed.inject(AccessTokens).setToken('github', 'ghp_expired');
+    fetchMock.mockResolvedValue(jsonResponse({ message: 'Bad credentials' }, { status: 401 }));
+
+    await expect(provider.getMetadata(slug)).rejects.toMatchObject({
+      message: expect.stringContaining('rejected the personal access token'),
+    });
   });
 
   it('maps 409 to empty-repo', async () => {

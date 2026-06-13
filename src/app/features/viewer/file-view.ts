@@ -12,6 +12,7 @@ import {
 import { RepoWebLinks } from '../../core/git/git-provider';
 import { FileState } from '../../core/models';
 import { BlameState } from '../../core/store/repo-store';
+import { LineRange } from '../../core/util/line-range';
 import { AnnotationCell, buildAnnotationCells } from './blame-annotation';
 
 /** Line height of code rows (`leading-6`), used for scroll/highlight maths. */
@@ -158,31 +159,37 @@ interface BlameRow {
         @if (blameRows(); as rows) {
           <div #scroller class="slim-scrollbar min-h-0 flex-1 overflow-auto">
             <div class="relative min-w-max font-mono text-[13px] leading-6">
-              @if (highlightLine(); as hl) {
+              @if (effectiveHighlightRange(); as range) {
                 <div
                   class="pointer-events-none absolute inset-x-0 h-6 bg-indigo-500/10 ring-1 ring-indigo-400/40 ring-inset"
-                  [style.top.px]="(hl - 1) * 24"
+                  [style.top.px]="(range.start - 1) * 24"
+                  [style.height.px]="(range.end - range.start + 1) * 24"
                 ></div>
               }
               @for (row of rows; track row.lineNo) {
                 <div class="flex hover:bg-white/[0.02]">
-                  <span class="w-52 shrink-0 truncate pl-4 text-xs leading-6 select-none">
+                  <span class="w-52 shrink-0 pl-4 text-xs leading-6 select-none">
                     @if (row.cell.sha; as sha) {
                       <button
                         type="button"
-                        class="max-w-full cursor-pointer truncate align-top underline-offset-2 transition hover:underline"
+                        class="blame-tooltip max-w-full cursor-pointer align-top underline-offset-2 transition hover:underline"
                         [class]="row.cell.labelClass"
+                        [attr.data-blame-title]="row.cell.title"
                         [title]="row.cell.title"
                         (click)="blameSelect.emit({ sha, line: row.cell.lineAtCommit })"
                       >
-                        {{ row.cell.label }}
+                        <span class="block truncate">{{ row.cell.label }}</span>
                       </button>
                     } @else if (row.cell.pending) {
                       <span class="animate-pulse text-zinc-700">·</span>
                     } @else if (row.cell.label) {
-                      <span [class]="row.cell.labelClass" [title]="row.cell.title">{{
-                        row.cell.label
-                      }}</span>
+                      <span
+                        class="blame-tooltip inline-block max-w-full"
+                        [class]="row.cell.labelClass"
+                        [attr.data-blame-title]="row.cell.title"
+                        [title]="row.cell.title"
+                        ><span class="block truncate">{{ row.cell.label }}</span></span
+                      >
                     }
                   </span>
                   <span
@@ -200,10 +207,11 @@ interface BlameRow {
         } @else if (textInfo(); as info) {
           <div #scroller class="slim-scrollbar min-h-0 flex-1 overflow-auto">
             <div class="relative flex min-w-max font-mono text-[13px] leading-6">
-              @if (highlightLine(); as hl) {
+              @if (effectiveHighlightRange(); as range) {
                 <div
                   class="pointer-events-none absolute inset-x-0 h-6 bg-indigo-500/10 ring-1 ring-indigo-400/40 ring-inset"
-                  [style.top.px]="12 + (hl - 1) * 24"
+                  [style.top.px]="12 + (range.start - 1) * 24"
+                  [style.height.px]="(range.end - range.start + 1) * 24"
                 ></div>
               }
               <pre
@@ -264,8 +272,12 @@ export class FileView {
   /** Renders per-line blame annotations in the gutter. */
   readonly blameActive = input(false);
   readonly blame = input<BlameState | null>(null);
+  /** Commit/ref key of the rendered file, used to reset scroll between navigations. */
+  readonly viewKey = input<string | null>(null);
   /** 1-based line to highlight and scroll into view, if any. */
   readonly highlightLine = input<number | null>(null);
+  /** 1-based inclusive range to highlight and scroll into view, if any. */
+  readonly highlightRange = input<LineRange | null>(null);
 
   /** Emits the path when the user wants to retry a failed fetch. */
   readonly retry = output<string>();
@@ -275,18 +287,39 @@ export class FileView {
   readonly blameSelect = output<{ sha: string; line: number }>();
 
   private readonly scroller = viewChild<ElementRef<HTMLElement>>('scroller');
+  private lastScrollKey: string | null = null;
 
   protected readonly skeletonWidths = [62, 84, 45, 91, 73, 38, 80, 55, 67, 49, 88, 30];
 
   constructor() {
     afterRenderEffect(() => {
-      const line = this.highlightLine();
+      const line = this.effectiveHighlightRange()?.start ?? this.highlightLine();
       this.textInfo(); // re-scroll when a different file/version renders
+      const key = this.scrollKey();
       const el = this.scroller()?.nativeElement;
-      if (!line || !el) return;
-      el.scrollTop = Math.max(0, (line - 1) * LINE_HEIGHT_PX - el.clientHeight / 3);
+      if (!el || !key) return;
+      if (line) {
+        el.scrollTop = Math.max(0, (line - 1) * LINE_HEIGHT_PX - el.clientHeight / 3);
+        this.lastScrollKey = key;
+      } else if (this.lastScrollKey !== key) {
+        el.scrollTop = 0;
+        this.lastScrollKey = key;
+      }
     });
   }
+
+  private readonly scrollKey = computed(() => {
+    const s = this.state();
+    if (!s || s.status !== 'ready') return null;
+    return `${s.path}:${this.viewKey() ?? 'tip'}:${s.file.sha}`;
+  });
+
+  protected readonly effectiveHighlightRange = computed<LineRange | null>(() => {
+    const range = this.highlightRange();
+    if (range) return range;
+    const line = this.highlightLine();
+    return line ? { start: line, end: line } : null;
+  });
 
   protected readonly textInfo = computed(() => {
     const s = this.state();

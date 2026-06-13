@@ -1,4 +1,4 @@
-import { Injectable } from '@angular/core';
+import { Injectable, inject } from '@angular/core';
 
 import {
   CommitFileChange,
@@ -12,6 +12,7 @@ import {
   TreeEntry,
 } from '../../models';
 import { bytesToUtf8, isProbablyBinary } from '../../util/decode';
+import { AccessTokens } from '../access-tokens';
 import { GitProvider, RepoWebLinks } from '../git-provider';
 import { parseAzdUrl } from './azd-url';
 
@@ -52,10 +53,11 @@ interface AzdChange {
 }
 
 /**
- * Reads repositories through the Azure DevOps REST API (v7.1),
- * unauthenticated — which works for public projects. Private projects
- * answer anonymous requests with a sign-in page; that is surfaced as a
- * clear error. `owner` carries `{org}/{project}`.
+ * Reads repositories through the Azure DevOps REST API (v7.1). Anonymous
+ * access works for public projects; a stored personal access token (sent
+ * as Basic auth, `Code (Read)` scope) unlocks private ones. Private
+ * projects answer anonymous requests with a sign-in page; that is surfaced
+ * as a clear error. `owner` carries `{org}/{project}`.
  *
  * Note: Azure DevOps commit *lists* omit parent ids; the store fetches the
  * single commit when parents are needed (diffs against the first parent).
@@ -64,6 +66,8 @@ interface AzdChange {
 export class AzdProvider implements GitProvider {
   readonly id = 'azd';
   readonly label = 'Azure DevOps';
+
+  private readonly tokens = inject(AccessTokens);
 
   canHandle(input: string): boolean {
     return this.parseUrl(input) !== null;
@@ -239,28 +243,38 @@ export class AzdProvider implements GitProvider {
     url: string,
     messages: { notFound: string; notFoundKind?: 'not-found' | 'invalid-ref' },
   ): Promise<Response> {
+    // A personal access token authenticates as Basic auth with an empty
+    // user name — the scheme Azure DevOps documents for PATs.
+    const token = this.tokens.tokenFor('azd');
+    const headers: Record<string, string> = { Accept: 'application/json, */*' };
+    if (token) headers['Authorization'] = `Basic ${btoa(`:${token}`)}`;
+
     let response: Response;
     try {
-      response = await fetch(url, { headers: { Accept: 'application/json, */*' } });
+      response = await fetch(url, { headers });
     } catch {
       throw new RepoProviderError(
         'Could not reach Azure DevOps — check your connection and try again.',
         'network',
       );
     }
-    // Anonymous requests to private projects answer with a sign-in page
+    // Requests without a valid session answer with a sign-in page
     // (status 203 or an HTML body) instead of a plain 401.
     const contentType = response.headers.get('content-type') ?? '';
     if (response.status === 203 || (response.ok && contentType.includes('text/html'))) {
       throw new RepoProviderError(
-        'Azure DevOps asked for a sign-in — anonymous access only works for public projects.',
+        token
+          ? 'Azure DevOps rejected the access token — check that it is valid, not expired and has the Code (Read) scope.'
+          : 'Azure DevOps asked for a sign-in — add a personal access token on the start page to open private projects.',
         'not-found',
       );
     }
     if (response.ok) return response;
     if (response.status === 401 || response.status === 403) {
       throw new RepoProviderError(
-        'Azure DevOps denied anonymous access — this project is private.',
+        token
+          ? 'Azure DevOps rejected the access token — check that it is valid, not expired and has the Code (Read) scope.'
+          : 'Azure DevOps denied anonymous access — this project is private. A personal access token (start page) can open it.',
         'not-found',
       );
     }

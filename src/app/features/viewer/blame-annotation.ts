@@ -1,13 +1,13 @@
 import { BlameOwner, BlameState } from '../../core/store/repo-store';
 import { relativeTime, shortDate, shortSha } from '../../core/util/relative-time';
 
-/** Annotation text colour by commit age — oldest first, newest last. */
+/** Annotation text colour by commit age: muted old history -> fresher green. */
 const AGE_CLASSES = [
   'text-zinc-600',
-  'text-zinc-500',
-  'text-zinc-400',
-  'text-indigo-300/90',
-  'text-amber-300/90',
+  'text-slate-500',
+  'text-sky-400/90',
+  'text-teal-300/90',
+  'text-emerald-300/90',
 ];
 
 /** One rendered blame gutter cell. */
@@ -85,11 +85,12 @@ export function buildAnnotationCells(
       };
     }
     const commit = owner.commit;
+    const message = commit.message.trim() || commit.summary;
     return {
       sha: commit.sha,
       lineAtCommit: owner.line,
       label: `${shortDate(commit.authoredAt)} ${commit.authorName}`,
-      title: `${commit.summary}\n${shortSha(commit.sha)} · ${commit.authorName} · ${shortDate(commit.authoredAt)} (${relativeTime(commit.authoredAt)})`,
+      title: `${message}\n\n${shortSha(commit.sha)} · ${commit.authorName} · ${shortDate(commit.authoredAt)} (${relativeTime(commit.authoredAt)})`,
       labelClass: blockStart
         ? colorFor(Date.parse(commit.authoredAt) || 0)
         : `${colorFor(Date.parse(commit.authoredAt) || 0)} opacity-60`,

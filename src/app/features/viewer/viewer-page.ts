@@ -12,7 +12,13 @@ import { Title } from '@angular/platform-browser';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 
 import { LocalRepos } from '../../core/git/local/local-repos';
-import { RenameCandidate, RepoStore } from '../../core/store/repo-store';
+import {
+  HunkOriginCandidate,
+  LineTraceHit,
+  RenameCandidate,
+  RepoStore,
+} from '../../core/store/repo-store';
+import { LineRange } from '../../core/util/line-range';
 import { relativeTime, shortSha } from '../../core/util/relative-time';
 import { DiffView } from './diff-view';
 import { FileHistory } from './file-history';
@@ -25,6 +31,7 @@ const TREE_WIDTH_MIN = 200;
 const TREE_WIDTH_MAX = 600;
 const VIEW_MODE_KEY = 'time-tracer.view-mode';
 const HISTORY_OPEN_KEY = 'time-tracer.history-open';
+const TREE_COLLAPSED_KEY = 'time-tracer.tree-collapsed';
 
 /**
  * `/r/:owner/:repo?ref=…&path=…&at=…&view=…&blame=…` — the split-pane
@@ -32,7 +39,7 @@ const HISTORY_OPEN_KEY = 'time-tracer.history-open';
  *
  * The route is the source of truth: owner/repo/ref drive `RepoStore.loadRepo`,
  * `path` drives file selection, `at` views that file at a historical commit,
- * `view` picks file vs. changes mode and `blame` toggles line annotations —
+ * `view` picks file vs. changes mode and `blame=0` disables line annotations —
  * so deep links, refreshes and browser back/forward all behave like real
  * navigation, including steps through time.
  */
@@ -46,6 +53,30 @@ const HISTORY_OPEN_KEY = 'time-tracer.history-open';
       <header
         class="flex h-12 shrink-0 items-center gap-3 border-b border-zinc-800 bg-zinc-900/60 px-4"
       >
+        @if (store.phase() === 'ready') {
+          <button
+            type="button"
+            class="-ml-1 shrink-0 rounded p-1.5 text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-100"
+            (click)="toggleTree()"
+            [attr.aria-label]="treeCollapsed() ? 'Show file tree' : 'Hide file tree'"
+            [attr.aria-pressed]="!treeCollapsed()"
+            [title]="treeCollapsed() ? 'Show file tree' : 'Hide file tree'"
+          >
+            <svg
+              class="size-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <path d="M9 3v18" />
+            </svg>
+          </button>
+        }
         <a
           routerLink="/"
           class="flex shrink-0 items-center gap-2 text-zinc-100 transition hover:text-white"
@@ -215,35 +246,37 @@ const HISTORY_OPEN_KEY = 'time-tracer.history-open';
         </div>
       } @else {
         <div class="flex min-h-0 flex-1">
-          <aside
-            class="slim-scrollbar shrink-0 overflow-x-hidden overflow-y-auto border-r border-zinc-800 bg-zinc-950 py-2 pr-1 pl-1"
-            [style.width.px]="treeWidth()"
-          >
-            @if (store.tree().length === 0) {
-              <p class="px-3 py-2 text-xs text-zinc-600">This repository has no files.</p>
-            } @else {
-              <app-file-tree
-                [nodes]="store.tree()"
-                [selectedPath]="store.selectedPath()"
-                [expanded]="store.expandedDirs()"
-                (fileSelect)="onFileSelect($event)"
-                (dirToggle)="store.toggleDir($event)"
-              />
-            }
-          </aside>
+          @if (!treeCollapsed()) {
+            <aside
+              class="slim-scrollbar shrink-0 overflow-x-hidden overflow-y-auto border-r border-zinc-800 bg-zinc-950 py-2 pr-1 pl-1"
+              [style.width.px]="treeWidth()"
+            >
+              @if (store.tree().length === 0) {
+                <p class="px-3 py-2 text-xs text-zinc-600">This repository has no files.</p>
+              } @else {
+                <app-file-tree
+                  [nodes]="store.tree()"
+                  [selectedPath]="store.selectedPath()"
+                  [expanded]="store.expandedDirs()"
+                  (fileSelect)="onFileSelect($event)"
+                  (dirToggle)="store.toggleDir($event)"
+                />
+              }
+            </aside>
 
-          <div
-            class="w-1 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-indigo-400/40"
-            [class.bg-indigo-400/40]="dragging()"
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize file tree"
-            (pointerdown)="onDragStart($event)"
-            (pointermove)="onDragMove($event)"
-            (pointerup)="onDragEnd()"
-            (pointercancel)="onDragEnd()"
-            (dblclick)="resetTreeWidth()"
-          ></div>
+            <div
+              class="w-1 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-indigo-400/40"
+              [class.bg-indigo-400/40]="dragging()"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize file tree"
+              (pointerdown)="onDragStart($event)"
+              (pointermove)="onDragMove($event)"
+              (pointerup)="onDragEnd()"
+              (pointercancel)="onDragEnd()"
+              (dblclick)="resetTreeWidth()"
+            ></div>
+          }
 
           <section class="flex min-w-0 flex-1 flex-col bg-zinc-950">
             @if (store.selectedPath()) {
@@ -378,15 +411,18 @@ const HISTORY_OPEN_KEY = 'time-tracer.history-open';
                 [highlightLine]="lineNumber()"
                 [splitMode]="blameOn()"
                 [leftBlame]="leftBlame()"
-                [rightBlame]="store.selectedBlame()"
+                [rightBlame]="rightBlame()"
                 [blameActive]="blameOn()"
                 [historyActive]="historyOpen()"
+                [highlightRange]="activeHighlightRange()"
                 [beforeAvailable]="hunkBeforeAvailable()"
                 (retry)="onDiffRetry()"
                 (before)="onHunkBefore($event)"
+                (trace)="onHunkTrace($event)"
                 (blameToggle)="toggleBlame()"
                 (blameSelect)="onBlameSelect($event)"
                 (historyToggle)="toggleHistory()"
+                (comparisonClear)="onComparisonClear()"
               />
             } @else {
               <app-file-view
@@ -396,7 +432,9 @@ const HISTORY_OPEN_KEY = 'time-tracer.history-open';
                 [historyActive]="historyOpen()"
                 [blameActive]="blameOn()"
                 [blame]="store.selectedBlame()"
+                [viewKey]="store.viewAt()"
                 [highlightLine]="lineNumber()"
+                [highlightRange]="activeHighlightRange()"
                 (retry)="onFileRetry($event)"
                 (historyToggle)="toggleHistory()"
                 (blameToggle)="toggleBlame()"
@@ -416,12 +454,20 @@ const HISTORY_OPEN_KEY = 'time-tracer.history-open';
                 [hasMore]="store.historyHasMore()"
                 [selectedSha]="store.viewAt()"
                 [renames]="store.selectedRenames()"
+                [trace]="store.lineTrace()"
+                [origins]="store.traceOrigins()"
                 (commitSelect)="goToCommit($event)"
+                (traceSelect)="onTraceSelect($event)"
                 (loadMore)="store.loadMoreHistory()"
                 (retry)="store.retryHistory()"
                 (closed)="toggleHistory()"
                 (findRenames)="onFindRenames()"
                 (candidateSelect)="onCandidateSelect($event)"
+                (candidateDiff)="onCandidateDiff($event)"
+                (traceClear)="store.clearLineTrace()"
+                (traceOlder)="store.extendLineTrace()"
+                (searchOrigins)="store.searchTraceOrigins($event)"
+                (originSelect)="onOriginSelect($event)"
               />
             </aside>
           }
@@ -448,15 +494,19 @@ export class ViewerPage {
   readonly at = input<string | undefined>();
   /** `diff` or `file`; absent falls back to the remembered preference. */
   readonly view = input<string | undefined>();
-  /** Truthy enables blame annotations in the file view. */
+  /** `0` disables blame annotations; absent/default keeps them on. */
   readonly blame = input<string | undefined>();
   /** 1-based line to highlight and scroll to (file or changes view). */
   readonly line = input<string | undefined>();
+  /** Predecessor path to diff the file against (a chosen rename candidate). */
+  readonly base = input<string | undefined>();
 
   protected readonly treeWidth = signal(restoreTreeWidth());
   protected readonly dragging = signal(false);
   /** Remembered across files and sessions: once opened, History stays open. */
   protected readonly historyOpen = signal(restoreHistoryOpen());
+  /** Remembered across sessions: the file tree can be collapsed to widen the view. */
+  protected readonly treeCollapsed = signal(restoreTreeCollapsed());
   /** Remembered File/Changes choice; Changes is the default. */
   private readonly viewPref = signal<'file' | 'diff'>(restoreViewMode());
   private dragOrigin: { x: number; width: number } | null = null;
@@ -470,28 +520,36 @@ export class ViewerPage {
   });
 
   /** Blame is available in both views: gutter in File, split in Changes. */
-  protected readonly blameOn = computed(() => !!this.blame());
+  protected readonly blameOn = computed(() => this.blame() !== '0');
 
   protected readonly lineNumber = computed<number | null>(() => {
     const parsed = Number(this.line());
     return Number.isInteger(parsed) && parsed >= 1 ? parsed : null;
   });
 
-  /**
-   * The history entry just before the viewed commit — the left side of the
-   * split changes view. Anchoring there (instead of the raw parent sha)
-   * keeps blame working: the parent itself may not have touched the path.
-   */
-  private readonly prevSha = computed<string | null>(() => {
-    if (!this.store.viewAt()) return null;
-    const idx = this.anchorIndex();
-    if (idx === -1) return null;
-    return this.store.history()[idx + 1]?.sha ?? null;
+  protected readonly activeHighlightRange = computed<LineRange | null>(() => {
+    const trace = this.store.lineTrace();
+    const path = this.store.selectedPath();
+    const at = this.store.viewAt();
+    if (trace && trace.status !== 'error' && path && at) {
+      const hit = trace.hits.find((entry) => entry.path === path && entry.commit.sha === at);
+      if (hit) return hit.range;
+      if (trace.path === path && trace.anchorSha === at) return trace.range;
+    }
+    const line = this.lineNumber();
+    return line ? { start: line, end: line } : null;
   });
 
   protected readonly leftBlame = computed(() => {
-    const prev = this.prevSha();
-    return prev ? this.store.blameFor(this.store.selectedPath(), prev) : null;
+    const diff = this.store.selectedDiff();
+    if (diff?.status !== 'ready' || !diff.baseSha || !diff.basePath) return null;
+    return this.store.blameFor(diff.basePath, diff.baseSha);
+  });
+
+  protected readonly rightBlame = computed(() => {
+    const diff = this.store.selectedDiff();
+    if (diff?.status !== 'ready') return this.store.selectedBlame();
+    return diff.headPath ? this.store.blameFor(diff.headPath, diff.commit.sha) : null;
   });
 
   protected readonly selectedFileLinks = computed(() => {
@@ -535,6 +593,8 @@ export class ViewerPage {
    * history shows the viewed commit created the file (nothing earlier).
    */
   protected readonly hunkBeforeAvailable = computed(() => {
+    const diff = this.store.selectedDiff();
+    if (diff?.status === 'ready') return !!diff.basePath;
     if (!this.store.viewAt()) return false;
     if (!this.historyReadyForPath()) return true; // unknown yet — the handler resolves it
     const idx = this.anchorIndex();
@@ -600,8 +660,12 @@ export class ViewerPage {
       const diff = this.diffMode();
       const path = this.path() || null;
       const at = this.at() || null;
+      const base = this.base() || null;
       untracked(() => {
-        if (phase === 'ready' && diff && path && at) void this.store.loadDiff(path, at);
+        // `base` only applies to the changes view; clear it otherwise.
+        const against = diff ? base : null;
+        this.store.setCompareBase(against);
+        if (phase === 'ready' && diff && path && at) void this.store.loadDiff(path, at, against);
       });
     });
 
@@ -611,15 +675,15 @@ export class ViewerPage {
       const diff = this.diffMode();
       const path = this.path() || null;
       const at = this.at() || null;
-      // prevSha also re-runs this when more history pages arrive,
-      // extending truncated blames.
-      const prev = this.prevSha();
-      this.store.history();
+      const selectedDiff = this.store.selectedDiff();
+      const basePath = diff && selectedDiff?.status === 'ready' ? selectedDiff.basePath : null;
+      const baseSha = diff && selectedDiff?.status === 'ready' ? selectedDiff.baseSha : null;
+      const headPath = diff && selectedDiff?.status === 'ready' ? selectedDiff.headPath : path;
       untracked(() => {
         if (phase !== 'ready' || !blame || !path) return;
-        void this.store.loadBlame(path, at);
+        if (headPath) void this.store.loadBlame(headPath, at);
         // The split changes view also annotates the version before.
-        if (diff && prev) void this.store.loadBlame(path, prev);
+        if (diff && basePath && baseSha) void this.store.loadBlame(basePath, baseSha);
       });
     });
 
@@ -634,7 +698,7 @@ export class ViewerPage {
     // `line` belong to the previous file's timeline. Blame mode is sticky.
     void this.router.navigate([], {
       relativeTo: this.route,
-      queryParams: { path, at: null, view: null, line: null },
+      queryParams: { path, at: null, view: null, line: null, base: null },
       queryParamsHandling: 'merge',
     });
   }
@@ -652,6 +716,8 @@ export class ViewerPage {
       at: sha,
       view: sha ? (options?.view ?? this.viewPref()) : null,
       line: options?.line ? String(options.line) : null,
+      // A comparison base belongs to one commit's changes; stepping drops it.
+      base: null,
     };
     if (options?.blame) queryParams['blame'] = options.blame;
     void this.router.navigate([], {
@@ -664,6 +730,21 @@ export class ViewerPage {
   /** A blame annotation was clicked: show that commit's diff at the line. */
   protected onBlameSelect(event: { sha: string; line: number }): void {
     this.goToCommit(event.sha, { view: 'diff', line: event.line });
+  }
+
+  /** A filtered trace commit was clicked: open it at the matched range. */
+  protected onTraceSelect(hit: LineTraceHit): void {
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: {
+        path: hit.path,
+        at: hit.commit.sha,
+        view: 'diff',
+        line: String(hit.range.start),
+        base: null,
+      },
+      queryParamsHandling: 'merge',
+    });
   }
 
   /**
@@ -679,6 +760,23 @@ export class ViewerPage {
     const path = this.store.selectedPath();
     const at = this.store.viewAt();
     if (!path || !at) return;
+    const diff = this.store.selectedDiff();
+    if (diff?.status === 'ready' && diff.baseSha && diff.basePath && diff.basePath !== path) {
+      const anchor = await this.store.lastTouch(diff.basePath, diff.baseSha);
+      void this.router.navigate([], {
+        relativeTo: this.route,
+        queryParams: {
+          path: diff.basePath,
+          at: anchor?.sha ?? diff.baseSha,
+          view: 'file',
+          blame: null,
+          line: String(Math.max(1, target.oldStart)),
+          base: null,
+        },
+        queryParamsHandling: 'merge',
+      });
+      return;
+    }
     if (!this.historyReadyForPath()) await this.store.loadHistory(path);
     let history = this.store.history();
     let idx = history.findIndex((c) => c.sha === at);
@@ -697,6 +795,15 @@ export class ViewerPage {
       blame: '1',
       line: Math.max(1, target.oldStart),
     });
+  }
+
+  /** Trace a new-side line range, anchored at the viewed commit. */
+  protected onHunkTrace(range: LineRange): void {
+    const path = this.store.selectedPath();
+    const at = this.store.viewAt();
+    if (!path || !at) return;
+    if (!this.historyOpen()) this.toggleHistory();
+    void this.store.startLineTrace(path, at, range);
   }
 
   protected onFindRenames(): void {
@@ -719,7 +826,61 @@ export class ViewerPage {
         path: candidate.path,
         at: anchor?.sha ?? renames.parentSha,
         view: this.viewPref(),
+        blame: null,
         line: null,
+        base: null,
+      },
+      queryParamsHandling: 'merge',
+    });
+  }
+
+  /**
+   * "Diff" on a rename candidate: compare the file at its creation (the oldest
+   * commit of its recorded history) against the chosen predecessor, by setting
+   * the `base` query param. The candidate lives at the creating commit's first
+   * parent, so it becomes the diff's old side.
+   */
+  protected onCandidateDiff(candidate: RenameCandidate): void {
+    const renames = this.store.selectedRenames();
+    if (renames?.status !== 'ready') return;
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: {
+        at: renames.endCommit.sha,
+        view: 'diff',
+        base: candidate.path,
+        blame: null,
+        line: null,
+      },
+      queryParamsHandling: 'merge',
+    });
+  }
+
+  /** Drops the predecessor comparison, back to the commit's own changes. */
+  protected onComparisonClear(): void {
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { base: null },
+      queryParamsHandling: 'merge',
+    });
+  }
+
+  /**
+   * A hunk-origin candidate was picked: open that file as it was just
+   * before the introducing commit, scrolled to the matched line. Anchored
+   * at the candidate's own last touch (like rename candidates) so history,
+   * blame and the steppers keep working in the source file's timeline.
+   */
+  protected async onOriginSelect(candidate: HunkOriginCandidate): Promise<void> {
+    const anchor = await this.store.lastTouch(candidate.path, candidate.parentSha);
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: {
+        path: candidate.path,
+        at: anchor?.sha ?? candidate.parentSha,
+        view: 'file',
+        line: String(candidate.line),
+        base: null,
       },
       queryParamsHandling: 'merge',
     });
@@ -798,10 +959,20 @@ export class ViewerPage {
     }
   }
 
+  /** Hides or restores the file tree (the resized width is preserved). */
+  protected toggleTree(): void {
+    this.treeCollapsed.update((collapsed) => !collapsed);
+    try {
+      localStorage.setItem(TREE_COLLAPSED_KEY, this.treeCollapsed() ? '1' : '0');
+    } catch {
+      // Best-effort only.
+    }
+  }
+
   protected toggleBlame(): void {
     void this.router.navigate([], {
       relativeTo: this.route,
-      queryParams: { blame: this.blame() ? null : '1' },
+      queryParams: { blame: this.blameOn() ? '0' : null },
       queryParamsHandling: 'merge',
     });
   }
@@ -891,6 +1062,14 @@ function persistViewMode(mode: 'file' | 'diff'): void {
 function restoreHistoryOpen(): boolean {
   try {
     return localStorage.getItem(HISTORY_OPEN_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function restoreTreeCollapsed(): boolean {
+  try {
+    return localStorage.getItem(TREE_COLLAPSED_KEY) === '1';
   } catch {
     return false;
   }

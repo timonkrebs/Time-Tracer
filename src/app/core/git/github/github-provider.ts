@@ -1,4 +1,4 @@
-import { Injectable } from '@angular/core';
+import { Injectable, inject } from '@angular/core';
 
 import {
   CommitFileChange,
@@ -13,6 +13,7 @@ import {
   TreeEntry,
 } from '../../models';
 import { base64ToBytes, bytesToUtf8, isProbablyBinary } from '../../util/decode';
+import { AccessTokens } from '../access-tokens';
 import { GitProvider, RepoWebLinks } from '../git-provider';
 import { parseGithubUrl } from './github-url';
 
@@ -81,14 +82,17 @@ interface GithubCommitResponse {
 }
 
 /**
- * Reads public repositories through GitHub's unauthenticated REST API.
- * Unauthenticated requests are limited to 60/hour per client IP; rate-limit
- * responses are mapped to a dedicated error kind so the UI can explain them.
+ * Reads repositories through GitHub's REST API. Anonymous requests are
+ * limited to 60/hour per client IP; a stored personal access token raises
+ * that to 5,000/hour and unlocks private repositories. Rate-limit responses
+ * are mapped to a dedicated error kind so the UI can explain them.
  */
 @Injectable({ providedIn: 'root' })
 export class GithubProvider implements GitProvider {
   readonly id = 'github';
   readonly label = 'GitHub';
+
+  private readonly tokens = inject(AccessTokens);
 
   canHandle(input: string): boolean {
     return this.parseUrl(input) !== null;
@@ -268,14 +272,16 @@ export class GithubProvider implements GitProvider {
     apiPath: string,
     messages: { notFound: string; notFoundKind?: 'not-found' | 'invalid-ref' },
   ): Promise<T> {
+    const token = this.tokens.tokenFor('github');
+    const headers: Record<string, string> = {
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
     let response: Response;
     try {
-      response = await fetch(`${API_BASE}${apiPath}`, {
-        headers: {
-          Accept: 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2022-11-28',
-        },
-      });
+      response = await fetch(`${API_BASE}${apiPath}`, { headers });
     } catch {
       throw new RepoProviderError(
         'Could not reach the GitHub API — check your connection and try again.',
@@ -296,9 +302,18 @@ export class GithubProvider implements GitProvider {
         ? ` It resets at ${resetAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`
         : '';
       throw new RepoProviderError(
-        `GitHub's unauthenticated API rate limit (60 requests/hour per IP) is exhausted.${resetHint}`,
+        token
+          ? `GitHub's API rate limit for your token is exhausted.${resetHint}`
+          : `GitHub's unauthenticated API rate limit (60 requests/hour per IP) is exhausted.${resetHint} A personal access token (start page) raises it to 5,000/hour.`,
         'rate-limited',
         resetAt,
+      );
+    }
+
+    if (response.status === 401) {
+      throw new RepoProviderError(
+        'GitHub rejected the personal access token — check it on the start page, or clear it to browse anonymously.',
+        'unknown',
       );
     }
 

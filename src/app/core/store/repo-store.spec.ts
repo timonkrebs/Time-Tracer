@@ -404,6 +404,8 @@ describe('RepoStore', () => {
       expect(state?.status).toBe('ready');
       if (state?.status !== 'ready') return;
       expect(state.baseSha).toBe('parent');
+      expect(state.basePath).toBe('README.md');
+      expect(state.headPath).toBe('README.md');
       expect(state.diff.added).toBe(1);
       expect(state.diff.removed).toBe(1);
       expect(provider.fileAtRefCalls).toEqual([
@@ -425,8 +427,121 @@ describe('RepoStore', () => {
       const state = store.selectedDiff();
       expect(state?.status).toBe('ready');
       if (state?.status !== 'ready') return;
+      expect(state.basePath).toBeNull();
+      expect(state.headPath).toBe('README.md');
       expect(state.diff.added).toBe(2);
       expect(state.diff.removed).toBe(0);
+    });
+
+    it('shows a file introduced by a rename as added, not diffed against its source', async () => {
+      // The oldest commit of a path's recorded history is where it was born:
+      // present it as an addition rather than diffing it against the file it
+      // was renamed from. That predecessor is reached via the history panel's
+      // "Continue past the rename?" step instead (issue #8).
+      provider.commitResult = (sha) => Promise.resolve(commit(sha, ['parent']));
+      provider.commitFilesResult = () =>
+        Promise.resolve([{ path: 'README.md', status: 'renamed', previousPath: 'docs/README.md' }]);
+      provider.fileAtRefResult = (path, ref) => {
+        if (ref === 'parent' && path === 'README.md') {
+          return Promise.reject(new RepoProviderError('absent', 'not-found'));
+        }
+        if (ref === 'parent' && path === 'docs/README.md') {
+          return textFile(path, ref, 'a\nold\nc\n');
+        }
+        return textFile(path, ref, 'a\nnew\nc\n');
+      };
+
+      await store.openFile('README.md', 'child');
+      await store.loadDiff('README.md', 'child');
+
+      const state = store.selectedDiff();
+      expect(state?.status).toBe('ready');
+      if (state?.status !== 'ready') return;
+      expect(state.baseSha).toBe('parent');
+      expect(state.basePath).toBeNull();
+      expect(state.headPath).toBe('README.md');
+      expect(state.diff.added).toBe(3);
+      expect(state.diff.removed).toBe(0);
+      // The file it was renamed from is never fetched as a diff base.
+      expect(provider.fileAtRefCalls).not.toContainEqual({ path: 'docs/README.md', ref: 'parent' });
+    });
+
+    it('diffs against a chosen predecessor when a base path is given', async () => {
+      // "Diff" on a rename candidate: compare the file at its creation against
+      // the selected predecessor at the parent (issue #8 follow-up).
+      provider.commitResult = (sha) => Promise.resolve(commit(sha, ['parent']));
+      provider.fileAtRefResult = (path, ref) => {
+        if (ref === 'parent' && path === 'README.md') {
+          return Promise.reject(new RepoProviderError('absent', 'not-found'));
+        }
+        if (ref === 'parent' && path === 'docs/OLD.md') {
+          return textFile(path, ref, 'a\nold\nc\n');
+        }
+        return textFile(path, ref, 'a\nnew\nc\n');
+      };
+
+      await store.openFile('README.md', 'child');
+      store.setCompareBase('docs/OLD.md');
+      await store.loadDiff('README.md', 'child', 'docs/OLD.md');
+
+      const state = store.selectedDiff();
+      expect(state?.status).toBe('ready');
+      if (state?.status !== 'ready') return;
+      expect(state.baseSha).toBe('parent');
+      expect(state.basePath).toBe('docs/OLD.md');
+      expect(state.headPath).toBe('README.md');
+      expect(state.diff.added).toBe(1);
+      expect(state.diff.removed).toBe(1);
+      expect(provider.fileAtRefCalls).toContainEqual({ path: 'docs/OLD.md', ref: 'parent' });
+    });
+
+    it('caches the commit diff and a predecessor comparison separately', async () => {
+      provider.commitResult = (sha) => Promise.resolve(commit(sha, ['parent']));
+      provider.fileAtRefResult = (path, ref) => {
+        if (ref === 'parent' && path === 'README.md') {
+          return Promise.reject(new RepoProviderError('absent', 'not-found'));
+        }
+        if (ref === 'parent' && path === 'docs/OLD.md') {
+          return textFile(path, ref, 'a\nold\nc\n');
+        }
+        return textFile(path, ref, 'a\nnew\nc\n');
+      };
+
+      await store.openFile('README.md', 'child');
+      await store.loadDiff('README.md', 'child'); // the commit's own changes (added)
+      await store.loadDiff('README.md', 'child', 'docs/OLD.md'); // vs the predecessor
+
+      store.setCompareBase(null);
+      expect(store.selectedDiff()).toMatchObject({ status: 'ready', basePath: null });
+      store.setCompareBase('docs/OLD.md');
+      expect(store.selectedDiff()).toMatchObject({ status: 'ready', basePath: 'docs/OLD.md' });
+    });
+
+    it('diffs a path renamed away against the new path at the commit', async () => {
+      provider.commitResult = (sha) => Promise.resolve(commit(sha, ['parent']));
+      provider.commitFilesResult = () =>
+        Promise.resolve([{ path: 'README.md', status: 'renamed', previousPath: 'docs/README.md' }]);
+      provider.fileAtRefResult = (path, ref) => {
+        if (ref === 'child' && path === 'docs/README.md') {
+          return Promise.reject(new RepoProviderError('absent', 'not-found'));
+        }
+        if (ref === 'child' && path === 'README.md') {
+          return textFile(path, ref, 'a\nnew\nc\n');
+        }
+        return textFile(path, ref, 'a\nold\nc\n');
+      };
+
+      await store.openFile('docs/README.md', 'child');
+      await store.loadDiff('docs/README.md', 'child');
+
+      const state = store.selectedDiff();
+      expect(state?.status).toBe('ready');
+      if (state?.status !== 'ready') return;
+      expect(state.basePath).toBe('docs/README.md');
+      expect(state.headPath).toBe('README.md');
+      expect(state.diff.added).toBe(1);
+      expect(state.diff.removed).toBe(1);
+      expect(provider.fileAtRefCalls).toContainEqual({ path: 'README.md', ref: 'child' });
     });
 
     it('diffs a root commit against nothing without fetching a base', async () => {
@@ -440,6 +555,8 @@ describe('RepoStore', () => {
       expect(state?.status).toBe('ready');
       if (state?.status !== 'ready') return;
       expect(state.baseSha).toBeNull();
+      expect(state.basePath).toBeNull();
+      expect(state.headPath).toBe('README.md');
       expect(state.diff.added).toBe(1);
       expect(provider.fileAtRefCalls.filter((c) => c.ref !== 'child')).toEqual([]);
     });
@@ -563,6 +680,20 @@ describe('RepoStore', () => {
       expect(ownerShas()).toEqual(['c1', 'c2']);
     });
 
+    it('keeps a moved line attributed to the commit that introduced it', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c2'), commit('c1')]);
+      provider.fileResult = (entry) => text(entry.path, entry.sha, 'A\nC\nB\n');
+      provider.fileAtRefResult = (path, ref) =>
+        text(path, `blob-${ref}`, ref === 'c2' ? 'A\nC\nB\n' : 'A\nB\nC\n');
+
+      await store.openFile('README.md');
+      await store.loadBlame('README.md');
+
+      expect(store.selectedBlame()?.status).toBe('ready');
+      expect(ownerShas()).toEqual(['c1', 'c1', 'c1']);
+      expect(ownerLines()).toEqual([1, 3, 2]);
+    });
+
     it('marks lines beyond the loaded pages as older and extends later', async () => {
       // A full page of 30 commits ⇒ hasMore. Version at c_i = lines L_i…L_29.
       const pageOne = Array.from({ length: 30 }, (_, i) => commit(`c${i}`));
@@ -613,6 +744,265 @@ describe('RepoStore', () => {
       await store.loadBlame('README.md', 'ghost');
 
       expect(store.selectedBlame()).toMatchObject({ status: 'unavailable' });
+    });
+  });
+
+  describe('line trace (startLineTrace)', () => {
+    beforeEach(async () => {
+      await store.loadRepo(slug);
+    });
+
+    function text(path: string, sha: string, content: string): Promise<RepoFile> {
+      return Promise.resolve({ kind: 'text', path, sha, size: content.length, text: content });
+    }
+
+    function traceShas(): string[] {
+      return (store.lineTrace()?.commits ?? []).map((c) => c.sha);
+    }
+
+    function traceHits(): { sha: string; range: { start: number; end: number } }[] {
+      return (store.lineTrace()?.hits ?? []).map((hit) => ({
+        sha: hit.commit.sha,
+        range: hit.range,
+      }));
+    }
+
+    it('keeps only the commits that changed the traced lines', async () => {
+      provider.listCommitsResult = () =>
+        Promise.resolve([commit('c3'), commit('c2'), commit('c1')]);
+      // c1: A B C — c2 appends D (line 2 untouched) — c3 rewrites line 2.
+      provider.fileAtRefResult = (path, ref) =>
+        text(
+          path,
+          `blob-${ref}`,
+          ref === 'c3' ? 'A\nX\nC\nD\n' : ref === 'c2' ? 'A\nB\nC\nD\n' : 'A\nB\nC\n',
+        );
+
+      await store.openFile('README.md', 'c3');
+      await store.startLineTrace('README.md', 'c3', { start: 2, end: 2 });
+
+      const state = store.lineTrace();
+      expect(state?.status).toBe('ready');
+      expect(state?.truncated).toBe(false);
+      // c2 only appended a line below the range — filtered out; c1 (the
+      // oldest known commit) introduced the file and with it the range.
+      expect(traceShas()).toEqual(['c3', 'c1']);
+    });
+
+    it('follows same-file moved lines back to their previous position', async () => {
+      provider.listCommitsResult = () =>
+        Promise.resolve([commit('c3'), commit('c2'), commit('c1')]);
+      // c2 moves line B below C without editing it; c3 edits that moved line.
+      provider.fileAtRefResult = (path, ref) =>
+        text(
+          path,
+          `blob-${ref}`,
+          ref === 'c3' ? 'A\nC\nB changed\n' : ref === 'c2' ? 'A\nC\nB\n' : 'A\nB\nC\n',
+        );
+
+      await store.openFile('README.md', 'c3');
+      await store.startLineTrace('README.md', 'c3', { start: 3, end: 3 });
+
+      const state = store.lineTrace();
+      expect(state?.status).toBe('ready');
+      expect(state?.origin).toEqual({ sha: 'c1', range: { start: 2, end: 2 } });
+      expect(traceShas()).toEqual(['c3', 'c2', 'c1']);
+      expect(traceHits()).toEqual([
+        { sha: 'c3', range: { start: 3, end: 3 } },
+        { sha: 'c2', range: { start: 3, end: 3 } },
+        { sha: 'c1', range: { start: 2, end: 2 } },
+      ]);
+    });
+
+    it('ends the walk where the traced lines were introduced', async () => {
+      provider.listCommitsResult = () =>
+        Promise.resolve([commit('c3'), commit('c2'), commit('c1')]);
+      // c2 inserted lines 2–3; c3 edited line 2. c1 never contained them.
+      provider.fileAtRefResult = (path, ref) =>
+        text(
+          path,
+          `blob-${ref}`,
+          ref === 'c3' ? 'A\nN1x\nN2\n' : ref === 'c2' ? 'A\nN1\nN2\n' : 'A\n',
+        );
+
+      await store.openFile('README.md', 'c3');
+      await store.startLineTrace('README.md', 'c3', { start: 2, end: 2 });
+
+      const state = store.lineTrace();
+      expect(state?.status).toBe('ready');
+      expect(state?.truncated).toBe(false);
+      expect(traceShas()).toEqual(['c3', 'c2']);
+    });
+
+    it('pauses at the end of the loaded pages and continues on demand', async () => {
+      // One full page ⇒ hasMore. Nothing in it touches line 1.
+      const pageOne = Array.from({ length: 30 }, (_, i) => commit(`c${i}`));
+      provider.listCommitsResult = () => Promise.resolve(pageOne);
+      provider.fileAtRefResult = (path, ref) =>
+        text(path, `blob-${ref}`, ref === 'c30' ? 'A\n' : 'A\nB\n');
+
+      await store.openFile('README.md', 'c0');
+      await store.startLineTrace('README.md', 'c0', { start: 1, end: 1 });
+
+      let state = store.lineTrace();
+      expect(state?.status).toBe('ready');
+      expect(state?.truncated).toBe(true);
+      expect(state?.commits).toEqual([]);
+
+      // The next page ends the history; the walk resumes and finds that
+      // c30 created the file (and so introduced line 1). c29's step only
+      // added line 2 — still filtered out.
+      provider.listCommitsResult = () => Promise.resolve([commit('c30')]);
+      await store.extendLineTrace();
+
+      state = store.lineTrace();
+      expect(state?.status).toBe('ready');
+      expect(state?.truncated).toBe(false);
+      expect(traceShas()).toEqual(['c30']);
+    });
+
+    it('errors when the anchor is not part of the loaded history', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c1')]);
+
+      await store.openFile('README.md', 'ghost');
+      await store.startLineTrace('README.md', 'ghost', { start: 1, end: 1 });
+
+      expect(store.lineTrace()).toMatchObject({ status: 'error' });
+    });
+
+    it('survives time travel within the file but not a file switch', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c2'), commit('c1')]);
+      provider.fileAtRefResult = (path, ref) =>
+        text(path, `blob-${ref}`, ref === 'c2' ? 'A\nB\n' : 'A\n');
+
+      await store.openFile('README.md', 'c2');
+      await store.startLineTrace('README.md', 'c2', { start: 1, end: 1 });
+      expect(store.lineTrace()?.status).toBe('ready');
+
+      await store.openFile('README.md', 'c1');
+      expect(store.lineTrace()).not.toBeNull();
+
+      await store.openFile('src/deep/main.ts');
+      expect(store.lineTrace()).toBeNull();
+    });
+
+    it('is cleared by a new repository load', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c1')]);
+      await store.openFile('README.md', 'c1');
+      await store.startLineTrace('README.md', 'c1', { start: 1, end: 1 });
+      expect(store.lineTrace()).not.toBeNull();
+
+      await store.loadRepo({ provider: 'github', owner: 'other', repo: 'repo' });
+
+      expect(store.lineTrace()).toBeNull();
+    });
+  });
+
+  describe('hunk origin search (searchTraceOrigins)', () => {
+    beforeEach(async () => {
+      await store.loadRepo(slug);
+    });
+
+    function text(path: string, sha: string, content: string): Promise<RepoFile> {
+      return Promise.resolve({ kind: 'text', path, sha, size: content.length, text: content });
+    }
+
+    /** Traces README lines 2–3, which c2 (repo parent: c1) introduced. */
+    async function traceIntroducedBlock(): Promise<void> {
+      provider.listCommitsResult = () => Promise.resolve([commit('c2', ['c1']), commit('c1', [])]);
+      provider.fileAtRefResult = (path, ref) => {
+        if (path === 'README.md') {
+          return text(
+            path,
+            `blob-${ref}`,
+            ref === 'c2' ? 'A\nalpha block line\nbeta block line\n' : 'A\n',
+          );
+        }
+        // The moved block's source, as it was at the parent commit c1.
+        return text(
+          path,
+          `blob-${ref}`,
+          'header line\nalpha block line\nbeta block line\nfooter line\n',
+        );
+      };
+      await store.openFile('README.md', 'c2');
+      await store.startLineTrace('README.md', 'c2', { start: 2, end: 3 });
+    }
+
+    it('records where the trace ended', async () => {
+      await traceIntroducedBlock();
+
+      expect(store.lineTrace()).toMatchObject({
+        status: 'ready',
+        origin: { sha: 'c2', range: { start: 2, end: 3 } },
+      });
+    });
+
+    it('finds the source among the files the commit touched', async () => {
+      await traceIntroducedBlock();
+      provider.commitFilesResult = () =>
+        Promise.resolve([
+          { path: 'README.md', status: 'modified' },
+          { path: 'src/old.ts', status: 'removed' },
+        ]);
+
+      await store.searchTraceOrigins('commit');
+
+      const state = store.traceOrigins();
+      expect(state?.status).toBe('ready');
+      expect(state?.candidates).toEqual([
+        { path: 'src/old.ts', line: 2, score: 1, deleted: true, parentSha: 'c1' },
+      ]);
+    });
+
+    it('widens to the whole snapshot on demand', async () => {
+      await traceIntroducedBlock();
+      provider.commitFilesResult = () =>
+        Promise.resolve([{ path: 'README.md', status: 'modified' }]);
+      provider.treeResult = (ref) =>
+        ref === 'c1'
+          ? Promise.resolve({
+              truncated: false,
+              entries: [
+                { path: 'README.md', name: 'README.md', kind: 'file', sha: 'r0', size: 2 },
+                { path: 'src/old.ts', name: 'old.ts', kind: 'file', sha: 'o1', size: 40 },
+              ],
+            })
+          : Promise.resolve({ entries, truncated: false });
+
+      await store.searchTraceOrigins('commit');
+      expect(store.traceOrigins()).toMatchObject({ status: 'ready', candidates: [] });
+
+      await store.searchTraceOrigins('snapshot');
+      const state = store.traceOrigins();
+      expect(state?.status).toBe('ready');
+      expect(state?.candidates).toMatchObject([{ path: 'src/old.ts', line: 2, deleted: false }]);
+      // The traced file itself is never searched.
+      expect(state?.total).toBe(1);
+    });
+
+    it('is unavailable when the introducing commit is the root', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c1', [])]);
+      provider.fileAtRefResult = (path, ref) => text(path, `blob-${ref}`, 'A\n');
+      await store.openFile('README.md', 'c1');
+      await store.startLineTrace('README.md', 'c1', { start: 1, end: 1 });
+      expect(store.lineTrace()?.origin).toEqual({ sha: 'c1', range: { start: 1, end: 1 } });
+
+      await store.searchTraceOrigins('commit');
+
+      expect(store.traceOrigins()).toMatchObject({ status: 'unavailable' });
+    });
+
+    it('is cleared with the trace', async () => {
+      await traceIntroducedBlock();
+      provider.commitFilesResult = () =>
+        Promise.resolve([{ path: 'src/old.ts', status: 'removed' }]);
+      await store.searchTraceOrigins('commit');
+      expect(store.traceOrigins()).not.toBeNull();
+
+      store.clearLineTrace();
+
+      expect(store.traceOrigins()).toBeNull();
     });
   });
 
@@ -715,6 +1105,46 @@ describe('RepoStore', () => {
       await store.loadRenameCandidates('README.md');
 
       expect(store.selectedRenames()).toBeNull();
+    });
+
+    it('ranks files the creating commit deleted by fuzzy content similarity', async () => {
+      provider.commitFilesResult = () =>
+        Promise.resolve([
+          { path: 'README.md', status: 'added' },
+          { path: 'docs/legacy.md', status: 'removed' },
+        ]);
+      provider.treeResult = (ref) =>
+        ref === 'parent'
+          ? Promise.resolve({
+              truncated: false,
+              entries: [
+                { path: 'docs', name: 'docs', kind: 'dir', sha: 'd1' },
+                { path: 'docs/legacy.md', name: 'legacy.md', kind: 'file', sha: 'L1', size: 13 },
+              ],
+            })
+          : Promise.resolve({ entries, truncated: false });
+      // README at creation is 'line1\nline2\n'; the deleted file differs by
+      // one character in line 2 — exact-line similarity would see only 50%.
+      provider.fileAtRefResult = (path) =>
+        Promise.resolve({
+          kind: 'text',
+          path,
+          sha: path === 'README.md' ? 'BLOB0' : `c-${path}`,
+          size: 12,
+          text: path === 'docs/legacy.md' ? 'line1\nline2x\n' : 'line1\nline2\n',
+        });
+
+      await store.loadRenameCandidates('README.md');
+
+      const state = store.selectedRenames();
+      expect(state?.status).toBe('ready');
+      if (state?.status !== 'ready') return;
+      const legacy = state.candidates.find((c) => c.path === 'docs/legacy.md');
+      expect(legacy?.reasons).toContain('deleted-in-commit');
+      expect(legacy?.reasons).toContain('similar-content');
+      expect(legacy!.confidence).toBeGreaterThan(0.85);
+      // The deleted file outranks every generic heuristic candidate.
+      expect(state.candidates[0].path).toBe('docs/legacy.md');
     });
   });
 
