@@ -17,7 +17,7 @@ import { AccessTokens } from '../access-tokens';
 import { GitProvider, RepoWebLinks } from '../git-provider';
 import { parseGithubUrl } from './github-url';
 
-const API_BASE = 'https://api.github.com';
+const PUBLIC_API_BASE = 'https://api.github.com';
 
 /** Files above this size are not fetched; the UI links to GitHub instead. */
 export const MAX_FILE_SIZE_BYTES = 2_000_000;
@@ -82,10 +82,13 @@ interface GithubCommitResponse {
 }
 
 /**
- * Reads repositories through GitHub's REST API. Anonymous requests are
- * limited to 60/hour per client IP; a stored personal access token raises
- * that to 5,000/hour and unlocks private repositories. Rate-limit responses
- * are mapped to a dedicated error kind so the UI can explain them.
+ * Reads repositories through GitHub's REST API. Anonymous requests to
+ * github.com are limited to 60/hour per client IP; a stored personal access
+ * token raises that to 5,000/hour and unlocks private repositories.
+ * Rate-limit responses are mapped to a dedicated error kind so the UI can
+ * explain them. The same implementation serves GitHub Enterprise Server
+ * instances: when the slug carries a custom `host`, requests go to that
+ * host's `/api/v3` base instead of api.github.com.
  */
 @Injectable({ providedIn: 'root' })
 export class GithubProvider implements GitProvider {
@@ -102,6 +105,11 @@ export class GithubProvider implements GitProvider {
     return parseGithubUrl(input);
   }
 
+  /** Parses a repo reference on a GitHub Enterprise Server host. */
+  parseHostedUrl(input: string, host: string): ParsedRepoUrl | null {
+    return parseGithubUrl(input, host);
+  }
+
   /**
    * Disambiguates the `<ref>/<path>` tail of a tree/blob URL: lists all
    * branches (then tags) starting with the first segment via the cheap
@@ -114,6 +122,7 @@ export class GithubProvider implements GitProvider {
       let matches: GithubMatchingRefResponse[];
       try {
         matches = await this.request<GithubMatchingRefResponse[]>(
+          slug,
           `/repos/${enc(slug.owner)}/${enc(slug.repo)}/git/matching-refs/${namespace}/${enc(firstSegment)}`,
           { notFound: `No refs matching "${firstSegment}" were found.` },
         );
@@ -138,6 +147,7 @@ export class GithubProvider implements GitProvider {
 
   async getMetadata(slug: RepoSlug): Promise<RepoMetadata> {
     const data = await this.request<GithubRepoResponse>(
+      slug,
       `/repos/${enc(slug.owner)}/${enc(slug.repo)}`,
       { notFound: 'Repository not found — it may not exist or it may be private.' },
     );
@@ -155,6 +165,7 @@ export class GithubProvider implements GitProvider {
 
   async getTree(slug: RepoSlug, ref: string): Promise<RepoTree> {
     const data = await this.request<GithubTreeResponse>(
+      slug,
       `/repos/${enc(slug.owner)}/${enc(slug.repo)}/git/trees/${enc(ref)}?recursive=1`,
       { notFound: `Ref "${ref}" was not found in this repository.`, notFoundKind: 'invalid-ref' },
     );
@@ -179,6 +190,7 @@ export class GithubProvider implements GitProvider {
   async getFileAtRef(slug: RepoSlug, path: string, ref: string): Promise<RepoFile> {
     const encodedPath = path.split('/').map(encodeURIComponent).join('/');
     const data = await this.request<GithubContentsResponse>(
+      slug,
       `/repos/${enc(slug.owner)}/${enc(slug.repo)}/contents/${encodedPath}?ref=${enc(ref)}`,
       {
         notFound: `"${path}" does not exist at ${ref.slice(0, 7)} — it may have been added later or deleted by this commit.`,
@@ -200,6 +212,7 @@ export class GithubProvider implements GitProvider {
 
   private async fetchBlob(slug: RepoSlug, path: string, sha: string): Promise<RepoFile> {
     const data = await this.request<GithubBlobResponse>(
+      slug,
       `/repos/${enc(slug.owner)}/${enc(slug.repo)}/git/blobs/${enc(sha)}`,
       { notFound: `File "${path}" was not found.` },
     );
@@ -231,6 +244,7 @@ export class GithubProvider implements GitProvider {
     if (options.page) params.set('page', String(options.page));
 
     const data = await this.request<GithubCommitResponse[]>(
+      slug,
       `/repos/${enc(slug.owner)}/${enc(slug.repo)}/commits?${params}`,
       { notFound: 'No commit history found for this ref or path.' },
     );
@@ -239,6 +253,7 @@ export class GithubProvider implements GitProvider {
 
   async getCommit(slug: RepoSlug, sha: string): Promise<CommitInfo> {
     const data = await this.request<GithubCommitResponse>(
+      slug,
       `/repos/${enc(slug.owner)}/${enc(slug.repo)}/commits/${enc(sha)}`,
       { notFound: `Commit ${sha.slice(0, 7)} was not found in this repository.` },
     );
@@ -247,6 +262,7 @@ export class GithubProvider implements GitProvider {
 
   async getCommitFiles(slug: RepoSlug, sha: string): Promise<CommitFileChange[]> {
     const data = await this.request<GithubCommitResponse>(
+      slug,
       `/repos/${enc(slug.owner)}/${enc(slug.repo)}/commits/${enc(sha)}`,
       { notFound: `Commit ${sha.slice(0, 7)} was not found in this repository.` },
     );
@@ -258,21 +274,28 @@ export class GithubProvider implements GitProvider {
   }
 
   webLinks(slug: RepoSlug, ref: string, path?: string): RepoWebLinks {
-    const repoUrl = `https://github.com/${slug.owner}/${slug.repo}`;
+    const webBase = slug.host ? stripTrailingSlash(slug.host) : 'https://github.com';
+    const repoUrl = `${webBase}/${slug.owner}/${slug.repo}`;
     if (!path) return { repoUrl };
     const encodedPath = path.split('/').map(encodeURIComponent).join('/');
+    // github.com serves raw blobs from a dedicated host; GitHub Enterprise
+    // Server serves them from `<host>/raw/...` on the instance itself.
+    const rawFileUrl = slug.host
+      ? `${repoUrl}/raw/${enc(ref)}/${encodedPath}`
+      : `https://raw.githubusercontent.com/${slug.owner}/${slug.repo}/${enc(ref)}/${encodedPath}`;
     return {
       repoUrl,
       fileUrl: `${repoUrl}/blob/${enc(ref)}/${encodedPath}`,
-      rawFileUrl: `https://raw.githubusercontent.com/${slug.owner}/${slug.repo}/${enc(ref)}/${encodedPath}`,
+      rawFileUrl,
     };
   }
 
   private async request<T>(
+    slug: RepoSlug,
     apiPath: string,
     messages: { notFound: string; notFoundKind?: 'not-found' | 'invalid-ref' },
   ): Promise<T> {
-    const token = this.tokens.tokenFor('github');
+    const token = this.tokens.tokenForSlug(slug);
     const headers: Record<string, string> = {
       Accept: 'application/vnd.github+json',
       'X-GitHub-Api-Version': '2022-11-28',
@@ -281,7 +304,7 @@ export class GithubProvider implements GitProvider {
 
     let response: Response;
     try {
-      response = await fetch(`${API_BASE}${apiPath}`, { headers });
+      response = await fetch(`${apiBase(slug)}${apiPath}`, { headers });
     } catch {
       throw new RepoProviderError(
         'Could not reach the GitHub API — check your connection and try again.',
@@ -335,6 +358,18 @@ export class GithubProvider implements GitProvider {
 function rateLimitReset(response: Response): Date | undefined {
   const reset = Number(response.headers.get('x-ratelimit-reset'));
   return Number.isFinite(reset) && reset > 0 ? new Date(reset * 1000) : undefined;
+}
+
+/**
+ * The REST base for a slug: api.github.com for github.com, or the instance's
+ * `/api/v3` endpoint for a GitHub Enterprise Server host.
+ */
+function apiBase(slug: RepoSlug): string {
+  return slug.host ? `${stripTrailingSlash(slug.host)}/api/v3` : PUBLIC_API_BASE;
+}
+
+function stripTrailingSlash(value: string): string {
+  return value.replace(/\/+$/, '');
 }
 
 function enc(segment: string): string {

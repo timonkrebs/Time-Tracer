@@ -312,6 +312,44 @@ describe('GithubProvider', () => {
     expect(provider.canHandle('https://example.com/a/b')).toBe(false);
   });
 
+  describe('GitHub Enterprise Server host', () => {
+    const gheSlug: RepoSlug = {
+      provider: 'github',
+      owner: 'acme',
+      repo: 'rocket',
+      host: 'https://github.example.com',
+    };
+
+    it('targets the instance /api/v3 base with its own token', async () => {
+      TestBed.inject(AccessTokens).setToken('https://github.example.com', 'ghe_pat');
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          name: 'rocket',
+          full_name: 'acme/rocket',
+          description: null,
+          default_branch: 'main',
+          html_url: 'https://github.example.com/acme/rocket',
+          stargazers_count: 0,
+          fork: false,
+          owner: { login: 'acme' },
+        }),
+      );
+
+      await provider.getMetadata(gheSlug);
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://github.example.com/api/v3/repos/acme/rocket',
+        expect.objectContaining({
+          headers: expect.objectContaining({ Authorization: 'Bearer ghe_pat' }),
+        }),
+      );
+      // The github.com token is not used for the instance.
+      expect(provider.webLinks(gheSlug, 'main', 'a.ts').rawFileUrl).toBe(
+        'https://github.example.com/acme/rocket/raw/main/a.ts',
+      );
+    });
+  });
+
   describe('getFileAtRef', () => {
     it('fetches historical content through the contents API', async () => {
       fetchMock.mockResolvedValue(

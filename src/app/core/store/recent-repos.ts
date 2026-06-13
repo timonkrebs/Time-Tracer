@@ -6,6 +6,8 @@ export interface RecentRepo {
   readonly description: string | null;
   /** Provider id; entries persisted before this field existed are github. */
   readonly provider?: string;
+  /** Self-hosted instance origin (GitHub Enterprise, GitLab, Bitbucket Server). */
+  readonly host?: string;
 }
 
 const STORAGE_KEY = 'time-tracer.recent-repos';
@@ -36,6 +38,7 @@ export class RecentRepos {
 function sameRepo(a: RecentRepo, b: RecentRepo): boolean {
   return (
     (a.provider ?? 'github') === (b.provider ?? 'github') &&
+    (a.host ?? '') === (b.host ?? '') &&
     a.owner.toLowerCase() === b.owner.toLowerCase() &&
     a.repo.toLowerCase() === b.repo.toLowerCase()
   );

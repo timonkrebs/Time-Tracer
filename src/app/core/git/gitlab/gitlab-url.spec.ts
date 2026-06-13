@@ -40,4 +40,24 @@ describe('parseGitlabUrl', () => {
   ])('rejects %s', (input) => {
     expect(parseGitlabUrl(input)).toBeNull();
   });
+
+  describe('self-hosted host', () => {
+    const host = 'https://gitlab.example.com';
+
+    it.each([
+      ['group/sub/project', { owner: 'group/sub', repo: 'project', host }],
+      ['https://gitlab.example.com/group/project', { owner: 'group', repo: 'project', host }],
+      [
+        'https://gitlab.example.com/group/project/-/blob/main/README.md',
+        { owner: 'group', repo: 'project', ref: 'main', path: 'README.md', host },
+      ],
+      ['git@gitlab.example.com:group/project.git', { owner: 'group', repo: 'project', host }],
+    ])('parses %s against the host', (input, expected) => {
+      expect(parseGitlabUrl(input, host)).toEqual(expected);
+    });
+
+    it('rejects a URL on a different host', () => {
+      expect(parseGitlabUrl('https://gitlab.com/a/b', host)).toBeNull();
+    });
+  });
 });
