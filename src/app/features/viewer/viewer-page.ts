@@ -280,6 +280,7 @@ const TREE_COLLAPSED_KEY = 'time-tracer.tree-collapsed';
                   [nodes]="store.tree()"
                   [selectedPath]="store.selectedPath()"
                   [expanded]="store.expandedDirs()"
+                  [metrics]="store.fileMetrics()"
                   (fileSelect)="onFileSelect($event)"
                   (dirToggle)="store.toggleDir($event)"
                 />

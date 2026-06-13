@@ -1,6 +1,10 @@
-import { ChangeDetectionStrategy, Component, input, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, input, output, signal } from '@angular/core';
 
 import { TreeNode } from '../../core/models';
+import { FileMetric, heatLevel } from '../../core/util/hotspots';
+import { relativeTime } from '../../core/util/relative-time';
+import { HEAT_STYLES } from './heat';
+import { HeatPopup } from './heat-popup';
 
 /** Maps a file name to a Tailwind text colour class for its icon. */
 function fileIconColor(name: string): string {
@@ -53,7 +57,7 @@ function fileIconColor(name: string): string {
 @Component({
   selector: 'app-file-tree',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [FileTree],
+  imports: [FileTree, HeatPopup],
   template: `
     @for (node of nodes(); track node.path) {
       @if (node.kind === 'dir') {
@@ -100,6 +104,7 @@ function fileIconColor(name: string): string {
             [depth]="depth() + 1"
             [selectedPath]="selectedPath()"
             [expanded]="expanded()"
+            [metrics]="metrics()"
             (fileSelect)="fileSelect.emit($event)"
             (dirToggle)="dirToggle.emit($event)"
           />
@@ -130,7 +135,17 @@ function fileIconColor(name: string): string {
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
             <path d="M14 2v6h6" />
           </svg>
-          <span class="truncate">{{ node.name }}</span>
+          <span class="min-w-0 truncate">{{ node.name }}</span>
+          @if (metricFor(node.path); as m) {
+            <span
+              class="heat-badge ml-auto shrink-0 cursor-default rounded px-1 text-[10px] leading-[15px] font-medium tabular-nums"
+              [class]="heatClass(m.score)"
+              [attr.aria-label]="metricLabel(m)"
+              (mouseenter)="onBadgeEnter($event, m)"
+              (mouseleave)="onBadgeLeave()"
+              >{{ scoreLabel(m.score) }}</span
+            >
+          }
         </button>
       } @else {
         <div
@@ -156,6 +171,16 @@ function fileIconColor(name: string): string {
         </div>
       }
     }
+    @if (hovered(); as h) {
+      <div
+        class="pointer-events-none fixed z-50"
+        [style.right.px]="h.right"
+        [style.top.px]="h.top"
+        [style.transform]="h.flip ? 'translateY(-100%)' : null"
+      >
+        <app-heat-popup [metric]="h.metric" />
+      </div>
+    }
   `,
 })
 export class FileTree {
@@ -163,11 +188,66 @@ export class FileTree {
   readonly depth = input(0);
   readonly selectedPath = input<string | null>(null);
   readonly expanded = input.required<ReadonlySet<string>>();
+  /** Recency-weighted change metrics by path; files in it get a hotspot badge. */
+  readonly metrics = input<ReadonlyMap<string, FileMetric>>(new Map());
 
   readonly fileSelect = output<string>();
   readonly dirToggle = output<string>();
 
+  /** The badge being hovered and where to anchor its popup, if any. */
+  protected readonly hovered = signal<{
+    readonly metric: FileMetric;
+    readonly right: number;
+    readonly top: number;
+    readonly flip: boolean;
+  } | null>(null);
+
   protected iconColor(name: string): string {
     return fileIconColor(name);
+  }
+
+  /**
+   * Opens the hotspot popup anchored under the hovered badge, right-aligned to
+   * it and flipped above when there is little room below the viewport edge.
+   */
+  protected onBadgeEnter(event: MouseEvent, metric: FileMetric): void {
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    const flip = rect.bottom > window.innerHeight - 200;
+    this.hovered.set({
+      metric,
+      right: Math.max(8, window.innerWidth - rect.right),
+      top: flip ? rect.top - 6 : rect.bottom + 6,
+      flip,
+    });
+  }
+
+  protected onBadgeLeave(): void {
+    this.hovered.set(null);
+  }
+
+  /** The metric for a path, or null until its history shows a change. */
+  protected metricFor(path: string): FileMetric | null {
+    const metric = this.metrics().get(path);
+    return metric && metric.revisions > 0 ? metric : null;
+  }
+
+  /** Compact badge label: one decimal under 10, rounded above. */
+  protected scoreLabel(score: number): string {
+    return score >= 10 ? String(Math.round(score)) : score.toFixed(1);
+  }
+
+  protected heatClass(score: number): string {
+    return HEAT_STYLES[heatLevel(score)].badge;
+  }
+
+  /** Accessible summary of the badge (the popup shows the visual detail). */
+  protected metricLabel(m: FileMetric): string {
+    const parts: string[] = [
+      `${m.partial ? '≥ ' : ''}${m.revisions} change${m.revisions === 1 ? '' : 's'}`,
+      `recency-weighted ${m.score.toFixed(1)}`,
+    ];
+    if (m.lastChange) parts.push(`last changed ${relativeTime(m.lastChange)}`);
+    if (m.authors > 0) parts.push(`${m.authors} author${m.authors === 1 ? '' : 's'}`);
+    return parts.join(' · ');
   }
 }
