@@ -1,6 +1,8 @@
 import { ChangeDetectionStrategy, Component, input, output } from '@angular/core';
 
 import { TreeNode } from '../../core/models';
+import { FileMetric, heatLevel } from '../../core/util/hotspots';
+import { relativeTime } from '../../core/util/relative-time';
 
 /** Maps a file name to a Tailwind text colour class for its icon. */
 function fileIconColor(name: string): string {
@@ -44,6 +46,15 @@ function fileIconColor(name: string): string {
       return 'text-zinc-500';
   }
 }
+
+/** Tailwind classes for each hotspot heat level (0 = cold … 4 = hot). */
+const HEAT_CLASSES: readonly string[] = [
+  'bg-zinc-800 text-zinc-500',
+  'bg-sky-500/15 text-sky-300',
+  'bg-amber-500/15 text-amber-300',
+  'bg-orange-500/20 text-orange-300',
+  'bg-rose-500/25 text-rose-200',
+];
 
 /**
  * One level of the repository tree; renders itself recursively for expanded
@@ -100,6 +111,7 @@ function fileIconColor(name: string): string {
             [depth]="depth() + 1"
             [selectedPath]="selectedPath()"
             [expanded]="expanded()"
+            [metrics]="metrics()"
             (fileSelect)="fileSelect.emit($event)"
             (dirToggle)="dirToggle.emit($event)"
           />
@@ -130,7 +142,15 @@ function fileIconColor(name: string): string {
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
             <path d="M14 2v6h6" />
           </svg>
-          <span class="truncate">{{ node.name }}</span>
+          <span class="min-w-0 truncate">{{ node.name }}</span>
+          @if (metricFor(node.path); as m) {
+            <span
+              class="ml-auto shrink-0 rounded px-1 text-[10px] leading-[15px] font-medium tabular-nums"
+              [class]="heatClass(m.score)"
+              [title]="metricTitle(m)"
+              >{{ scoreLabel(m.score) }}</span
+            >
+          }
         </button>
       } @else {
         <div
@@ -163,11 +183,38 @@ export class FileTree {
   readonly depth = input(0);
   readonly selectedPath = input<string | null>(null);
   readonly expanded = input.required<ReadonlySet<string>>();
+  /** Recency-weighted change metrics by path; files in it get a hotspot badge. */
+  readonly metrics = input<ReadonlyMap<string, FileMetric>>(new Map());
 
   readonly fileSelect = output<string>();
   readonly dirToggle = output<string>();
 
   protected iconColor(name: string): string {
     return fileIconColor(name);
+  }
+
+  /** The metric for a path, or null until its history shows a change. */
+  protected metricFor(path: string): FileMetric | null {
+    const metric = this.metrics().get(path);
+    return metric && metric.revisions > 0 ? metric : null;
+  }
+
+  /** Compact badge label: one decimal under 10, rounded above. */
+  protected scoreLabel(score: number): string {
+    return score >= 10 ? String(Math.round(score)) : score.toFixed(1);
+  }
+
+  protected heatClass(score: number): string {
+    return HEAT_CLASSES[heatLevel(score)];
+  }
+
+  protected metricTitle(m: FileMetric): string {
+    const parts: string[] = [
+      `${m.partial ? '≥ ' : ''}${m.revisions} change${m.revisions === 1 ? '' : 's'}`,
+      `recency-weighted ${m.score.toFixed(1)}`,
+    ];
+    if (m.lastChange) parts.push(`last changed ${relativeTime(m.lastChange)}`);
+    if (m.authors > 0) parts.push(`${m.authors} author${m.authors === 1 ? '' : 's'}`);
+    return parts.join(' · ');
   }
 }

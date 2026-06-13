@@ -14,6 +14,7 @@ import {
   toRepoProviderError,
 } from '../models';
 import { FileDiff, computeFileDiff, diffLines, splitLines } from '../util/diff';
+import { FileMetric, computeFileMetric } from '../util/hotspots';
 import {
   LineRange,
   changeRegions,
@@ -228,6 +229,11 @@ export class RepoStore {
   private readonly treeCache = new Map<string, Promise<readonly TreeEntry[]>>();
   /** Rename-candidate search states keyed by path. */
   private readonly _renames = signal<ReadonlyMap<string, RenameState>>(new Map());
+  /**
+   * Recency-weighted change metrics keyed by path, for every file whose
+   * history has been loaded — the data behind hotspot badges in the file tree.
+   */
+  private readonly _fileMetrics = signal<ReadonlyMap<string, FileMetric>>(new Map());
 
   private readonly _historyPath = signal<string | null>(null);
   private readonly _history = signal<readonly CommitInfo[]>([]);
@@ -263,6 +269,7 @@ export class RepoStore {
   readonly historyHasMore = this._historyHasMore.asReadonly();
   readonly lineTrace = this._lineTrace.asReadonly();
   readonly traceOrigins = this._traceOrigins.asReadonly();
+  readonly fileMetrics = this._fileMetrics.asReadonly();
 
   /** Ref shown in the viewer: the requested one, or the default branch. */
   readonly ref = computed(() => this._requestedRef() ?? this._metadata()?.defaultBranch ?? null);
@@ -320,6 +327,12 @@ export class RepoStore {
     return path ? (this._renames().get(path) ?? null) : null;
   });
 
+  /** Recency-weighted change metric for the selected file, once loaded. */
+  readonly selectedFileMetric = computed<FileMetric | null>(() => {
+    const path = this._selectedPath();
+    return path ? (this._fileMetrics().get(path) ?? null) : null;
+  });
+
   /**
    * Loads a repository (metadata, then full tree). No-ops when the same
    * repo+ref is already loading or loaded, unless `force` is set.
@@ -349,6 +362,7 @@ export class RepoStore {
     this._compareBase.set(null);
     this._blames.set(new Map());
     this._renames.set(new Map());
+    this._fileMetrics.set(new Map());
     this.blameRuns.clear();
     this.historyCache.clear();
     this.treeCache.clear();
@@ -738,6 +752,7 @@ export class RepoStore {
       this._historyHasMore.set(cached.hasMore);
       this._historyStatus.set('ready');
       this.historyPage = cached.page;
+      this.recordMetric(path, cached.commits, cached.hasMore);
       return;
     }
 
@@ -762,6 +777,7 @@ export class RepoStore {
       this._historyHasMore.set(hasMore);
       this._historyStatus.set('ready');
       this.historyCache.set(path, { commits, hasMore, page: 1 });
+      this.recordMetric(path, commits, hasMore);
     } catch (error) {
       if (seq !== this.loadSeq || this._historyPath() !== path) return;
       this._historyError.set(toRepoProviderError(error).message);
@@ -794,6 +810,7 @@ export class RepoStore {
       this._historyHasMore.set(hasMore);
       this._historyStatus.set('ready');
       this.historyCache.set(path, { commits: merged, hasMore, page });
+      this.recordMetric(path, merged, hasMore);
     } catch (error) {
       if (seq !== this.loadSeq || this._historyPath() !== path) return;
       // Keep the already-loaded commits; just surface the failure.
@@ -826,6 +843,7 @@ export class RepoStore {
       this.cacheCommits(commits);
       const entry = { commits, hasMore: commits.length === HISTORY_PAGE_SIZE, page: 1 };
       this.historyCache.set(path, entry);
+      this.recordMetric(path, commits, entry.hasMore);
       return entry;
     } catch {
       return null;
@@ -1490,6 +1508,18 @@ export class RepoStore {
     const next = new Map(this._commitsBySha());
     for (const commit of commits) next.set(commit.sha, commit);
     this._commitsBySha.set(next);
+  }
+
+  /**
+   * Records the recency-weighted change metric for a file from its loaded
+   * history, so the file tree can show a hotspot badge. `hasMore` marks the
+   * metric partial (the revision count is then a lower bound).
+   */
+  private recordMetric(path: string, commits: readonly CommitInfo[], hasMore: boolean): void {
+    const metric = computeFileMetric(commits, { partial: hasMore });
+    const next = new Map(this._fileMetrics());
+    next.set(path, metric);
+    this._fileMetrics.set(next);
   }
 
   private resetHistory(): void {
