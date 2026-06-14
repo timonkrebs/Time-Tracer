@@ -520,6 +520,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
                 (commitSelect)="goToCommit($event)"
                 (traceSelect)="onTraceSelect($event)"
                 (loadMore)="store.loadMoreHistory()"
+                (loadAll)="store.loadAllHistory()"
                 (retry)="store.retryHistory()"
                 (closed)="toggleHistory()"
                 (findRenames)="onFindRenames()"
@@ -778,6 +779,10 @@ export class ViewerPage {
       const path = this.path() || null;
       const at = this.at() || null;
       const selectedDiff = this.store.selectedDiff();
+      // Depend on the loaded history: when more commits are paged in, lines
+      // attributed to "older" (beyond the loaded pages) can finally be traced
+      // to the commit that introduced them, so re-run blame.
+      void this.store.history();
       const basePath = diff && selectedDiff?.status === 'ready' ? selectedDiff.basePath : null;
       const baseSha = diff && selectedDiff?.status === 'ready' ? selectedDiff.baseSha : null;
       const headPath = diff && selectedDiff?.status === 'ready' ? selectedDiff.headPath : path;
@@ -795,12 +800,14 @@ export class ViewerPage {
     });
 
     // The Owners panel folds blame, so make sure blame is computed for the
-    // selected file even when its gutter display is turned off.
+    // selected file even when its gutter display is turned off — and re-fold
+    // it (via re-blame) as more history is paged in.
     effect(() => {
       const open = this.ownersOpen();
       const phase = this.store.phase();
       const path = this.path() || null;
       const at = this.at() || null;
+      void this.store.history();
       untracked(() => {
         if (open && phase === 'ready' && path) void this.store.loadBlame(path, at);
       });

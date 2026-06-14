@@ -58,8 +58,8 @@ renames — see the feature list and roadmap below for what's done and what's ne
   run-aware scoring and the matched characters highlighted; arrow keys move, Enter opens, Escape
   dismisses. It searches the tree already in memory, so it costs no extra API requests.
 - **Per-file commit history**: a History panel lists the commits that touched the selected file
-  (paginated), with author and relative date. Its open/closed state is remembered, so it can stay
-  open permanently across files and sessions.
+  (paginated — page through older commits or **Load all** at once), with author and relative date.
+  Its open/closed state is remembered, so it can stay open permanently across files and sessions.
 - **Code ownership ("Owners" panel)**: folds the per-line blame into an authorship summary for the
   selected file — share by author, bus factor and who last touched it ("who do I ask about
   this?") — for free from the blame already computed. An opt-in folder scan blames the files under
@@ -82,7 +82,8 @@ renames — see the feature list and roadmap below for what's done and what's ne
   aligned side by side, and **both sides carry their own blame gutters**. Attribution is computed
   client-side by walking the file's history with the minimal diff, streams in progressively, and
   works at any historical version. Lines older than the loaded history pages are marked and
-  resolve incrementally as more pages load.
+  re-attributed as soon as more commits are loaded (the History panel's "Load older commits" or
+  "Load all").
 - **Recursive time travel, hunk by hunk**: clicking a blame annotation opens the introducing
   commit's diff _scrolled to that exact line_; every hunk in a diff offers **◂ Before** — jump to
   the parent version, annotated, at the hunk's old position. Blame → commit → before → blame

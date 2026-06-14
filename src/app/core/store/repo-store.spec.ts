@@ -347,6 +347,28 @@ describe('RepoStore', () => {
       expect(store.historyHasMore()).toBe(false);
     });
 
+    it('loads every remaining page at once with loadAllHistory', async () => {
+      const page1 = Array.from({ length: 30 }, (_, i) => commit(`a${i}`));
+      const page2 = Array.from({ length: 30 }, (_, i) => commit(`b${i}`));
+      let calls = 0;
+      provider.listCommitsResult = () => {
+        calls++;
+        // Pages 1–2 are full (more remains); page 3 ends the history.
+        return Promise.resolve(calls === 1 ? page1 : calls === 2 ? page2 : [commit('tail')]);
+      };
+      await store.loadHistory('README.md');
+      expect(store.historyHasMore()).toBe(true);
+
+      await store.loadAllHistory();
+
+      // The first page came from loadHistory (no page param); load-all walked on.
+      expect(provider.listCommitsCalls.map((c) => c.page)).toEqual([undefined, 2, 3]);
+      expect(store.history()).toHaveLength(61);
+      expect(store.history().at(-1)?.sha).toBe('tail');
+      expect(store.historyHasMore()).toBe(false);
+      expect(store.historyStatus()).toBe('ready');
+    });
+
     it('exposes errors and recovers via retryHistory', async () => {
       provider.listCommitsResult = () => Promise.reject(new RepoProviderError('boom', 'network'));
       await store.loadHistory('README.md');
