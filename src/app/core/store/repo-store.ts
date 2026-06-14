@@ -13,6 +13,13 @@ import {
   TreeEntry,
   toRepoProviderError,
 } from '../models';
+import {
+  CoChangeResult,
+  CommitFiles,
+  RelatedFile,
+  computeCoChange,
+  relatedFiles,
+} from '../util/co-change';
 import { FileDiff, computeFileDiff, diffLines, splitLines } from '../util/diff';
 import { FileMetric, computeFileMetric } from '../util/hotspots';
 import {
@@ -37,6 +44,12 @@ const ORIGIN_SNAPSHOT_CAP = 30;
 const ORIGIN_RESULT_CAP = 8;
 /** Files blamed for a per-folder ownership summary (it is request-heavy). */
 export const FOLDER_OWNERSHIP_CAP = 30;
+
+/** Recent commits walked for the co-change analysis (one request per commit). */
+export const CO_CHANGE_COMMIT_CAP = 75;
+
+/** Safety cap for a single file's full-history co-change walk. */
+export const FILE_COCHANGE_COMMIT_CAP = 400;
 
 /** Lifecycle of the per-file commit history panel. */
 export type HistoryStatus = 'idle' | 'loading' | 'loading-more' | 'ready' | 'error';
@@ -202,6 +215,24 @@ export interface FolderOwnershipState {
   readonly message?: string;
 }
 
+/**
+ * Async state of the co-change analysis: recent commits are walked (one
+ * request per commit for its file list), and their file-sets folded into
+ * temporal coupling, published as it streams in.
+ */
+export interface CoChangeState {
+  readonly status: 'computing' | 'ready' | 'error';
+  /** The file the analysis is focused on (its full history), or undefined for repo-wide. */
+  readonly focus?: string;
+  /** Commits whose files have been fetched so far. */
+  readonly scanned: number;
+  /** Commit cap the walk is working toward. */
+  readonly target: number;
+  /** Coupling aggregated from the commits scanned so far. */
+  readonly result: CoChangeResult;
+  readonly message?: string;
+}
+
 interface HistorySnapshot {
   commits: readonly CommitInfo[];
   hasMore: boolean;
@@ -282,6 +313,12 @@ export class RepoStore {
   private readonly _folderOwnership = signal<FolderOwnershipState | null>(null);
   /** Bumped to cancel a superseded or cleared folder scan. */
   private folderRun = 0;
+  /** Co-change analysis (files that change together), when started. */
+  private readonly _coChange = signal<CoChangeState | null>(null);
+  /** Bumped to cancel a superseded or cleared co-change walk. */
+  private coChangeRun = 0;
+  /** Changed-file lists per commit sha, shared by the co-change walk. */
+  private readonly commitFilesCache = new Map<string, Promise<readonly string[]>>();
 
   readonly phase = this._phase.asReadonly();
   readonly error = this._error.asReadonly();
@@ -300,7 +337,16 @@ export class RepoStore {
   readonly lineTrace = this._lineTrace.asReadonly();
   readonly traceOrigins = this._traceOrigins.asReadonly();
   readonly folderOwnership = this._folderOwnership.asReadonly();
+  readonly coChange = this._coChange.asReadonly();
   readonly fileMetrics = this._fileMetrics.asReadonly();
+
+  /** Files coupled to the selected one (empty until co-change has been run). */
+  readonly selectedRelated = computed<RelatedFile[]>(() => {
+    const state = this._coChange();
+    const path = this._selectedPath();
+    if (!state || !path) return [];
+    return relatedFiles(state.result, path);
+  });
 
   /** Ref shown in the viewer: the requested one, or the default branch. */
   readonly ref = computed(() => this._requestedRef() ?? this._metadata()?.defaultBranch ?? null);
@@ -414,11 +460,13 @@ export class RepoStore {
     this.blameRuns.clear();
     this.historyCache.clear();
     this.treeCache.clear();
+    this.commitFilesCache.clear();
     this.inflight.clear();
     this._error.set(null);
     this.resetHistory();
     this.clearLineTrace();
     this.clearFolderOwnership();
+    this.clearCoChange();
     this._phase.set('metadata');
 
     try {
@@ -1100,6 +1148,110 @@ export class RepoStore {
       publish('computing');
     }
     publish('ready');
+  }
+
+  /** Drops any co-change result and cancels a walk in progress. */
+  clearCoChange(): void {
+    this.coChangeRun++;
+    this._coChange.set(null);
+  }
+
+  /**
+   * Repo-wide co-change: walks the most recent commits (up to
+   * {@link CO_CHANGE_COMMIT_CAP}) and surfaces the strongest coupling overall.
+   */
+  computeCoChange(): Promise<void> {
+    return this.walkCoChange({ cap: CO_CHANGE_COMMIT_CAP });
+  }
+
+  /**
+   * File-focused co-change: walks `path`'s **full** history (it is one file, so
+   * usually far fewer commits than the repo) for complete insight into what
+   * changes together with it. Surfaced as `focus` on the published state.
+   */
+  computeCoChangeFor(path: string): Promise<void> {
+    return this.walkCoChange({ path, focus: path, cap: FILE_COCHANGE_COMMIT_CAP, minSupport: 1 });
+  }
+
+  /**
+   * The shared co-change walk: pages commits (optionally limited to `path`),
+   * fetches each one's changed files (cached per sha — request-heavy) and folds
+   * them into temporal coupling, publishing as it streams. Cancelled by
+   * navigation or a superseding run via the run/sequence guards.
+   */
+  private async walkCoChange(options: {
+    readonly cap: number;
+    readonly path?: string;
+    readonly focus?: string;
+    readonly minSupport?: number;
+  }): Promise<void> {
+    const slug = this._slug();
+    if (!slug || this._phase() !== 'ready') return;
+    const provider = this.registry.byId(slug.provider);
+    const ref = this.ref() ?? undefined;
+
+    const run = ++this.coChangeRun;
+    const seq = this.loadSeq;
+    const live = (): boolean => seq === this.loadSeq && run === this.coChangeRun;
+
+    const collected: CommitFiles[] = [];
+    const publish = (status: CoChangeState['status'], message?: string): void =>
+      this._coChange.set({
+        status,
+        focus: options.focus,
+        scanned: collected.length,
+        target: options.cap,
+        result: computeCoChange(collected, { minSupport: options.minSupport }),
+        message,
+      });
+
+    publish('computing');
+    try {
+      for (let page = 1; collected.length < options.cap; page++) {
+        const commits = await provider.listCommits(slug, {
+          ref,
+          path: options.path,
+          perPage: HISTORY_PAGE_SIZE,
+          page,
+        });
+        if (!live()) return;
+        if (commits.length === 0) break;
+        this.cacheCommits(commits);
+        for (const commit of commits) {
+          if (collected.length >= options.cap) break;
+          const files = await this.commitFilesFor(slug, commit.sha);
+          if (!live()) return;
+          collected.push({ sha: commit.sha, files });
+          if (collected.length % 5 === 0) publish('computing');
+        }
+        if (commits.length < HISTORY_PAGE_SIZE) break; // reached the end of history
+      }
+      const empty = options.path ? 'No history found for this file.' : 'No commit history found.';
+      publish('ready', collected.length === 0 ? empty : undefined);
+    } catch (error) {
+      if (!live()) return; // a cleared/superseded walk must not resurrect state
+      this._coChange.set({
+        status: 'error',
+        focus: options.focus,
+        scanned: collected.length,
+        target: options.cap,
+        result: computeCoChange(collected, { minSupport: options.minSupport }),
+        message: toRepoProviderError(error).message,
+      });
+    }
+  }
+
+  /** Changed file paths of a commit, cached per sha (shared across walks). */
+  private commitFilesFor(slug: RepoSlug, sha: string): Promise<readonly string[]> {
+    const cached = this.commitFilesCache.get(sha);
+    if (cached) return cached;
+    const promise = this.registry
+      .byId(slug.provider)
+      .getCommitFiles(slug, sha)
+      .then((changes) => changes.map((change) => change.path));
+    this.commitFilesCache.set(sha, promise);
+    promise.catch(() => this.commitFilesCache.delete(sha));
+    return promise;
   }
 
   /**

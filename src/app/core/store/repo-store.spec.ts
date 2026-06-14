@@ -1319,4 +1319,103 @@ describe('RepoStore', () => {
       expect(store.folderOwnership()).toBeNull();
     });
   });
+
+  describe('co-change (computeCoChange)', () => {
+    beforeEach(async () => {
+      await store.loadRepo(slug);
+    });
+
+    it('walks recent commits and couples files that change together', async () => {
+      provider.listCommitsResult = () =>
+        Promise.resolve([commit('c1'), commit('c2'), commit('c3')]);
+      provider.commitFilesResult = (sha) =>
+        Promise.resolve(
+          sha === 'c3'
+            ? [
+                { path: 'a.ts', status: 'modified' },
+                { path: 'c.ts', status: 'modified' },
+              ]
+            : [
+                { path: 'a.ts', status: 'modified' },
+                { path: 'b.ts', status: 'modified' },
+              ],
+        );
+
+      await store.computeCoChange();
+
+      const state = store.coChange();
+      expect(state?.status).toBe('ready');
+      expect(state?.result.commitsUsed).toBe(3);
+      // a.ts↔b.ts in c1 & c2 (support 2); a.ts↔c.ts only once (dropped).
+      expect(state?.result.pairs.map((p) => `${p.a}-${p.b}`)).toEqual(['a.ts-b.ts']);
+    });
+
+    it('surfaces related files for the selected file', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c1'), commit('c2')]);
+      provider.commitFilesResult = () =>
+        Promise.resolve([
+          { path: 'README.md', status: 'modified' },
+          { path: 'src/deep/main.ts', status: 'modified' },
+        ]);
+
+      await store.openFile('README.md');
+      await store.computeCoChange();
+
+      expect(store.selectedRelated().map((r) => r.path)).toEqual(['src/deep/main.ts']);
+    });
+
+    it('cancels an in-flight walk when cleared', async () => {
+      const pending = deferred<CommitInfo[]>();
+      provider.listCommitsResult = () => pending.promise;
+
+      const walk = store.computeCoChange();
+      expect(store.coChange()?.status).toBe('computing');
+
+      store.clearCoChange();
+      pending.resolve([commit('c1')]);
+      await walk;
+
+      expect(store.coChange()).toBeNull();
+    });
+
+    it('does not resurrect state if a cleared walk later rejects', async () => {
+      const pending = deferred<CommitInfo[]>();
+      provider.listCommitsResult = () => pending.promise;
+
+      const walk = store.computeCoChange();
+      store.clearCoChange();
+      pending.reject(new RepoProviderError('boom', 'network'));
+      await walk;
+
+      expect(store.coChange()).toBeNull();
+    });
+
+    it('focuses a single file’s full history, keeping low-support couplings', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c1'), commit('c2')]);
+      provider.commitFilesResult = (sha) =>
+        Promise.resolve(
+          sha === 'c2'
+            ? [
+                { path: 'README.md', status: 'modified' },
+                { path: 'rare.ts', status: 'modified' },
+              ]
+            : [
+                { path: 'README.md', status: 'modified' },
+                { path: 'src/deep/main.ts', status: 'modified' },
+              ],
+        );
+
+      await store.computeCoChangeFor('README.md');
+
+      const state = store.coChange();
+      expect(state?.focus).toBe('README.md');
+      expect(state?.status).toBe('ready');
+      // minSupport 1 in focus mode, so even the single co-change is kept.
+      const partners = state!.result.pairs
+        .filter((p) => p.a === 'README.md' || p.b === 'README.md')
+        .map((p) => (p.a === 'README.md' ? p.b : p.a))
+        .sort();
+      expect(partners).toEqual(['rare.ts', 'src/deep/main.ts']);
+    });
+  });
 });

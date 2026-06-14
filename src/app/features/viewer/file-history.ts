@@ -11,6 +11,7 @@ import {
   RenameCandidate,
   RenameState,
 } from '../../core/store/repo-store';
+import { RelatedFile } from '../../core/util/co-change';
 import { LineRange } from '../../core/util/line-range';
 import { relativeTime, shortSha } from '../../core/util/relative-time';
 import { traceToMarkdown } from '../../core/util/trace-export';
@@ -96,6 +97,28 @@ import { CopyButton } from './copy-button';
           <span class="block truncate text-xs font-medium">Current version</span>
           <span class="mt-0.5 block font-mono text-[11px] text-zinc-500">{{ tipRef() }}</span>
         </button>
+
+        @if (!trace() && related().length) {
+          <div class="border-t border-zinc-800/50 px-3 py-2">
+            <p
+              class="mb-1 text-[10px] font-medium tracking-wide text-zinc-500 uppercase"
+              title="Files that changed in the same commits as this one (from Insights)"
+            >
+              Often changes with
+            </p>
+            @for (rel of related(); track rel.path) {
+              <button
+                type="button"
+                class="flex w-full items-center gap-2 rounded px-1 py-0.5 text-left text-[11px] text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200"
+                [title]="rel.path"
+                (click)="relatedSelect.emit(rel.path)"
+              >
+                <span class="min-w-0 flex-1 truncate font-mono">{{ fileName(rel.path) }}</span>
+                <span class="shrink-0 text-zinc-600">{{ pct(rel.confidence) }}%</span>
+              </button>
+            }
+          </div>
+        }
 
         @if (trace(); as t) {
           <div class="border-t border-zinc-800/50 bg-indigo-500/10 px-3 py-2">
@@ -444,8 +467,12 @@ export class FileHistory {
   readonly trace = input<LineTraceState | null>(null);
   /** Origin search of the finished trace, once started. */
   readonly origins = input<HunkOriginState | null>(null);
+  /** Files coupled to this one (from the co-change analysis); empty until run. */
+  readonly related = input<readonly RelatedFile[]>([]);
 
   readonly commitSelect = output<string | null>();
+  /** A coupled file was picked — open it. */
+  readonly relatedSelect = output<string>();
   readonly traceSelect = output<LineTraceHit>();
   readonly loadMore = output<void>();
   /** "Load all": page in every remaining commit at once. */
@@ -510,6 +537,10 @@ export class FileHistory {
 
   protected fileName(path: string): string {
     return path.slice(path.lastIndexOf('/') + 1);
+  }
+
+  protected pct(fraction: number): number {
+    return Math.round(fraction * 100);
   }
 
   protected traceMarkdown(trace: LineTraceState): string {
