@@ -3,6 +3,7 @@ import { ChangeDetectionStrategy, Component, computed, input, output, signal } f
 import { CoChangeState } from '../../core/store/repo-store';
 import { relatedFiles } from '../../core/util/co-change';
 import { Hotspot, heatLevel } from '../../core/util/hotspots';
+import { disambiguateLabels } from '../../core/util/path-label';
 import { relativeTime } from '../../core/util/relative-time';
 import { TreemapTile, squarify } from '../../core/util/treemap';
 
@@ -74,7 +75,7 @@ const HEAT_FILLS = ['#3f3f46', '#854d0e', '#b45309', '#ea580c', '#ef4444'];
         } @else if (s.focus; as focus) {
           <div class="mb-3 flex items-center gap-2">
             <span class="min-w-0 flex-1 truncate text-sm text-zinc-200">
-              Changes with <span class="font-mono" [title]="focus">{{ name(focus) }}</span>
+              Changes with <span class="font-mono" [title]="focus">{{ label(focus) }}</span>
             </span>
             <button
               type="button"
@@ -107,7 +108,7 @@ const HEAT_FILLS = ['#3f3f46', '#854d0e', '#b45309', '#ea580c', '#ef4444'];
                     [title]="rel.path"
                     (click)="focusFile.emit(rel.path)"
                   >
-                    {{ name(rel.path) }}
+                    {{ label(rel.path) }}
                   </button>
                   <span class="shrink-0 text-[11px] text-zinc-500 tabular-nums">
                     {{ rel.support }}× · {{ pct(rel.confidence) }}%
@@ -117,7 +118,7 @@ const HEAT_FILLS = ['#3f3f46', '#854d0e', '#b45309', '#ea580c', '#ef4444'];
             </ul>
           } @else if (s.status === 'ready' && !s.message) {
             <p class="text-sm text-zinc-500">
-              {{ name(focus) }} hasn't changed alongside other files in its history.
+              {{ label(focus) }} hasn't changed alongside other files in its history.
             </p>
           }
         } @else {
@@ -191,7 +192,7 @@ const HEAT_FILLS = ['#3f3f46', '#854d0e', '#b45309', '#ea580c', '#ef4444'];
                           font-size="15"
                           class="pointer-events-none font-mono"
                         >
-                          {{ name(tile.value.path) }}
+                          {{ label(tile.value.path) }}
                         </text>
                       }
                     </g>
@@ -211,7 +212,7 @@ const HEAT_FILLS = ['#3f3f46', '#854d0e', '#b45309', '#ea580c', '#ef4444'];
                           [style.background]="fill(hot)"
                         ></span>
                         <span class="min-w-0 flex-1 truncate font-mono text-xs text-zinc-200">{{
-                          name(hot.path)
+                          label(hot.path)
                         }}</span>
                         <span class="shrink-0 text-[11px] text-zinc-500 tabular-nums">
                           {{ hot.metric.revisions }}×
@@ -242,7 +243,7 @@ const HEAT_FILLS = ['#3f3f46', '#854d0e', '#b45309', '#ea580c', '#ef4444'];
                           [title]="pair.a"
                           (click)="focusFile.emit(pair.a)"
                         >
-                          {{ name(pair.a) }}
+                          {{ label(pair.a) }}
                         </button>
                         <span class="shrink-0 text-zinc-600">↔</span>
                         <button
@@ -251,7 +252,7 @@ const HEAT_FILLS = ['#3f3f46', '#854d0e', '#b45309', '#ea580c', '#ef4444'];
                           [title]="pair.b"
                           (click)="focusFile.emit(pair.b)"
                         >
-                          {{ name(pair.b) }}
+                          {{ label(pair.b) }}
                         </button>
                       </span>
                       <span class="shrink-0 text-[11px] text-zinc-500 tabular-nums">
@@ -329,6 +330,20 @@ export class InsightsView {
     ),
   );
 
+  /** Display labels for every file shown, full-path when basenames collide. */
+  private readonly labels = computed(() => {
+    const paths = new Set<string>();
+    const focus = this.state()?.focus;
+    if (focus) paths.add(focus);
+    for (const rel of this.focusRelated()) paths.add(rel.path);
+    for (const pair of this.pairs()) {
+      paths.add(pair.a);
+      paths.add(pair.b);
+    }
+    for (const hot of this.hotspots()) paths.add(hot.path);
+    return disambiguateLabels(paths);
+  });
+
   protected fill(hot: Hotspot): string {
     return HEAT_FILLS[heatLevel(hot.metric.score)];
   }
@@ -341,8 +356,8 @@ export class InsightsView {
     return Math.round(fraction * 100);
   }
 
-  protected name(path: string): string {
-    return path.slice(path.lastIndexOf('/') + 1);
+  protected label(path: string): string {
+    return this.labels().get(path) ?? path.slice(path.lastIndexOf('/') + 1);
   }
 
   protected when(iso: string): string {

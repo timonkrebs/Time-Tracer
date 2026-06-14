@@ -34,6 +34,16 @@ const FOCUSED: CoChangeState = {
   result: computeCoChange(COMMITS, { minSupport: 1 }),
   hotspots: [],
 };
+const COLLIDING: CoChangeState = {
+  status: 'ready',
+  scanned: 2,
+  target: 75,
+  result: computeCoChange([
+    { sha: 'd1', files: ['src/a/index.ts', 'src/b/index.ts'] },
+    { sha: 'd2', files: ['src/a/index.ts', 'src/b/index.ts'] },
+  ]),
+  hotspots: [],
+};
 
 describe('InsightsView', () => {
   let fixture: ComponentFixture<InsightsView>;
@@ -126,6 +136,16 @@ describe('InsightsView', () => {
 
     button('auth.ts')!.click();
     expect(focused).toEqual(['src/auth.ts']);
+  });
+
+  it('shows full paths when basenames collide', async () => {
+    await setState(COLLIDING);
+    button('Coupling')!.click();
+    await fixture.whenStable();
+
+    // Two index.ts files → labels fall back to the full path to disambiguate.
+    expect(text()).toContain('src/a/index.ts');
+    expect(text()).toContain('src/b/index.ts');
   });
 
   it('shows a focused file’s full coupling; drills on click and opens from the banner', async () => {
