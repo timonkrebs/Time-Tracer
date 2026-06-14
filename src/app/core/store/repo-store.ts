@@ -21,7 +21,7 @@ import {
   relatedFiles,
 } from '../util/co-change';
 import { FileDiff, computeFileDiff, diffLines, splitLines } from '../util/diff';
-import { FileMetric, computeFileMetric } from '../util/hotspots';
+import { FileMetric, Hotspot, computeFileMetric, computeHotspots } from '../util/hotspots';
 import {
   LineRange,
   changeRegions,
@@ -230,6 +230,8 @@ export interface CoChangeState {
   readonly target: number;
   /** Coupling aggregated from the commits scanned so far. */
   readonly result: CoChangeResult;
+  /** Files ranked by recency-weighted churn (repo-wide only; empty for a focus). */
+  readonly hotspots: readonly Hotspot[];
   readonly message?: string;
 }
 
@@ -1194,7 +1196,14 @@ export class RepoStore {
     const seq = this.loadSeq;
     const live = (): boolean => seq === this.loadSeq && run === this.coChangeRun;
 
-    const collected: CommitFiles[] = [];
+    // File sizes from the tree drive the hotspot treemap rectangles.
+    const sizes = new Map<string, number>();
+    for (const entry of this._entries()) {
+      if (entry.kind === 'file') sizes.set(entry.path, entry.size ?? 0);
+    }
+
+    // Each commit keeps its date/author (for churn scoring) and changed files.
+    const collected: (CommitFiles & { authoredAt: string; authorName: string })[] = [];
     const publish = (status: CoChangeState['status'], message?: string): void =>
       this._coChange.set({
         status,
@@ -1202,6 +1211,8 @@ export class RepoStore {
         scanned: collected.length,
         target: options.cap,
         result: computeCoChange(collected, { minSupport: options.minSupport }),
+        // Hotspots are a repo-wide metric; a single file's walk doesn't have them.
+        hotspots: options.focus ? [] : computeHotspots(collected, sizes),
         message,
       });
 
@@ -1221,7 +1232,12 @@ export class RepoStore {
           if (collected.length >= options.cap) break;
           const files = await this.commitFilesFor(slug, commit.sha);
           if (!live()) return;
-          collected.push({ sha: commit.sha, files });
+          collected.push({
+            sha: commit.sha,
+            authoredAt: commit.authoredAt,
+            authorName: commit.authorName,
+            files,
+          });
           if (collected.length % 5 === 0) publish('computing');
         }
         if (commits.length < HISTORY_PAGE_SIZE) break; // reached the end of history
@@ -1236,6 +1252,7 @@ export class RepoStore {
         scanned: collected.length,
         target: options.cap,
         result: computeCoChange(collected, { minSupport: options.minSupport }),
+        hotspots: options.focus ? [] : computeHotspots(collected, sizes),
         message: toRepoProviderError(error).message,
       });
     }

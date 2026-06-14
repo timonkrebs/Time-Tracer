@@ -1348,6 +1348,9 @@ describe('RepoStore', () => {
       expect(state?.result.commitsUsed).toBe(3);
       // a.ts↔b.ts in c1 & c2 (support 2); a.ts↔c.ts only once (dropped).
       expect(state?.result.pairs.map((p) => `${p.a}-${p.b}`)).toEqual(['a.ts-b.ts']);
+      // The same walk ranks hotspots: a.ts changed in all 3 commits.
+      expect(state?.hotspots[0]?.path).toBe('a.ts');
+      expect(state?.hotspots[0]?.metric.revisions).toBe(3);
     });
 
     it('surfaces related files for the selected file', async () => {

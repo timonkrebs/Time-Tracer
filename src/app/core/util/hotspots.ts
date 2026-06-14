@@ -1,5 +1,8 @@
 import { CommitInfo } from '../models';
 
+/** The commit fields the metric needs (so callers can pass lighter shapes). */
+export type MetricCommit = Pick<CommitInfo, 'authorName' | 'authoredAt'>;
+
 /**
  * Per-file change metrics derived from a file's commit history — the
  * data behind "hotspot" decorations in the file tree.
@@ -52,7 +55,7 @@ export const DEFAULT_HALF_LIFE_DAYS = 90;
  * (clock skew) are clamped to weight 1 rather than exceeding it.
  */
 export function computeFileMetric(
-  commits: readonly CommitInfo[],
+  commits: readonly MetricCommit[],
   options: { now?: number; halfLifeDays?: number; partial?: boolean } = {},
 ): FileMetric {
   const now = options.now ?? Date.now();
@@ -109,4 +112,60 @@ export function heatLevel(score: number): 0 | 1 | 2 | 3 | 4 {
     if (score >= HEAT_THRESHOLDS[level]) return level as 1 | 2 | 3 | 4;
   }
   return 0;
+}
+
+/** Commits touching a file, with the file's size — the input to a hotspot. */
+export interface HotspotCommit extends MetricCommit {
+  readonly files: readonly string[];
+}
+
+/** A file ranked by recency-weighted churn, sized for the treemap. */
+export interface Hotspot {
+  readonly path: string;
+  readonly metric: FileMetric;
+  /** Size in bytes (a stand-in for LOC), driving the treemap rectangle. */
+  readonly size: number;
+}
+
+const DEFAULT_MAX_COMMIT_FILES = 25;
+
+/**
+ * Ranks files by recency-weighted churn across a window of commits: groups the
+ * commits per file and runs {@link computeFileMetric} on each. Commits touching
+ * more than `maxCommitFiles` files (sweeps, merges) are skipped as churn noise.
+ * Hottest first.
+ */
+export function computeHotspots(
+  commits: Iterable<HotspotCommit>,
+  sizes: ReadonlyMap<string, number>,
+  options: { now?: number; halfLifeDays?: number; maxCommitFiles?: number } = {},
+): Hotspot[] {
+  const maxCommitFiles = options.maxCommitFiles ?? DEFAULT_MAX_COMMIT_FILES;
+  const byFile = new Map<string, MetricCommit[]>();
+
+  for (const commit of commits) {
+    const files = [...new Set(commit.files)];
+    if (files.length === 0 || files.length > maxCommitFiles) continue;
+    for (const file of files) {
+      let bucket = byFile.get(file);
+      if (!bucket) byFile.set(file, (bucket = []));
+      bucket.push(commit);
+    }
+  }
+
+  const hotspots: Hotspot[] = [];
+  for (const [path, bucket] of byFile) {
+    hotspots.push({
+      path,
+      metric: computeFileMetric(bucket, { now: options.now, halfLifeDays: options.halfLifeDays }),
+      size: sizes.get(path) ?? 0,
+    });
+  }
+  hotspots.sort(
+    (a, b) =>
+      b.metric.score - a.metric.score ||
+      b.metric.revisions - a.metric.revisions ||
+      a.path.localeCompare(b.path),
+  );
+  return hotspots;
 }
