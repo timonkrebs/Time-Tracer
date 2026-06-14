@@ -189,7 +189,7 @@ describe('InsightsView', () => {
   });
 
   it('hides clusters outside the size range slider', async () => {
-    await setState(CLUSTERED); // a 4-file cluster, inside the default band (3–8)
+    await setState(CLUSTERED); // a 4-file cluster, inside the default band (3–20)
     button('Coupling')!.click();
     await fixture.whenStable();
     expect(fixture.nativeElement.querySelector('svg circle')).not.toBeNull();

@@ -21,10 +21,10 @@ const MAX_HOTSPOTS = 45;
 const MAX_CLUSTERS = 10;
 /** Cluster-size range bounds: the floor can dip to 2 (a bare pair) on demand. */
 const CLUSTER_SIZE_FLOOR = 2;
-const CLUSTER_SIZE_CEIL = 100;
-/** Default visible band: 3 up to 8 files; bigger ones become hairballs. */
+const CLUSTER_SIZE_CEIL = 50;
+/** Default visible band: 3 up to 20 files; bigger ones become hairballs. */
 const DEFAULT_MIN_CLUSTER_FILES = 3;
-const DEFAULT_MAX_CLUSTER_FILES = 8;
+const DEFAULT_MAX_CLUSTER_FILES = 20;
 /** Treemap coordinate space (16:9, scaled uniformly to fill its box). */
 const TREEMAP_W = 1600;
 const TREEMAP_H = 900;
