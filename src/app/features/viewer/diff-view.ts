@@ -147,7 +147,7 @@ interface SplitRow {
           "
           (click)="historyToggle.emit()"
           aria-label="Toggle history panel"
-          title="Show the commits that changed this file"
+          title="Show the commits that changed this file (h)"
         >
           <svg
             class="size-3"
@@ -175,7 +175,7 @@ interface SplitRow {
           "
           (click)="blameToggle.emit()"
           aria-label="Toggle blame annotations"
-          title="Split view: the version before on the left, after on the right, both annotated"
+          title="Split view: the version before on the left, after on the right, both annotated (b)"
         >
           <svg
             class="size-3"
@@ -766,8 +766,7 @@ export class DiffView {
       return index === -1 ? null : index;
     }
     const index = this.rows().findIndex(
-      (row) =>
-        row.newLine !== undefined && row.newLine >= range.start && row.newLine <= range.end,
+      (row) => row.newLine !== undefined && row.newLine >= range.start && row.newLine <= range.end,
     );
     return index === -1 ? null : index;
   });

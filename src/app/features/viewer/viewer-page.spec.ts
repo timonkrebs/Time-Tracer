@@ -383,6 +383,12 @@ describe('ViewerPage (integration)', () => {
     button.click();
   }
 
+  function press(key: string, opts: { meta?: boolean } = {}): void {
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key, metaKey: opts.meta, bubbles: true, cancelable: true }),
+    );
+  }
+
   it('loads a repo from the URL and renders the tree', async () => {
     await harness.navigateByUrl('/r/acme/rocket');
 
@@ -751,6 +757,68 @@ describe('ViewerPage (integration)', () => {
       expect(await textOnScreen()).not.toContain('Ownership');
     });
     expect(localStorage.getItem('time-tracer.owners-open')).toBe('0');
+  });
+
+  it('drives the panels and blame from the keyboard', async () => {
+    await harness.navigateByUrl('/r/acme/rocket?path=README.md');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('# Rocket');
+    });
+
+    press('h'); // open history
+    await vi.waitFor(() =>
+      expect(harness.routeNativeElement!.querySelector('app-file-history')).not.toBeNull(),
+    );
+    expect(localStorage.getItem('time-tracer.history-open')).toBe('1');
+
+    press('o'); // open owners
+    await vi.waitFor(() =>
+      expect(harness.routeNativeElement!.querySelector('app-ownership-panel')).not.toBeNull(),
+    );
+
+    press('Escape'); // close the side panels
+    await vi.waitFor(() => {
+      expect(harness.routeNativeElement!.querySelector('app-file-history')).toBeNull();
+      expect(harness.routeNativeElement!.querySelector('app-ownership-panel')).toBeNull();
+    });
+
+    press('t'); // collapse the tree
+    await vi.waitFor(() =>
+      expect(harness.routeNativeElement!.querySelector('app-file-tree')).toBeNull(),
+    );
+
+    press('b'); // blame off
+    await vi.waitFor(() => expect(router.url).toContain('blame=0'));
+  });
+
+  it('steps commits with the arrow keys', async () => {
+    await harness.navigateByUrl('/r/acme/rocket?path=README.md');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('# Rocket');
+    });
+
+    press('ArrowLeft'); // ← Older from the tip → the newest commit
+    await vi.waitFor(() => expect(router.url).toContain(`at=${NEW_SHA}`));
+
+    press('ArrowRight'); // → Newer → back to the tip
+    await vi.waitFor(() => expect(router.url).not.toContain('at='));
+  });
+
+  it('does not fire shortcuts while the finder overlay is open', async () => {
+    await harness.navigateByUrl('/r/acme/rocket?path=README.md');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('# Rocket');
+    });
+
+    press('p', { meta: true }); // open the finder
+    await vi.waitFor(() =>
+      expect(harness.routeNativeElement!.querySelector('app-file-finder')).not.toBeNull(),
+    );
+
+    press('t'); // would collapse the tree, but the finder owns the keyboard
+    await textOnScreen();
+    expect(harness.routeNativeElement!.querySelector('app-file-tree')).not.toBeNull();
+    expect(harness.routeNativeElement!.querySelector('app-file-finder')).not.toBeNull();
   });
 
   it('splits the changes view with blame on both sides', async () => {
