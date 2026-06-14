@@ -310,7 +310,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
                 class="flex shrink-0 items-center gap-2 border-b px-4 py-1.5 text-xs"
                 [class]="
                   store.viewAt()
-                    ? 'border-amber-400/20 bg-amber-400/10 text-amber-200'
+                    ? 'border-slate-500/30 bg-slate-500/10 text-slate-200'
                     : 'border-zinc-800 bg-zinc-900/40 text-zinc-400'
                 "
               >
@@ -359,7 +359,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
                     ownersOpen()
                       ? 'border-indigo-400/40 bg-indigo-500/20 text-indigo-200'
                       : store.viewAt()
-                        ? 'border-amber-300/30 hover:bg-amber-300/10'
+                        ? 'border-slate-400/30 hover:bg-slate-400/10'
                         : 'border-zinc-700 hover:bg-white/10'
                   "
                   [attr.aria-pressed]="ownersOpen()"
@@ -370,7 +370,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
                 </button>
                 <div
                   class="flex shrink-0 overflow-hidden rounded border"
-                  [class]="store.viewAt() ? 'border-amber-300/30' : 'border-zinc-700'"
+                  [class]="store.viewAt() ? 'border-slate-400/30' : 'border-zinc-700'"
                   role="group"
                   aria-label="View mode"
                 >
@@ -380,7 +380,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
                     [class]="
                       !diffMode()
                         ? store.viewAt()
-                          ? 'bg-amber-300/25 font-medium'
+                          ? 'bg-slate-400/25 font-medium'
                           : 'bg-zinc-700/60 font-medium text-zinc-200'
                         : 'hover:bg-white/10'
                     "
@@ -392,8 +392,8 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
                     type="button"
                     class="border-l px-2 py-0.5 transition disabled:cursor-not-allowed disabled:opacity-40"
                     [class]="
-                      (store.viewAt() ? 'border-amber-300/30 ' : 'border-zinc-700 ') +
-                      (diffMode() ? 'bg-amber-300/25 font-medium' : 'enabled:hover:bg-white/10')
+                      (store.viewAt() ? 'border-slate-400/30 ' : 'border-zinc-700 ') +
+                      (diffMode() ? 'bg-slate-400/25 font-medium' : 'enabled:hover:bg-white/10')
                     "
                     [disabled]="!store.viewAt()"
                     [title]="
@@ -411,7 +411,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
                   class="shrink-0 rounded border px-2 py-0.5 transition disabled:cursor-not-allowed disabled:opacity-40"
                   [class]="
                     store.viewAt()
-                      ? 'border-amber-300/30 enabled:hover:bg-amber-300/10'
+                      ? 'border-slate-400/30 enabled:hover:bg-slate-400/10'
                       : 'border-zinc-700 enabled:hover:bg-white/10'
                   "
                   [disabled]="olderDisabled()"
@@ -425,7 +425,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
                   class="shrink-0 rounded border px-2 py-0.5 transition disabled:cursor-not-allowed disabled:opacity-40"
                   [class]="
                     store.viewAt()
-                      ? 'border-amber-300/30 enabled:hover:bg-amber-300/10'
+                      ? 'border-slate-400/30 enabled:hover:bg-slate-400/10'
                       : 'border-zinc-700 enabled:hover:bg-white/10'
                   "
                   [disabled]="newerDisabled()"
@@ -437,7 +437,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
                 @if (store.viewAt()) {
                   <button
                     type="button"
-                    class="shrink-0 rounded bg-amber-300/15 px-2 py-0.5 font-medium transition hover:bg-amber-300/25"
+                    class="shrink-0 rounded bg-slate-400/15 px-2 py-0.5 font-medium transition hover:bg-slate-400/25"
                     (click)="goToCommit(null)"
                   >
                     Back to {{ store.ref() }}
@@ -481,6 +481,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
                 (historyToggle)="toggleHistory()"
                 (blameToggle)="toggleBlame()"
                 (blameSelect)="onBlameSelect($event)"
+                (trace)="onFileTrace($event)"
               />
             }
           </section>
@@ -519,6 +520,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
                 (commitSelect)="goToCommit($event)"
                 (traceSelect)="onTraceSelect($event)"
                 (loadMore)="store.loadMoreHistory()"
+                (loadAll)="store.loadAllHistory()"
                 (retry)="store.retryHistory()"
                 (closed)="toggleHistory()"
                 (findRenames)="onFindRenames()"
@@ -777,6 +779,10 @@ export class ViewerPage {
       const path = this.path() || null;
       const at = this.at() || null;
       const selectedDiff = this.store.selectedDiff();
+      // Depend on the loaded history: when more commits are paged in, lines
+      // attributed to "older" (beyond the loaded pages) can finally be traced
+      // to the commit that introduced them, so re-run blame.
+      void this.store.history();
       const basePath = diff && selectedDiff?.status === 'ready' ? selectedDiff.basePath : null;
       const baseSha = diff && selectedDiff?.status === 'ready' ? selectedDiff.baseSha : null;
       const headPath = diff && selectedDiff?.status === 'ready' ? selectedDiff.headPath : path;
@@ -794,12 +800,14 @@ export class ViewerPage {
     });
 
     // The Owners panel folds blame, so make sure blame is computed for the
-    // selected file even when its gutter display is turned off.
+    // selected file even when its gutter display is turned off — and re-fold
+    // it (via re-blame) as more history is paged in.
     effect(() => {
       const open = this.ownersOpen();
       const phase = this.store.phase();
       const path = this.path() || null;
       const at = this.at() || null;
+      void this.store.history();
       untracked(() => {
         if (open && phase === 'ready' && path) void this.store.loadBlame(path, at);
       });
@@ -812,6 +820,19 @@ export class ViewerPage {
       untracked(() => {
         const result = this.store.folderOwnership();
         if (result && result.path !== folder) this.store.clearFolderOwnership();
+      });
+    });
+
+    // Opening a repository always reveals the file tree — it is how you start
+    // navigating a new codebase. A deliberate collapse still sticks while you
+    // browse that same repo; only loading another one re-reveals it.
+    effect(() => {
+      const slug = this.store.slug();
+      untracked(() => {
+        if (slug && this.treeCollapsed()) {
+          this.treeCollapsed.set(false);
+          persistTreeCollapsed(false);
+        }
       });
     });
   }
@@ -946,6 +967,25 @@ export class ViewerPage {
     if (!path || !at) return;
     if (!this.historyOpen()) this.toggleHistory();
     void this.store.startLineTrace(path, at, range);
+  }
+
+  /**
+   * Trace a line range selected in the file view. The current version has no
+   * commit to anchor against, so the range is pinned to the most recent commit
+   * that touched the file — its content (and line numbers) match the tip — and
+   * the journey can begin straight from the file you are reading.
+   */
+  protected async onFileTrace(range: LineRange): Promise<void> {
+    const path = this.store.selectedPath();
+    if (!path) return;
+    let anchor = this.store.viewAt();
+    if (!anchor) {
+      if (!this.historyReadyForPath()) await this.store.loadHistory(path);
+      anchor = this.store.history()[0]?.sha ?? null;
+      if (!anchor) return;
+    }
+    if (!this.historyOpen()) this.toggleHistory();
+    void this.store.startLineTrace(path, anchor, range);
   }
 
   protected onFindRenames(): void {
@@ -1123,11 +1163,7 @@ export class ViewerPage {
   /** Hides or restores the file tree (the resized width is preserved). */
   protected toggleTree(): void {
     this.treeCollapsed.update((collapsed) => !collapsed);
-    try {
-      localStorage.setItem(TREE_COLLAPSED_KEY, this.treeCollapsed() ? '1' : '0');
-    } catch {
-      // Best-effort only.
-    }
+    persistTreeCollapsed(this.treeCollapsed());
   }
 
   protected toggleBlame(): void {
@@ -1233,6 +1269,14 @@ function restoreTreeCollapsed(): boolean {
     return localStorage.getItem(TREE_COLLAPSED_KEY) === '1';
   } catch {
     return false;
+  }
+}
+
+function persistTreeCollapsed(collapsed: boolean): void {
+  try {
+    localStorage.setItem(TREE_COLLAPSED_KEY, collapsed ? '1' : '0');
+  } catch {
+    // Best-effort only.
   }
 }
 

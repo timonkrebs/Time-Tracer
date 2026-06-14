@@ -639,7 +639,17 @@ export class RepoStore {
 
     this.blameRuns.add(key);
     try {
-      await this.runBlame(key, path, atRef);
+      // Re-walk until the blame has consumed all loaded history. More pages can
+      // arrive while we compute (e.g. "Load all" paging in parallel); a
+      // truncated result should pick them up instead of staying stale.
+      for (;;) {
+        const before = this.historyCache.get(path)?.commits.length ?? 0;
+        await this.runBlame(key, path, atRef);
+        const state = this._blames().get(key);
+        if (!state || state.status !== 'ready' || !state.truncated) break;
+        const after = this.historyCache.get(path)?.commits.length ?? 0;
+        if (after <= before) break;
+      }
     } finally {
       this.blameRuns.delete(key);
     }
@@ -861,6 +871,54 @@ export class RepoStore {
       this._historyStatus.set('ready');
       this.historyCache.set(path, { commits: merged, hasMore, page });
       this.recordMetric(path, merged, hasMore);
+    } catch (error) {
+      if (seq !== this.loadSeq || this._historyPath() !== path) return;
+      // Keep the already-loaded commits; just surface the failure.
+      this._historyError.set(toRepoProviderError(error).message);
+      this._historyStatus.set('error');
+    }
+  }
+
+  /**
+   * Pages in every remaining commit of the current file's history in one go.
+   * The merged history is published once at the end, so dependents (blame, the
+   * steppers, rename search) recompute against the complete list a single time
+   * rather than once per page.
+   */
+  async loadAllHistory(): Promise<void> {
+    const slug = this._slug();
+    const path = this._historyPath();
+    if (!slug || !path || this._historyStatus() !== 'ready' || !this._historyHasMore()) return;
+
+    const seq = this.loadSeq;
+    const provider = this.registry.byId(slug.provider);
+    this._historyStatus.set('loading-more');
+    try {
+      const merged = [...this._history()];
+      const fetched: CommitInfo[] = [];
+      let page = this.historyPage;
+      let hasMore = true;
+      while (hasMore) {
+        page++;
+        const commits = await provider.listCommits(slug, {
+          ref: this.ref() ?? undefined,
+          path,
+          perPage: HISTORY_PAGE_SIZE,
+          page,
+        });
+        if (seq !== this.loadSeq || this._historyPath() !== path) return;
+        merged.push(...commits);
+        fetched.push(...commits);
+        hasMore = commits.length === HISTORY_PAGE_SIZE;
+      }
+      this.historyPage = page;
+      // Cache only the newly fetched pages, not the already-known commits.
+      this.cacheCommits(fetched);
+      this._history.set(merged);
+      this._historyHasMore.set(false);
+      this._historyStatus.set('ready');
+      this.historyCache.set(path, { commits: merged, hasMore: false, page });
+      this.recordMetric(path, merged, false);
     } catch (error) {
       if (seq !== this.loadSeq || this._historyPath() !== path) return;
       // Keep the already-loaded commits; just surface the failure.

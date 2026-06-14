@@ -312,13 +312,23 @@ import { relativeTime, shortSha } from '../../core/util/relative-time';
               @if (status() === 'loading-more') {
                 <p class="px-3 py-2 text-center text-[11px] text-zinc-500">Loading…</p>
               } @else if (hasMore()) {
-                <button
-                  type="button"
-                  class="mx-3 my-2 rounded border border-zinc-700 px-2.5 py-1 text-[11px] text-zinc-300 transition hover:border-zinc-500"
-                  (click)="loadMore.emit()"
-                >
-                  Load older commits
-                </button>
+                <div class="mx-3 my-2 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    class="rounded border border-zinc-700 px-2.5 py-1 text-[11px] text-zinc-300 transition hover:border-zinc-500"
+                    (click)="loadMore.emit()"
+                  >
+                    Load older commits
+                  </button>
+                  <button
+                    type="button"
+                    class="rounded border border-zinc-700 px-2.5 py-1 text-[11px] text-zinc-300 transition hover:border-zinc-500"
+                    title="Page in every remaining commit at once"
+                    (click)="loadAll.emit()"
+                  >
+                    Load all
+                  </button>
+                </div>
               } @else if (commits().length > 0) {
                 <div class="border-t border-zinc-800/50 px-3 py-2">
                   <p class="text-[11px] leading-4 text-zinc-600">
@@ -427,6 +437,8 @@ export class FileHistory {
   readonly commitSelect = output<string | null>();
   readonly traceSelect = output<LineTraceHit>();
   readonly loadMore = output<void>();
+  /** "Load all": page in every remaining commit at once. */
+  readonly loadAll = output<void>();
   readonly retry = output<void>();
   readonly closed = output<void>();
   readonly findRenames = output<void>();

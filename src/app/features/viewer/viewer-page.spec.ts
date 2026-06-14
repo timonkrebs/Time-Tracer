@@ -107,6 +107,26 @@ const MOVE_ROOT_COMMIT = {
   parents: [],
 };
 
+// PAGED.md: a full page of history (30 commits) plus one older root commit, to
+// exercise pagination ("Load all") and blame re-attribution as older commits
+// arrive. Version at commit i has lines L0…L(30-i); each newer commit appends
+// one line, so line 1 (L0) is born in the oldest commit — beyond page one.
+const pagedSha = (i: number): string => `paged${String(i).padStart(35, '0')}`;
+const PAGED_COMMITS = Array.from({ length: 31 }, (_, i) => ({
+  sha: pagedSha(i),
+  html_url: `https://github.com/acme/rocket/commit/${pagedSha(i)}`,
+  commit: {
+    message: `paged commit ${i}`,
+    author:
+      i === 30
+        ? { name: 'Zoe', email: 'zoe@example.com', date: '2020-01-01T00:00:00Z' }
+        : { name: 'Ada', email: 'ada@example.com', date: '2026-01-01T00:00:00Z' },
+  },
+  parents: i < 30 ? [{ sha: pagedSha(i + 1) }] : [],
+}));
+const pagedTextFor = (i: number): string =>
+  Array.from({ length: 31 - i }, (_, k) => `L${k}`).join('\n') + '\n';
+
 /**
  * Integration tests of the full viewer pipeline: route → input binding →
  * store → provider (stubbed fetch) → rendered tree/file/history DOM.
@@ -175,7 +195,24 @@ describe('ViewerPage (integration)', () => {
       if (path === 'src/multi.ts') return [RUN_COMMIT, MIDDLE_COMMIT, ROOT_COMMIT];
       if (path === 'src/move.ts') return [MOVE_EDIT_COMMIT, MOVE_COMMIT, MOVE_ROOT_COMMIT];
       if (path === 'NOTES.md') return [OLD_COMMIT];
+      if (path === 'PAGED.md') {
+        const page = Number(url.searchParams.get('page') ?? '1');
+        return PAGED_COMMITS.slice((page - 1) * 30, page * 30);
+      }
       return [NEW_COMMIT, OLD_COMMIT];
+    },
+    '/repos/acme/rocket/contents/PAGED.md': (url: URL) => {
+      const i = PAGED_COMMITS.findIndex((c) => c.sha === url.searchParams.get('ref'));
+      if (i === -1) return undefined;
+      const text = pagedTextFor(i);
+      return {
+        type: 'file',
+        path: 'PAGED.md',
+        sha: `blob-paged-${i}`,
+        size: text.length,
+        content: btoa(text),
+        encoding: 'base64',
+      };
     },
     '/repos/acme/rocket/contents/README.md': (url: URL) => {
       const ref = url.searchParams.get('ref');
@@ -376,6 +413,18 @@ describe('ViewerPage (integration)', () => {
     harness
       .routeNativeElement!.querySelector<HTMLButtonElement>('[aria-label="Show file tree"]')!
       .click();
+    await vi.waitFor(async () => {
+      await textOnScreen();
+      expect(harness.routeNativeElement!.querySelector('app-file-tree')).not.toBeNull();
+    });
+  });
+
+  it('reveals the file tree on load even when it was previously collapsed', async () => {
+    // A remembered collapse must not hide the tree when opening a repository —
+    // the tree is how you start navigating a new codebase.
+    localStorage.setItem('time-tracer.tree-collapsed', '1');
+    await harness.navigateByUrl('/r/acme/rocket');
+
     await vi.waitFor(async () => {
       await textOnScreen();
       expect(harness.routeNativeElement!.querySelector('app-file-tree')).not.toBeNull();
@@ -657,6 +706,29 @@ describe('ViewerPage (integration)', () => {
     });
   });
 
+  it('loads all older history and re-attributes blame beyond the loaded pages', async () => {
+    // PAGED.md starts with one page of history, so its oldest line (born in the
+    // still-unloaded root commit) cannot be attributed yet.
+    await harness.navigateByUrl(`/r/acme/rocket?path=PAGED.md&at=${pagedSha(0)}&view=file`);
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('Some lines predate the loaded history'); // blame is truncated
+      expect(text).toContain('Load all'); // pagination control (history auto-opened)
+    });
+    expect(await textOnScreen()).not.toContain('01.01.2020 Zoe'); // root not attributed yet
+
+    clickButton('Load all');
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      // The whole history is now loaded: the notice clears and the oldest line
+      // is attributed to the root commit — i.e. the annotations updated.
+      expect(text).not.toContain('Some lines predate the loaded history');
+      expect(text).toContain('01.01.2020 Zoe');
+    });
+  });
+
   it('toggles the Owners panel, persists it, and folds blame even with blame display off', async () => {
     await harness.navigateByUrl('/r/acme/rocket?path=README.md&blame=0');
     await vi.waitFor(async () => {
@@ -814,6 +886,39 @@ describe('ViewerPage (integration)', () => {
     );
     await vi.waitFor(async () => {
       expect(await textOnScreen()).toContain('@@ -1,7 +1,7 @@');
+    });
+
+    harness
+      .routeNativeElement!.querySelector<HTMLButtonElement>('[aria-label="Select line 1"]')!
+      .click();
+    harness
+      .routeNativeElement!.querySelector<HTMLButtonElement>('[aria-label="Select line 7"]')!
+      .click();
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('lines 1–7');
+    });
+
+    clickButton('Trace selection');
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('Tracing lines 1–7');
+      expect(text).toContain('feat: update edge lines');
+      expect(text).toContain('chore: touch middle line');
+    });
+  });
+
+  it('traces a range selected in the current version blame gutter', async () => {
+    // The most valuable case: start a trace straight from the file you are
+    // reading. With no commit selected, the range anchors at the most recent
+    // commit that touched the file (its line numbers match the tip).
+    await harness.navigateByUrl('/r/acme/rocket?path=src%2Fmulti.ts');
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('Current version');
+      expect(
+        harness.routeNativeElement!.querySelector('[aria-label="Select line 1"]'),
+      ).not.toBeNull();
     });
 
     harness
