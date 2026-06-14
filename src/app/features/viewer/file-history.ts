@@ -13,6 +13,8 @@ import {
 } from '../../core/store/repo-store';
 import { LineRange } from '../../core/util/line-range';
 import { relativeTime, shortSha } from '../../core/util/relative-time';
+import { traceToMarkdown } from '../../core/util/trace-export';
+import { CopyButton } from './copy-button';
 
 /**
  * Commit history of the selected file. Clicking a commit shows the file as it
@@ -30,6 +32,7 @@ import { relativeTime, shortSha } from '../../core/util/relative-time';
   selector: 'app-file-history',
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { class: 'flex h-full min-h-0 flex-col' },
+  imports: [CopyButton],
   template: `
     <header
       class="flex h-10 shrink-0 items-center gap-2 border-b border-zinc-800 bg-zinc-900/60 px-3"
@@ -103,6 +106,14 @@ import { relativeTime, shortSha } from '../../core/util/relative-time';
                   @ {{ abbrev(t.anchorSha) }}</span
                 >
               </span>
+              @if (t.commits.length > 0) {
+                <app-copy-button
+                  [value]="traceMarkdown(t)"
+                  label="Copy"
+                  title="Copy this trace as Markdown"
+                  buttonClass="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-indigo-300/80 transition hover:bg-white/10 hover:text-indigo-100"
+                />
+              }
               <button
                 type="button"
                 class="shrink-0 rounded p-0.5 text-indigo-300/70 transition hover:bg-white/10 hover:text-indigo-100"
@@ -499,5 +510,9 @@ export class FileHistory {
 
   protected fileName(path: string): string {
     return path.slice(path.lastIndexOf('/') + 1);
+  }
+
+  protected traceMarkdown(trace: LineTraceState): string {
+    return traceToMarkdown(trace);
   }
 }
