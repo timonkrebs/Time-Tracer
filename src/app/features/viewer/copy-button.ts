@@ -18,7 +18,13 @@ import { copyText } from '../../core/util/clipboard';
   selector: 'app-copy-button',
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <button type="button" [class]="buttonClass()" [title]="title()" (click)="copy()">
+    <button
+      type="button"
+      [class]="buttonClass()"
+      [title]="title()"
+      [disabled]="disabled()"
+      (click)="copy()"
+    >
       {{ copied() ? copiedLabel() : label() }}
     </button>
   `,
@@ -29,6 +35,7 @@ export class CopyButton {
   readonly copiedLabel = input('Copied!');
   readonly title = input('');
   readonly buttonClass = input('');
+  readonly disabled = input(false);
 
   protected readonly copied = signal(false);
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -38,6 +45,7 @@ export class CopyButton {
   }
 
   protected async copy(): Promise<void> {
+    if (this.disabled()) return;
     if (!(await copyText(this.value()))) return;
     this.copied.set(true);
     this.clear();

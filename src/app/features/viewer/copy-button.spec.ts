@@ -37,4 +37,17 @@ describe('CopyButton', () => {
     expect(writeText).toHaveBeenCalledWith('payload');
     expect(button().textContent?.trim()).toBe('Copied!');
   });
+
+  it('does not copy while disabled', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    fixture.componentRef.setInput('disabled', true);
+    await fixture.whenStable();
+
+    button().click();
+    await fixture.whenStable();
+
+    expect(writeText).not.toHaveBeenCalled();
+    expect(button().disabled).toBe(true);
+  });
 });

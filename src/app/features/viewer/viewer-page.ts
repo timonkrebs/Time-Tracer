@@ -458,12 +458,18 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
                     [value]="shareUrl()"
                     label="Copy link"
                     [buttonClass]="barButtonClass()"
-                    title="Copy a permalink to this view (pinned to a commit)"
+                    [disabled]="!pinnedSha()"
+                    [title]="
+                      pinnedSha()
+                        ? 'Copy a permalink to this view (pinned to a commit)'
+                        : 'Loading history to pin the link…'
+                    "
                   />
                   <app-copy-button
                     [value]="shareMarkdown()"
                     label="Markdown"
                     [buttonClass]="barButtonClass()"
+                    [disabled]="!pinnedSha()"
                     title="Copy a Markdown link to this view"
                   />
                 }
@@ -645,7 +651,7 @@ export class ViewerPage {
   });
 
   /** Commit a shared link pins to: the viewed commit, else the file's latest. */
-  private readonly pinnedSha = computed(() => {
+  protected readonly pinnedSha = computed(() => {
     const at = this.store.viewAt();
     if (at) return at;
     const history = this.store.history();
@@ -686,10 +692,10 @@ export class ViewerPage {
   /** Shared styling for the buttons in the per-file bar (matches the steppers). */
   protected readonly barButtonClass = computed(
     () =>
-      'shrink-0 rounded border px-2 py-0.5 transition ' +
+      'shrink-0 rounded border px-2 py-0.5 transition disabled:cursor-not-allowed disabled:opacity-40 ' +
       (this.store.viewAt()
-        ? 'border-amber-300/30 hover:bg-amber-300/10'
-        : 'border-zinc-700 hover:bg-white/10'),
+        ? 'border-amber-300/30 enabled:hover:bg-amber-300/10'
+        : 'border-zinc-700 enabled:hover:bg-white/10'),
   );
 
   protected readonly lineNumber = computed<number | null>(() => {

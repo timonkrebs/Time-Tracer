@@ -46,4 +46,17 @@ describe('copyText', () => {
 
     await expect(copyText('nope')).resolves.toBe(false);
   });
+
+  it('removes the fallback textarea even when execCommand throws', async () => {
+    stubClipboard(undefined);
+    Object.defineProperty(document, 'execCommand', {
+      value: vi.fn(() => {
+        throw new Error('boom');
+      }),
+      configurable: true,
+    });
+
+    await expect(copyText('x')).resolves.toBe(false);
+    expect(document.querySelector('textarea')).toBeNull();
+  });
 });

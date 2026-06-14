@@ -687,12 +687,13 @@ describe('ViewerPage (integration)', () => {
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
     try {
       await harness.navigateByUrl('/r/acme/rocket?path=README.md');
+      // The button stays disabled until history loads and a pin sha is known.
       await vi.waitFor(async () => {
         await textOnScreen();
-        const labels = Array.from(harness.routeNativeElement!.querySelectorAll('button')).map((b) =>
-          b.textContent?.trim(),
+        const copy = Array.from(harness.routeNativeElement!.querySelectorAll('button')).find(
+          (b) => b.textContent?.trim() === 'Copy link',
         );
-        expect(labels).toContain('Copy link');
+        expect(copy && !copy.disabled).toBe(true);
       });
 
       clickButton('Copy link');
