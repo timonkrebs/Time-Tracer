@@ -19,9 +19,11 @@ const MAX_PAIRS = 60;
 const MAX_RELATED = 100;
 const MAX_HOTSPOTS = 45;
 const MAX_CLUSTERS = 10;
-/** Clusters smaller than this are just pairs (already in the list below). */
-const MIN_CLUSTER_FILES = 3;
-/** Default max cluster size (user-adjustable); bigger ones become hairballs. */
+/** Cluster-size range bounds: a 2-file cluster is just a pair (listed below). */
+const CLUSTER_SIZE_FLOOR = 3;
+const CLUSTER_SIZE_CEIL = 20;
+/** Default visible band: 3 up to 8 files; bigger ones become hairballs. */
+const DEFAULT_MIN_CLUSTER_FILES = 3;
 const DEFAULT_MAX_CLUSTER_FILES = 8;
 /** Treemap coordinate space (16:9, scaled uniformly to fill its box). */
 const TREEMAP_W = 1600;
@@ -63,6 +65,51 @@ interface ClusterGraph {
   selector: 'app-insights-view',
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { class: 'flex h-full min-h-0 flex-col bg-zinc-950' },
+  // A two-thumb range slider: two native range inputs overlaid on one track.
+  // Only the thumbs take pointer events, so both handles stay grabbable.
+  styles: `
+    .dual-range input[type='range'] {
+      -webkit-appearance: none;
+      appearance: none;
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      background: transparent;
+      pointer-events: none;
+    }
+    .dual-range input[type='range']:focus-visible {
+      outline: none;
+    }
+    .dual-range input[type='range']::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      pointer-events: auto;
+      height: 0.75rem;
+      width: 0.75rem;
+      border-radius: 9999px;
+      background: #818cf8;
+      border: 2px solid #18181b;
+      cursor: pointer;
+    }
+    .dual-range input[type='range']::-moz-range-thumb {
+      pointer-events: auto;
+      height: 0.75rem;
+      width: 0.75rem;
+      border-radius: 9999px;
+      background: #818cf8;
+      border: 2px solid #18181b;
+      cursor: pointer;
+    }
+    .dual-range input[type='range']:focus-visible::-webkit-slider-thumb {
+      outline: 2px solid #a5b4fc;
+      outline-offset: 1px;
+    }
+    .dual-range input[type='range']:focus-visible::-moz-range-thumb {
+      outline: 2px solid #a5b4fc;
+      outline-offset: 1px;
+    }
+  `,
   template: `
     <header
       class="flex h-10 shrink-0 items-center gap-2 border-b border-zinc-800 bg-zinc-900/60 px-4"
@@ -298,22 +345,45 @@ interface ClusterGraph {
               <p class="text-sm text-zinc-500">{{ s.message }}</p>
             } @else if (pairs().length) {
               <div class="mb-2 flex items-center gap-3 text-xs text-zinc-500">
-                <span>Most-coupled clusters (≥3 files) — click a file to filter by it.</span>
+                <span>Most-coupled clusters — click a file to filter by it.</span>
                 <span class="flex-1"></span>
-                <label class="flex items-center gap-1.5">
-                  <span class="text-zinc-600">max size</span>
+                <span class="text-zinc-600">files</span>
+                <span class="w-4 text-right tabular-nums text-zinc-400">{{
+                  minClusterSize()
+                }}</span>
+                <span
+                  class="dual-range relative h-3 w-28"
+                  role="group"
+                  aria-label="Cluster size range"
+                >
+                  <span
+                    class="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded bg-zinc-700"
+                  ></span>
+                  <span
+                    class="pointer-events-none absolute top-1/2 h-1 -translate-y-1/2 rounded bg-indigo-400"
+                    [style.left.%]="rangePercent().left"
+                    [style.right.%]="rangePercent().right"
+                  ></span>
                   <input
                     type="range"
-                    min="3"
-                    max="20"
+                    [min]="floor"
+                    [max]="ceil"
+                    step="1"
+                    [value]="minClusterSize()"
+                    (input)="onMinClusterSize($event)"
+                    aria-label="Minimum cluster size"
+                  />
+                  <input
+                    type="range"
+                    [min]="floor"
+                    [max]="ceil"
                     step="1"
                     [value]="maxClusterSize()"
                     (input)="onMaxClusterSize($event)"
-                    class="h-1 w-24 cursor-pointer accent-indigo-400"
                     aria-label="Maximum cluster size"
                   />
-                  <span class="w-5 tabular-nums text-zinc-400">{{ maxClusterSize() }}</span>
-                </label>
+                </span>
+                <span class="w-4 tabular-nums text-zinc-400">{{ maxClusterSize() }}</span>
               </div>
               @if (clusters().length) {
                 <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -459,7 +529,19 @@ export class InsightsView {
   protected readonly clusterW = CLUSTER_W;
   protected readonly clusterH = CLUSTER_H;
   protected readonly tab = signal<'hotspots' | 'coupling'>('hotspots');
+  protected readonly floor = CLUSTER_SIZE_FLOOR;
+  protected readonly ceil = CLUSTER_SIZE_CEIL;
+  protected readonly minClusterSize = signal(DEFAULT_MIN_CLUSTER_FILES);
   protected readonly maxClusterSize = signal(DEFAULT_MAX_CLUSTER_FILES);
+
+  /** The selected band as track percentages, for the slider's filled segment. */
+  protected readonly rangePercent = computed(() => {
+    const span = this.ceil - this.floor || 1;
+    return {
+      left: ((this.minClusterSize() - this.floor) / span) * 100,
+      right: ((this.ceil - this.maxClusterSize()) / span) * 100,
+    };
+  });
 
   protected readonly pairs = computed(() => (this.state()?.result.pairs ?? []).slice(0, MAX_PAIRS));
   protected readonly more = computed(() =>
@@ -473,7 +555,7 @@ export class InsightsView {
   protected readonly clusters = computed(() =>
     clusterCoChange(this.state()?.result.pairs ?? [], {
       limit: MAX_CLUSTERS,
-      minFiles: MIN_CLUSTER_FILES,
+      minFiles: this.minClusterSize(),
       maxFiles: this.maxClusterSize(),
     }),
   );
@@ -537,8 +619,15 @@ export class InsightsView {
     return { files: n, nodes, edges };
   }
 
+  /** The two handles can't cross: each clamps against the other. */
+  protected onMinClusterSize(event: Event): void {
+    const value = Number((event.target as HTMLInputElement).value);
+    this.minClusterSize.set(Math.min(value, this.maxClusterSize()));
+  }
+
   protected onMaxClusterSize(event: Event): void {
-    this.maxClusterSize.set(Number((event.target as HTMLInputElement).value));
+    const value = Number((event.target as HTMLInputElement).value);
+    this.maxClusterSize.set(Math.max(value, this.minClusterSize()));
   }
 
   protected fill(hot: Hotspot): string {

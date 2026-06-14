@@ -102,6 +102,15 @@ describe('InsightsView', () => {
     el!.click();
   }
 
+  /** Moves a range slider (found by aria-label) to a value. */
+  function drag(ariaLabel: string, value: number): void {
+    const input = fixture.nativeElement.querySelector(
+      `input[aria-label="${ariaLabel}"]`,
+    ) as HTMLInputElement;
+    input.value = String(value);
+    input.dispatchEvent(new Event('input'));
+  }
+
   async function setState(state: CoChangeState): Promise<void> {
     fixture.componentRef.setInput('state', state);
     await fixture.whenStable();
@@ -179,17 +188,21 @@ describe('InsightsView', () => {
     expect(focused).toContain('src/b.ts');
   });
 
-  it('hides clusters above the max-size slider', async () => {
-    await setState(CLUSTERED); // a 4-file cluster, shown at the default max (8)
+  it('hides clusters outside the size range slider', async () => {
+    await setState(CLUSTERED); // a 4-file cluster, inside the default band (3–8)
     button('Coupling')!.click();
     await fixture.whenStable();
     expect(fixture.nativeElement.querySelector('svg circle')).not.toBeNull();
 
-    const slider = fixture.nativeElement.querySelector('input[type=range]') as HTMLInputElement;
-    slider.value = '3';
-    slider.dispatchEvent(new Event('input'));
+    // Lowering the max handle below 4 puts the cluster above the band…
+    drag('Maximum cluster size', 3);
     await fixture.whenStable();
-    // The 4-file cluster now exceeds the cap, so the graph is gone (pairs remain).
+    expect(fixture.nativeElement.querySelector('svg circle')).toBeNull();
+
+    // …and raising the min handle above 4 puts it below the band.
+    drag('Maximum cluster size', 8);
+    drag('Minimum cluster size', 5);
+    await fixture.whenStable();
     expect(fixture.nativeElement.querySelector('svg circle')).toBeNull();
   });
 
