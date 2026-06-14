@@ -19,9 +19,9 @@ const MAX_PAIRS = 60;
 const MAX_RELATED = 100;
 const MAX_HOTSPOTS = 45;
 const MAX_CLUSTERS = 10;
-/** Cluster-size range bounds: a 2-file cluster is just a pair (listed below). */
-const CLUSTER_SIZE_FLOOR = 3;
-const CLUSTER_SIZE_CEIL = 20;
+/** Cluster-size range bounds: the floor can dip to 2 (a bare pair) on demand. */
+const CLUSTER_SIZE_FLOOR = 2;
+const CLUSTER_SIZE_CEIL = 100;
 /** Default visible band: 3 up to 8 files; bigger ones become hairballs. */
 const DEFAULT_MIN_CLUSTER_FILES = 3;
 const DEFAULT_MAX_CLUSTER_FILES = 8;
@@ -348,7 +348,7 @@ interface ClusterGraph {
                 <span>Most-coupled clusters — click a file to filter by it.</span>
                 <span class="flex-1"></span>
                 <span class="text-zinc-600">files</span>
-                <span class="w-4 text-right tabular-nums text-zinc-400">{{
+                <span class="w-7 text-right tabular-nums text-zinc-400">{{
                   minClusterSize()
                 }}</span>
                 <span
@@ -383,7 +383,7 @@ interface ClusterGraph {
                     aria-label="Maximum cluster size"
                   />
                 </span>
-                <span class="w-4 tabular-nums text-zinc-400">{{ maxClusterSize() }}</span>
+                <span class="w-7 tabular-nums text-zinc-400">{{ maxClusterSize() }}</span>
               </div>
               @if (clusters().length) {
                 <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
