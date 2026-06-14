@@ -143,16 +143,17 @@ const DEFAULT_CLUSTER_MAX_FILES = 8;
 /**
  * Groups coupled files into clusters: keeps the couplings at or above
  * `minDegree` (so weak transitive links don't merge everything), then finds the
- * connected components. Components larger than `maxFiles` are dropped as
- * unreadable hairballs. Clusters come back strongest (most internal support)
- * first, capped at `limit`.
+ * connected components. Only components with `minFiles`..`maxFiles` members are
+ * kept — smaller ones are just pairs, bigger ones are unreadable hairballs.
+ * Clusters come back strongest (most internal support) first, capped at `limit`.
  */
 export function clusterCoChange(
   pairs: readonly CoChangePair[],
-  options: { minDegree?: number; limit?: number; maxFiles?: number } = {},
+  options: { minDegree?: number; limit?: number; minFiles?: number; maxFiles?: number } = {},
 ): CoChangeCluster[] {
   const minDegree = options.minDegree ?? DEFAULT_MIN_DEGREE;
   const limit = options.limit ?? DEFAULT_CLUSTER_LIMIT;
+  const minFiles = options.minFiles ?? 1;
   const maxFiles = options.maxFiles ?? DEFAULT_CLUSTER_MAX_FILES;
   const edges = pairs.filter((p) => p.degree >= minDegree);
 
@@ -193,7 +194,7 @@ export function clusterCoChange(
 
   const clusters: CoChangeCluster[] = [];
   for (const [root, files] of filesByRoot) {
-    if (files.size > maxFiles) continue; // skip unreadable super-clusters
+    if (files.size < minFiles || files.size > maxFiles) continue; // skip pairs & hairballs
     const clusterEdges = edgesByRoot.get(root) ?? [];
     clusters.push({
       files: [...files].sort(),

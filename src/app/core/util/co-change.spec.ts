@@ -92,6 +92,13 @@ describe('clusterCoChange', () => {
     expect(clusterCoChange(pairs, { minDegree: 0.3, limit: 1 })).toHaveLength(1);
   });
 
+  it('drops clusters below the minimum size', () => {
+    // x–y is only two files; with minFiles 3 just the a–b–c cluster remains.
+    expect(clusterCoChange(pairs, { minDegree: 0.3, minFiles: 3 }).map((c) => c.files)).toEqual([
+      ['a', 'b', 'c'],
+    ]);
+  });
+
   it('drops super-clusters larger than the size cap', () => {
     const tangled = [
       { a: 'a', b: 'b', support: 3, degree: 0.9 },

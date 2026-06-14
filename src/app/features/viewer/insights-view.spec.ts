@@ -44,6 +44,17 @@ const COLLIDING: CoChangeState = {
   ]),
   hotspots: [],
 };
+// A 4-file clique → forms a cluster (≥ 3 files) for the graph.
+const CLUSTERED: CoChangeState = {
+  status: 'ready',
+  scanned: 2,
+  target: 75,
+  result: computeCoChange([
+    { sha: 'k1', files: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts'] },
+    { sha: 'k2', files: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts'] },
+  ]),
+  hotspots: [],
+};
 
 describe('InsightsView', () => {
   let fixture: ComponentFixture<InsightsView>;
@@ -139,7 +150,7 @@ describe('InsightsView', () => {
   });
 
   it('draws a coupling cluster graph and focuses a node on click', async () => {
-    await setState(OVERVIEW);
+    await setState(CLUSTERED);
     button('Coupling')!.click();
     await fixture.whenStable();
 
@@ -148,10 +159,24 @@ describe('InsightsView', () => {
     expect(fixture.nativeElement.querySelectorAll('svg circle').length).toBeGreaterThan(0);
 
     const node = Array.from(fixture.nativeElement.querySelectorAll('g') as SVGGElement[]).find(
-      (g) => (g.querySelector('title')?.textContent ?? '').includes('src/session.ts'),
+      (g) => (g.querySelector('title')?.textContent ?? '').includes('src/b.ts'),
     );
     node!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    expect(focused).toContain('src/session.ts');
+    expect(focused).toContain('src/b.ts');
+  });
+
+  it('hides clusters above the max-size slider', async () => {
+    await setState(CLUSTERED); // a 4-file cluster, shown at the default max (8)
+    button('Coupling')!.click();
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelector('svg circle')).not.toBeNull();
+
+    const slider = fixture.nativeElement.querySelector('input[type=range]') as HTMLInputElement;
+    slider.value = '3';
+    slider.dispatchEvent(new Event('input'));
+    await fixture.whenStable();
+    // The 4-file cluster now exceeds the cap, so the graph is gone (pairs remain).
+    expect(fixture.nativeElement.querySelector('svg circle')).toBeNull();
   });
 
   it('shows full paths when basenames collide', async () => {

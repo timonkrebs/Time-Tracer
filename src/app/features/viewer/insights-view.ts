@@ -15,6 +15,10 @@ const MAX_RELATED = 100;
 const MAX_HOTSPOTS = 45;
 /** Coupled clusters drawn as graphs. */
 const MAX_CLUSTERS = 10;
+/** Clusters smaller than this are just pairs (already in the list below). */
+const MIN_CLUSTER_FILES = 3;
+/** Default max cluster size (user-adjustable); bigger ones become hairballs. */
+const DEFAULT_MAX_CLUSTER_FILES = 8;
 /** Per-cluster graph coordinate space. */
 const CLUSTER_W = 240;
 const CLUSTER_H = 220;
@@ -254,55 +258,72 @@ const HEAT_FILLS = ['#3f3f46', '#854d0e', '#b45309', '#ea580c', '#ef4444'];
                 <p class="text-sm text-zinc-500">Crunching hotspots…</p>
               }
             } @else {
-              @if (clusters().length) {
-                <p class="mb-2 text-xs text-zinc-500">
-                  Most-coupled clusters — click a file to focus on it.
-                </p>
-                <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  @for (graph of clusterGraphs(); track $index) {
-                    <div class="rounded border border-zinc-800 bg-zinc-900/30 p-1">
-                      <svg
-                        [attr.viewBox]="'0 0 ' + clusterW + ' ' + clusterH"
-                        class="w-full"
-                        role="img"
-                      >
-                        @for (edge of graph.edges; track $index) {
-                          <line
-                            [attr.x1]="edge.x1"
-                            [attr.y1]="edge.y1"
-                            [attr.x2]="edge.x2"
-                            [attr.y2]="edge.y2"
-                            stroke="#6366f1"
-                            stroke-opacity="0.35"
-                            [attr.stroke-width]="edge.width"
-                          />
-                        }
-                        @for (node of graph.nodes; track node.path) {
-                          <g class="cursor-pointer" (click)="focusFile.emit(node.path)">
-                            <title>{{ node.path }}</title>
-                            <circle [attr.cx]="node.x" [attr.cy]="node.y" r="5" fill="#818cf8" />
-                            <text
-                              [attr.x]="node.x"
-                              [attr.y]="node.y - 9"
-                              text-anchor="middle"
-                              font-size="11"
-                              fill="#e4e4e7"
-                              class="pointer-events-none font-mono"
-                            >
-                              {{ node.label }}
-                            </text>
-                          </g>
-                        }
-                      </svg>
-                      <p class="text-center text-[11px] text-zinc-600">{{ graph.files }} files</p>
-                    </div>
-                  }
-                </div>
-                <p class="mt-4 mb-1 text-[11px] font-medium tracking-wide text-zinc-500 uppercase">
-                  All pairs
-                </p>
-              }
               @if (pairs().length) {
+                <div class="mb-2 flex items-center gap-3 text-xs text-zinc-500">
+                  <span>Most-coupled clusters (≥3 files) — click a file to focus.</span>
+                  <span class="flex-1"></span>
+                  <label class="flex items-center gap-1.5">
+                    <span class="text-zinc-600">max size</span>
+                    <input
+                      type="range"
+                      min="3"
+                      max="20"
+                      step="1"
+                      [value]="maxClusterSize()"
+                      (input)="onMaxClusterSize($event)"
+                      class="h-1 w-24 cursor-pointer accent-indigo-400"
+                      aria-label="Maximum cluster size"
+                    />
+                    <span class="w-5 tabular-nums text-zinc-400">{{ maxClusterSize() }}</span>
+                  </label>
+                </div>
+                @if (clusters().length) {
+                  <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    @for (graph of clusterGraphs(); track $index) {
+                      <div class="rounded border border-zinc-800 bg-zinc-900/30 p-1">
+                        <svg
+                          [attr.viewBox]="'0 0 ' + clusterW + ' ' + clusterH"
+                          class="w-full"
+                          role="img"
+                        >
+                          @for (edge of graph.edges; track $index) {
+                            <line
+                              [attr.x1]="edge.x1"
+                              [attr.y1]="edge.y1"
+                              [attr.x2]="edge.x2"
+                              [attr.y2]="edge.y2"
+                              stroke="#6366f1"
+                              stroke-opacity="0.35"
+                              [attr.stroke-width]="edge.width"
+                            />
+                          }
+                          @for (node of graph.nodes; track node.path) {
+                            <g class="cursor-pointer" (click)="focusFile.emit(node.path)">
+                              <title>{{ node.path }}</title>
+                              <circle [attr.cx]="node.x" [attr.cy]="node.y" r="5" fill="#818cf8" />
+                              <text
+                                [attr.x]="node.x"
+                                [attr.y]="node.y - 9"
+                                text-anchor="middle"
+                                font-size="11"
+                                fill="#e4e4e7"
+                                class="pointer-events-none font-mono"
+                              >
+                                {{ node.label }}
+                              </text>
+                            </g>
+                          }
+                        </svg>
+                        <p class="text-center text-[11px] text-zinc-600">{{ graph.files }} files</p>
+                      </div>
+                    }
+                  </div>
+                  <p
+                    class="mt-3 mb-1 text-[11px] font-medium tracking-wide text-zinc-500 uppercase"
+                  >
+                    All pairs
+                  </p>
+                }
                 <ul class="space-y-1">
                   @for (pair of pairs(); track $index) {
                     <li
@@ -384,9 +405,15 @@ export class InsightsView {
   protected readonly clusterW = CLUSTER_W;
   protected readonly clusterH = CLUSTER_H;
   protected readonly tab = signal<'hotspots' | 'coupling'>('hotspots');
+  /** User-adjustable upper bound on cluster size, to tame super-clusters. */
+  protected readonly maxClusterSize = signal(DEFAULT_MAX_CLUSTER_FILES);
 
   protected readonly clusters = computed(() =>
-    clusterCoChange(this.state()?.result.pairs ?? [], { limit: MAX_CLUSTERS }),
+    clusterCoChange(this.state()?.result.pairs ?? [], {
+      limit: MAX_CLUSTERS,
+      minFiles: MIN_CLUSTER_FILES,
+      maxFiles: this.maxClusterSize(),
+    }),
   );
   protected readonly clusterGraphs = computed(() => this.clusters().map((c) => this.layout(c)));
 
@@ -457,6 +484,10 @@ export class InsightsView {
 
   protected score(hot: Hotspot): string {
     return hot.metric.score.toFixed(1);
+  }
+
+  protected onMaxClusterSize(event: Event): void {
+    this.maxClusterSize.set(Number((event.target as HTMLInputElement).value));
   }
 
   protected pct(fraction: number): number {
