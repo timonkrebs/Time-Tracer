@@ -1348,6 +1348,9 @@ describe('RepoStore', () => {
       expect(state?.result.commitsUsed).toBe(3);
       // a.ts↔b.ts in c1 & c2 (support 2); a.ts↔c.ts only once (dropped).
       expect(state?.result.pairs.map((p) => `${p.a}-${p.b}`)).toEqual(['a.ts-b.ts']);
+      // The same walk ranks hotspots: a.ts changed in all 3 commits.
+      expect(state?.hotspots[0]?.path).toBe('a.ts');
+      expect(state?.hotspots[0]?.metric.revisions).toBe(3);
     });
 
     it('surfaces related files for the selected file', async () => {
@@ -1390,6 +1393,17 @@ describe('RepoStore', () => {
       expect(store.coChange()).toBeNull();
     });
 
+    it('walks the full history when asked to load all commits', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c1')]);
+      provider.commitFilesResult = () => Promise.resolve([{ path: 'a.ts', status: 'modified' }]);
+
+      await store.computeCoChange({ all: true });
+
+      // No commit cap: the walk targets the whole history (infinite).
+      expect(store.coChange()?.target).toBe(Number.POSITIVE_INFINITY);
+      expect(store.coChange()?.status).toBe('ready');
+    });
+
     it('focuses a single file’s full history, keeping low-support couplings', async () => {
       provider.listCommitsResult = () => Promise.resolve([commit('c1'), commit('c2')]);
       provider.commitFilesResult = (sha) =>
@@ -1407,7 +1421,8 @@ describe('RepoStore', () => {
 
       await store.computeCoChangeFor('README.md');
 
-      const state = store.coChange();
+      // The file filter publishes to its own signal, not the repo-wide overview.
+      const state = store.coupleFocus();
       expect(state?.focus).toBe('README.md');
       expect(state?.status).toBe('ready');
       // minSupport 1 in focus mode, so even the single co-change is kept.
@@ -1416,6 +1431,28 @@ describe('RepoStore', () => {
         .map((p) => (p.a === 'README.md' ? p.b : p.a))
         .sort();
       expect(partners).toEqual(['rare.ts', 'src/deep/main.ts']);
+    });
+
+    it('keeps the overview when a file filter is applied and then cleared', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c1')]);
+      provider.commitFilesResult = () =>
+        Promise.resolve([
+          { path: 'README.md', status: 'modified' },
+          { path: 'src/deep/main.ts', status: 'modified' },
+        ]);
+
+      await store.computeCoChange();
+      expect(store.coChange()?.status).toBe('ready');
+
+      await store.computeCoChangeFor('README.md');
+      // The filter is set; the repo-wide overview survives alongside it.
+      expect(store.coupleFocus()?.focus).toBe('README.md');
+      expect(store.coChange()?.status).toBe('ready');
+
+      store.clearCoupleFocus();
+      // Only the filter is dropped — the overview is still there.
+      expect(store.coupleFocus()).toBeNull();
+      expect(store.coChange()?.status).toBe('ready');
     });
   });
 });

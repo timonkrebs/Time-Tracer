@@ -1,5 +1,11 @@
 import { CommitInfo } from '../models';
-import { HEAT_THRESHOLDS, computeFileMetric, heatLevel } from './hotspots';
+import {
+  HEAT_THRESHOLDS,
+  HotspotCommit,
+  computeFileMetric,
+  computeHotspots,
+  heatLevel,
+} from './hotspots';
 
 const DAY_MS = 86_400_000;
 
@@ -101,5 +107,47 @@ describe('heatLevel', () => {
       expect(heatLevel(threshold)).toBe(level);
       if (level > 0) expect(heatLevel(threshold - 0.001)).toBe(level - 1);
     });
+  });
+});
+
+describe('computeHotspots', () => {
+  const now = Date.parse('2026-06-14T00:00:00Z');
+  function hc(authoredAt: string, files: string[]): HotspotCommit {
+    return { authorName: 'Ada', authoredAt, files };
+  }
+
+  it('ranks files by recency-weighted churn and attaches sizes', () => {
+    const commits: HotspotCommit[] = [
+      hc('2026-06-13T00:00:00Z', ['hot.ts', 'a.ts']),
+      hc('2026-06-12T00:00:00Z', ['hot.ts']),
+      hc('2026-06-10T00:00:00Z', ['hot.ts']),
+      hc('2020-01-01T00:00:00Z', ['cold.ts']), // ancient → low score
+    ];
+    const sizes = new Map([
+      ['hot.ts', 1000],
+      ['a.ts', 50],
+      ['cold.ts', 200],
+    ]);
+
+    const hotspots = computeHotspots(commits, sizes, { now });
+
+    expect(hotspots[0].path).toBe('hot.ts');
+    expect(hotspots[0].metric.revisions).toBe(3);
+    expect(hotspots[0].size).toBe(1000);
+    // The ancient file scores below the recent ones.
+    const cold = hotspots.find((h) => h.path === 'cold.ts')!;
+    expect(cold.metric.score).toBeLessThan(hotspots[0].metric.score);
+  });
+
+  it('skips commits that touch more files than the cap', () => {
+    const commits: HotspotCommit[] = [
+      hc('2026-06-13T00:00:00Z', ['x.ts', 'y.ts', 'z.ts']), // a sweep
+      hc('2026-06-12T00:00:00Z', ['x.ts']),
+    ];
+    const hotspots = computeHotspots(commits, new Map(), { now, maxCommitFiles: 2 });
+    // Only the second commit counts; x.ts has one revision, y/z none.
+    expect(hotspots).toHaveLength(1);
+    expect(hotspots[0]).toMatchObject({ path: 'x.ts', size: 0 });
+    expect(hotspots[0].metric.revisions).toBe(1);
   });
 });

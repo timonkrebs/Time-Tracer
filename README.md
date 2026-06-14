@@ -69,14 +69,25 @@ renames — see the feature list and roadmap below for what's done and what's ne
   this?") — for free from the blame already computed. An opt-in folder scan blames the files under
   the folder (subfolders included) — largest first and capped, with the scanned files listed on
   hover and a one-click option to load them all — and aggregates them, streaming as each is added.
-- **Insights — change coupling**: a dedicated view (the chart toggle in the header) that surfaces
-  the **files that change together** — temporal coupling in the spirit of Tornhill's _Your Code as
-  a Crime Scene_ ("touch `auth.ts`, you usually touch `session.ts`"). Two modes: a repo-wide
-  overview from a capped walk of recent commits, and — pick a file in the tree — a **file focus**
-  that walks that file's _full_ history for the complete list of what changes alongside it. Click
-  any file to drill the focus onto it; mega-commits are filtered out as noise, and the walk
-  streams. The same data powers an **"Often changes with"** list on the open file in the History
-  panel.
+- **Insights — a metrics view** (the chart toggle in the header), from one walk of recent
+  commits — capped by default, or **"Load all commits"** to walk the whole history — in the spirit
+  of Tornhill's _Your Code as a Crime Scene_. **Hotspots** and **Coupling** are always a tab-switch
+  apart:
+  - **Hotspots** — files ranked by **recency-weighted churn** (`core/util/hotspots.ts`), shown as
+    a **treemap** (rectangle = size/LOC, colour = heat) _and_ a ranked list; click a file to open
+    it.
+  - **Change coupling** — the **files that change together** ("touch `auth.ts`, you usually touch
+    `session.ts`"), shown as the **top ~10 most-coupled clusters** drawn as node-link graphs
+    (connected components of the strong couplings, sized to an adjustable **min–max range
+    slider** — tame "everything-touches-everything" hairballs from the top, drop noisy small
+    clusters from the bottom) plus the full pair list. **Filter to one file** —
+    pick it in the tree or click any file (cluster node or pair) — to walk its _full_ history and
+    see only the connections to and from it; **Clear filter** drops it again while the repo-wide
+    overview stays put. The same data powers an **"Often changes with"** list on the open file in
+    the History panel.
+
+  Mega-commits are filtered out as churn noise; the walk streams as it goes.
+
 - **Time travel**: pick any commit to see the file exactly as it was, with a banner showing where
   in time you are and a one-click way back to the tip. The ← Older / Newer → steppers are always
   visible (only the dead direction is disabled) and work straight from the current version,
@@ -274,6 +285,7 @@ npm run build      # production build into dist/
 21. **Off-main-thread analysis & more hosts** — move blame/Trace/pickaxe walks to a Web Worker so
     long histories stay responsive, and add Gitea / Forgejo / Codeberg behind the `GitProvider`
     interface.
-22. **Repository Insights** — a metrics view over the history. ✅ Started with **change coupling**
-    (`core/util/co-change.ts`); next: a hotspot treemap, a contributor leaderboard, and a
-    bus-factor/knowledge map, all from the same capped commit walk.
+22. **Repository Insights** — a metrics view over the history. ✅ **Change coupling**
+    (`core/util/co-change.ts`) and a **hotspot treemap + list** (`core/util/hotspots.ts`,
+    `core/util/treemap.ts`); next: a contributor leaderboard and a bus-factor/knowledge map (same
+    commit walk), and a hierarchically zoomable treemap.

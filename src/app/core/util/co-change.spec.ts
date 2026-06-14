@@ -1,4 +1,4 @@
-import { CommitFiles, computeCoChange, relatedFiles } from './co-change';
+import { CommitFiles, clusterCoChange, computeCoChange, relatedFiles } from './co-change';
 
 const COMMITS: CommitFiles[] = [
   { sha: 'c1', files: ['a', 'b'] },
@@ -65,5 +65,54 @@ describe('relatedFiles', () => {
     const result = computeCoChange(COMMITS);
     expect(relatedFiles(result, 'a', 1).map((r) => r.path)).toEqual(['b']);
     expect(relatedFiles(result, 'nope')).toEqual([]);
+  });
+});
+
+describe('clusterCoChange', () => {
+  const pairs = [
+    { a: 'a', b: 'b', support: 5, degree: 0.8 },
+    { a: 'b', b: 'c', support: 4, degree: 0.7 },
+    { a: 'x', b: 'y', support: 2, degree: 0.5 },
+    { a: 'c', b: 'x', support: 1, degree: 0.1 }, // weak: must not merge the two clusters
+  ];
+
+  it('finds connected components, strongest first, ignoring weak links', () => {
+    const clusters = clusterCoChange(pairs, { minDegree: 0.3 });
+    expect(clusters).toHaveLength(2);
+
+    expect(clusters[0].files).toEqual(['a', 'b', 'c']);
+    expect(clusters[0].score).toBe(9); // 5 + 4
+    expect(clusters[0].edges).toHaveLength(2);
+
+    expect(clusters[1].files).toEqual(['x', 'y']);
+    expect(clusters[1].score).toBe(2);
+  });
+
+  it('honours the cluster limit', () => {
+    expect(clusterCoChange(pairs, { minDegree: 0.3, limit: 1 })).toHaveLength(1);
+  });
+
+  it('drops clusters below the minimum size', () => {
+    // x–y is only two files; with minFiles 3 just the a–b–c cluster remains.
+    expect(clusterCoChange(pairs, { minDegree: 0.3, minFiles: 3 }).map((c) => c.files)).toEqual([
+      ['a', 'b', 'c'],
+    ]);
+  });
+
+  it('drops super-clusters larger than the size cap', () => {
+    const tangled = [
+      { a: 'a', b: 'b', support: 3, degree: 0.9 },
+      { a: 'b', b: 'c', support: 3, degree: 0.9 },
+      { a: 'c', b: 'd', support: 3, degree: 0.9 }, // a–b–c–d: a 4-file hairball
+      { a: 'x', b: 'y', support: 5, degree: 0.9 },
+    ];
+    // With maxFiles 3 the 4-file component is excluded; only x–y survives.
+    expect(clusterCoChange(tangled, { minDegree: 0.3, maxFiles: 3 }).map((c) => c.files)).toEqual([
+      ['x', 'y'],
+    ]);
+  });
+
+  it('returns nothing when every coupling is below the degree threshold', () => {
+    expect(clusterCoChange(pairs, { minDegree: 0.95 })).toEqual([]);
   });
 });
