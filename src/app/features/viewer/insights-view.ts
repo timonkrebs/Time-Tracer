@@ -565,7 +565,10 @@ export class InsightsView {
   protected readonly list = computed(() => this.hotspots());
   protected readonly tiles = computed<TreemapTile<Hotspot>[]>(() =>
     squarify(
-      this.hotspots().map((hot) => ({ weight: hot.size, value: hot })),
+      // A touched file missing from the current tree has size 0; squarify drops
+      // non-positive weights, so clamp to keep it a (tiny) tile — otherwise it
+      // would show in the ranked list but never in the treemap.
+      this.hotspots().map((hot) => ({ weight: Math.max(hot.size, 1), value: hot })),
       TREEMAP_W,
       TREEMAP_H,
     ),

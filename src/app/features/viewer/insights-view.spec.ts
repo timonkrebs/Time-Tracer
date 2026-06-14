@@ -26,6 +26,22 @@ const OVERVIEW: CoChangeState = {
   result: computeCoChange(COMMITS),
   hotspots: HOTSPOTS,
 };
+// A hotspot whose file is absent from the current tree → size 0. squarify
+// drops non-positive weights, so without the clamp it would list but not tile.
+const ZERO_SIZED: CoChangeState = {
+  status: 'ready',
+  target: 75,
+  scanned: 2,
+  result: computeCoChange([]),
+  hotspots: computeHotspots(
+    [
+      { authorName: 'Ada', authoredAt: '2026-06-13T00:00:00Z', files: ['gone.ts'] },
+      { authorName: 'Ada', authoredAt: '2026-06-12T00:00:00Z', files: ['gone.ts'] },
+    ],
+    new Map(), // gone.ts isn't in the tree → size 0
+    { now: Date.parse('2026-06-14T00:00:00Z') },
+  ),
+};
 // A single file's full-history coupling — driven through the `focus` input.
 const FOCUSED: CoChangeState = {
   status: 'ready',
@@ -158,6 +174,14 @@ describe('InsightsView', () => {
 
     clickContaining('hot.ts'); // the list row
     expect(opened).toEqual(['src/hot.ts']);
+  });
+
+  it('still tiles a zero-size hotspot (absent from the tree), not just lists it', async () => {
+    await setState(ZERO_SIZED);
+    // size 0 would be dropped by squarify; clamped, it stays a tile so the
+    // treemap and the ranked list stay consistent.
+    expect(fixture.nativeElement.querySelector('svg rect')).not.toBeNull();
+    expect(text()).toContain('gone.ts');
   });
 
   it('switches to coupling and focuses a file when a pair is clicked', async () => {
