@@ -894,8 +894,9 @@ export class RepoStore {
     const provider = this.registry.byId(slug.provider);
     this._historyStatus.set('loading-more');
     try {
+      const merged = [...this._history()];
+      const fetched: CommitInfo[] = [];
       let page = this.historyPage;
-      let merged = [...this._history()];
       let hasMore = true;
       while (hasMore) {
         page++;
@@ -906,11 +907,13 @@ export class RepoStore {
           page,
         });
         if (seq !== this.loadSeq || this._historyPath() !== path) return;
-        merged = [...merged, ...commits];
+        merged.push(...commits);
+        fetched.push(...commits);
         hasMore = commits.length === HISTORY_PAGE_SIZE;
       }
       this.historyPage = page;
-      this.cacheCommits(merged);
+      // Cache only the newly fetched pages, not the already-known commits.
+      this.cacheCommits(fetched);
       this._history.set(merged);
       this._historyHasMore.set(false);
       this._historyStatus.set('ready');

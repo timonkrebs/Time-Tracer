@@ -243,6 +243,7 @@ interface BlameWindow {
                       [class.bg-indigo-500/20]="lineSelected(row.lineNo)"
                       [class.text-indigo-100]="lineSelected(row.lineNo)"
                       [attr.aria-label]="'Select line ' + row.lineNo"
+                      [attr.aria-pressed]="lineSelected(row.lineNo)"
                       (click)="selectLine(row.lineNo, $event)"
                     >
                       {{ row.lineNo }}
