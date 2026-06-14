@@ -124,3 +124,78 @@ export function relatedFiles(result: CoChangeResult, path: string, limit = 8): R
   );
   return related.slice(0, limit);
 }
+
+/** A connected group of files that change together. */
+export interface CoChangeCluster {
+  /** Member files, sorted. */
+  readonly files: readonly string[];
+  /** The couplings holding the cluster together. */
+  readonly edges: readonly CoChangePair[];
+  /** Total co-change support within the cluster — its strength. */
+  readonly score: number;
+}
+
+const DEFAULT_MIN_DEGREE = 0.3;
+const DEFAULT_CLUSTER_LIMIT = 10;
+
+/**
+ * Groups coupled files into clusters: keeps the couplings at or above
+ * `minDegree` (so weak transitive links don't merge everything), then finds the
+ * connected components. Clusters come back strongest (most internal support)
+ * first, capped at `limit`.
+ */
+export function clusterCoChange(
+  pairs: readonly CoChangePair[],
+  options: { minDegree?: number; limit?: number } = {},
+): CoChangeCluster[] {
+  const minDegree = options.minDegree ?? DEFAULT_MIN_DEGREE;
+  const limit = options.limit ?? DEFAULT_CLUSTER_LIMIT;
+  const edges = pairs.filter((p) => p.degree >= minDegree);
+
+  // Union-find over the files joined by the surviving edges.
+  const parent = new Map<string, string>();
+  const find = (x: string): string => {
+    let root = x;
+    while (parent.get(root) !== root) root = parent.get(root)!;
+    let cur = x;
+    while (parent.get(cur) !== root) {
+      const next = parent.get(cur)!;
+      parent.set(cur, root);
+      cur = next;
+    }
+    return root;
+  };
+  const add = (x: string): void => {
+    if (!parent.has(x)) parent.set(x, x);
+  };
+  for (const edge of edges) {
+    add(edge.a);
+    add(edge.b);
+    parent.set(find(edge.a), find(edge.b));
+  }
+
+  const filesByRoot = new Map<string, Set<string>>();
+  const edgesByRoot = new Map<string, CoChangePair[]>();
+  for (const edge of edges) {
+    const root = find(edge.a);
+    let files = filesByRoot.get(root);
+    if (!files) filesByRoot.set(root, (files = new Set()));
+    files.add(edge.a);
+    files.add(edge.b);
+    let group = edgesByRoot.get(root);
+    if (!group) edgesByRoot.set(root, (group = []));
+    group.push(edge);
+  }
+
+  const clusters: CoChangeCluster[] = [];
+  for (const [root, files] of filesByRoot) {
+    const clusterEdges = edgesByRoot.get(root) ?? [];
+    clusters.push({
+      files: [...files].sort(),
+      edges: clusterEdges,
+      score: clusterEdges.reduce((sum, edge) => sum + edge.support, 0),
+    });
+  }
+  clusters.sort((a, b) => b.score - a.score || b.files.length - a.files.length);
+  return clusters.slice(0, limit);
+}

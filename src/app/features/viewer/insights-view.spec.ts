@@ -138,6 +138,22 @@ describe('InsightsView', () => {
     expect(focused).toEqual(['src/auth.ts']);
   });
 
+  it('draws a coupling cluster graph and focuses a node on click', async () => {
+    await setState(OVERVIEW);
+    button('Coupling')!.click();
+    await fixture.whenStable();
+
+    // The cluster is drawn as an SVG node-link graph (edges + nodes).
+    expect(fixture.nativeElement.querySelector('svg line')).not.toBeNull();
+    expect(fixture.nativeElement.querySelectorAll('svg circle').length).toBeGreaterThan(0);
+
+    const node = Array.from(fixture.nativeElement.querySelectorAll('g') as SVGGElement[]).find(
+      (g) => (g.querySelector('title')?.textContent ?? '').includes('src/session.ts'),
+    );
+    node!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(focused).toContain('src/session.ts');
+  });
+
   it('shows full paths when basenames collide', async () => {
     await setState(COLLIDING);
     button('Coupling')!.click();

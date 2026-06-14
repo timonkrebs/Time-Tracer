@@ -1,7 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, input, output, signal } from '@angular/core';
 
 import { CoChangeState } from '../../core/store/repo-store';
-import { relatedFiles } from '../../core/util/co-change';
+import { CoChangeCluster, clusterCoChange, relatedFiles } from '../../core/util/co-change';
 import { Hotspot, heatLevel } from '../../core/util/hotspots';
 import { disambiguateLabels } from '../../core/util/path-label';
 import { relativeTime } from '../../core/util/relative-time';
@@ -13,6 +13,30 @@ const MAX_PAIRS = 60;
 const MAX_RELATED = 100;
 /** Hottest files placed in the treemap / listed. */
 const MAX_HOTSPOTS = 45;
+/** Coupled clusters drawn as graphs. */
+const MAX_CLUSTERS = 10;
+/** Per-cluster graph coordinate space. */
+const CLUSTER_W = 240;
+const CLUSTER_H = 220;
+
+interface GraphNode {
+  readonly path: string;
+  readonly label: string;
+  readonly x: number;
+  readonly y: number;
+}
+interface GraphEdge {
+  readonly x1: number;
+  readonly y1: number;
+  readonly x2: number;
+  readonly y2: number;
+  readonly width: number;
+}
+interface ClusterGraph {
+  readonly files: number;
+  readonly nodes: readonly GraphNode[];
+  readonly edges: readonly GraphEdge[];
+}
 /** Treemap coordinate space (16:9, scaled uniformly to fill its box). */
 const TREEMAP_W = 1600;
 const TREEMAP_H = 900;
@@ -230,6 +254,54 @@ const HEAT_FILLS = ['#3f3f46', '#854d0e', '#b45309', '#ea580c', '#ef4444'];
                 <p class="text-sm text-zinc-500">Crunching hotspots…</p>
               }
             } @else {
+              @if (clusters().length) {
+                <p class="mb-2 text-xs text-zinc-500">
+                  Most-coupled clusters — click a file to focus on it.
+                </p>
+                <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  @for (graph of clusterGraphs(); track $index) {
+                    <div class="rounded border border-zinc-800 bg-zinc-900/30 p-1">
+                      <svg
+                        [attr.viewBox]="'0 0 ' + clusterW + ' ' + clusterH"
+                        class="w-full"
+                        role="img"
+                      >
+                        @for (edge of graph.edges; track $index) {
+                          <line
+                            [attr.x1]="edge.x1"
+                            [attr.y1]="edge.y1"
+                            [attr.x2]="edge.x2"
+                            [attr.y2]="edge.y2"
+                            stroke="#6366f1"
+                            stroke-opacity="0.35"
+                            [attr.stroke-width]="edge.width"
+                          />
+                        }
+                        @for (node of graph.nodes; track node.path) {
+                          <g class="cursor-pointer" (click)="focusFile.emit(node.path)">
+                            <title>{{ node.path }}</title>
+                            <circle [attr.cx]="node.x" [attr.cy]="node.y" r="5" fill="#818cf8" />
+                            <text
+                              [attr.x]="node.x"
+                              [attr.y]="node.y - 9"
+                              text-anchor="middle"
+                              font-size="11"
+                              fill="#e4e4e7"
+                              class="pointer-events-none font-mono"
+                            >
+                              {{ node.label }}
+                            </text>
+                          </g>
+                        }
+                      </svg>
+                      <p class="text-center text-[11px] text-zinc-600">{{ graph.files }} files</p>
+                    </div>
+                  }
+                </div>
+                <p class="mt-4 mb-1 text-[11px] font-medium tracking-wide text-zinc-500 uppercase">
+                  All pairs
+                </p>
+              }
               @if (pairs().length) {
                 <ul class="space-y-1">
                   @for (pair of pairs(); track $index) {
@@ -309,7 +381,14 @@ export class InsightsView {
 
   protected readonly treemapW = TREEMAP_W;
   protected readonly treemapH = TREEMAP_H;
+  protected readonly clusterW = CLUSTER_W;
+  protected readonly clusterH = CLUSTER_H;
   protected readonly tab = signal<'hotspots' | 'coupling'>('hotspots');
+
+  protected readonly clusters = computed(() =>
+    clusterCoChange(this.state()?.result.pairs ?? [], { limit: MAX_CLUSTERS }),
+  );
+  protected readonly clusterGraphs = computed(() => this.clusters().map((c) => this.layout(c)));
 
   protected readonly pairs = computed(() => (this.state()?.result.pairs ?? []).slice(0, MAX_PAIRS));
   protected readonly more = computed(() =>
@@ -341,8 +420,36 @@ export class InsightsView {
       paths.add(pair.b);
     }
     for (const hot of this.hotspots()) paths.add(hot.path);
+    for (const cluster of this.clusters()) for (const file of cluster.files) paths.add(file);
     return disambiguateLabels(paths);
   });
+
+  /** Lays a cluster out as a node-link graph: nodes on a circle, edges between. */
+  private layout(cluster: CoChangeCluster): ClusterGraph {
+    const cx = CLUSTER_W / 2;
+    const cy = CLUSTER_H / 2 + 6;
+    const radius = 78;
+    const n = cluster.files.length;
+    const pos = new Map<string, { x: number; y: number }>();
+    cluster.files.forEach((path, i) => {
+      const angle = (2 * Math.PI * i) / n - Math.PI / 2;
+      pos.set(path, {
+        x: n === 1 ? cx : cx + radius * Math.cos(angle),
+        y: n === 1 ? cy : cy + radius * Math.sin(angle),
+      });
+    });
+    const nodes = cluster.files.map((path) => ({
+      path,
+      label: this.label(path),
+      ...pos.get(path)!,
+    }));
+    const edges = cluster.edges.map((edge) => {
+      const a = pos.get(edge.a)!;
+      const b = pos.get(edge.b)!;
+      return { x1: a.x, y1: a.y, x2: b.x, y2: b.y, width: 1 + edge.degree * 4 };
+    });
+    return { files: n, nodes, edges };
+  }
 
   protected fill(hot: Hotspot): string {
     return HEAT_FILLS[heatLevel(hot.metric.score)];
