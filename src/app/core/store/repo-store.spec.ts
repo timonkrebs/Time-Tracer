@@ -856,6 +856,67 @@ describe('RepoStore', () => {
       expect(traceShas()).toEqual(['c3', 'c2']);
     });
 
+    it('keeps a single traced line single across a block rewrite', async () => {
+      provider.listCommitsResult = () =>
+        Promise.resolve([commit('c3'), commit('c2'), commit('c1'), commit('c0')]);
+      // c0 has six lines; c1 edits line 4 (d→D); c2 rewrites the whole middle
+      // block (b,c,D,e) into P,Q; c3 edits the first of those (P→P2). Tracing
+      // line 2 must keep following a single line — not balloon to the whole
+      // replaced block, which would also wrongly flag c1 (it touched line 4).
+      provider.fileAtRefResult = (path, ref) =>
+        text(
+          path,
+          `blob-${ref}`,
+          ref === 'c3'
+            ? 'a\nP2\nQ\nf\n'
+            : ref === 'c2'
+              ? 'a\nP\nQ\nf\n'
+              : ref === 'c1'
+                ? 'a\nb\nc\nD\ne\nf\n'
+                : 'a\nb\nc\nd\ne\nf\n',
+        );
+
+      await store.openFile('README.md', 'c3');
+      await store.startLineTrace('README.md', 'c3', { start: 2, end: 2 });
+
+      const state = store.lineTrace();
+      expect(state?.status).toBe('ready');
+      expect(state?.origin).toEqual({ sha: 'c0', range: { start: 2, end: 2 } });
+      // c1 only touched line 4 — it stays out, and every hit is one line.
+      expect(traceShas()).toEqual(['c3', 'c2', 'c0']);
+      expect(traceHits()).toEqual([
+        { sha: 'c3', range: { start: 2, end: 2 } },
+        { sha: 'c2', range: { start: 2, end: 2 } },
+        { sha: 'c0', range: { start: 2, end: 2 } },
+      ]);
+    });
+
+    it('keeps a multi-line range whole across a block rewrite', async () => {
+      provider.listCommitsResult = () =>
+        Promise.resolve([commit('c2'), commit('c1'), commit('c0')]);
+      // c1 introduces a four-line block (b,c,d,e); c2 rewrites it into X,Y.
+      // Tracing the two-line selection X,Y must expand to cover the whole
+      // block it replaced (2..5), not narrow below the selection.
+      provider.fileAtRefResult = (path, ref) =>
+        text(
+          path,
+          `blob-${ref}`,
+          ref === 'c2' ? 'a\nX\nY\nf\n' : ref === 'c1' ? 'a\nb\nc\nd\ne\nf\n' : 'a\nf\n',
+        );
+
+      await store.openFile('README.md', 'c2');
+      await store.startLineTrace('README.md', 'c2', { start: 2, end: 3 });
+
+      const state = store.lineTrace();
+      expect(state?.status).toBe('ready');
+      expect(state?.origin).toEqual({ sha: 'c1', range: { start: 2, end: 5 } });
+      expect(traceShas()).toEqual(['c2', 'c1']);
+      expect(traceHits()).toEqual([
+        { sha: 'c2', range: { start: 2, end: 3 } },
+        { sha: 'c1', range: { start: 2, end: 5 } },
+      ]);
+    });
+
     it('pauses at the end of the loaded pages and continues on demand', async () => {
       // One full page ⇒ hasMore. Nothing in it touches line 1.
       const pageOne = Array.from({ length: 30 }, (_, i) => commit(`c${i}`));
