@@ -48,6 +48,9 @@ export const FOLDER_OWNERSHIP_CAP = 30;
 /** Recent commits walked for the co-change analysis (one request per commit). */
 export const CO_CHANGE_COMMIT_CAP = 75;
 
+/** Safety cap for a single file's full-history co-change walk. */
+export const FILE_COCHANGE_COMMIT_CAP = 400;
+
 /** Lifecycle of the per-file commit history panel. */
 export type HistoryStatus = 'idle' | 'loading' | 'loading-more' | 'ready' | 'error';
 
@@ -219,6 +222,8 @@ export interface FolderOwnershipState {
  */
 export interface CoChangeState {
   readonly status: 'computing' | 'ready' | 'error';
+  /** The file the analysis is focused on (its full history), or undefined for repo-wide. */
+  readonly focus?: string;
   /** Commits whose files have been fetched so far. */
   readonly scanned: number;
   /** Commit cap the walk is working toward. */
@@ -1152,12 +1157,34 @@ export class RepoStore {
   }
 
   /**
-   * Walks the most recent commits (up to {@link CO_CHANGE_COMMIT_CAP}), fetches
-   * each one's changed files (cached per sha — this is request-heavy) and folds
+   * Repo-wide co-change: walks the most recent commits (up to
+   * {@link CO_CHANGE_COMMIT_CAP}) and surfaces the strongest coupling overall.
+   */
+  computeCoChange(): Promise<void> {
+    return this.walkCoChange({ cap: CO_CHANGE_COMMIT_CAP });
+  }
+
+  /**
+   * File-focused co-change: walks `path`'s **full** history (it is one file, so
+   * usually far fewer commits than the repo) for complete insight into what
+   * changes together with it. Surfaced as `focus` on the published state.
+   */
+  computeCoChangeFor(path: string): Promise<void> {
+    return this.walkCoChange({ path, focus: path, cap: FILE_COCHANGE_COMMIT_CAP, minSupport: 1 });
+  }
+
+  /**
+   * The shared co-change walk: pages commits (optionally limited to `path`),
+   * fetches each one's changed files (cached per sha — request-heavy) and folds
    * them into temporal coupling, publishing as it streams. Cancelled by
    * navigation or a superseding run via the run/sequence guards.
    */
-  async computeCoChange(): Promise<void> {
+  private async walkCoChange(options: {
+    readonly cap: number;
+    readonly path?: string;
+    readonly focus?: string;
+    readonly minSupport?: number;
+  }): Promise<void> {
     const slug = this._slug();
     if (!slug || this._phase() !== 'ready') return;
     const provider = this.registry.byId(slug.provider);
@@ -1171,17 +1198,19 @@ export class RepoStore {
     const publish = (status: CoChangeState['status'], message?: string): void =>
       this._coChange.set({
         status,
+        focus: options.focus,
         scanned: collected.length,
-        target: CO_CHANGE_COMMIT_CAP,
-        result: computeCoChange(collected),
+        target: options.cap,
+        result: computeCoChange(collected, { minSupport: options.minSupport }),
         message,
       });
 
     publish('computing');
     try {
-      for (let page = 1; collected.length < CO_CHANGE_COMMIT_CAP; page++) {
+      for (let page = 1; collected.length < options.cap; page++) {
         const commits = await provider.listCommits(slug, {
           ref,
+          path: options.path,
           perPage: HISTORY_PAGE_SIZE,
           page,
         });
@@ -1189,7 +1218,7 @@ export class RepoStore {
         if (commits.length === 0) break;
         this.cacheCommits(commits);
         for (const commit of commits) {
-          if (collected.length >= CO_CHANGE_COMMIT_CAP) break;
+          if (collected.length >= options.cap) break;
           const files = await this.commitFilesFor(slug, commit.sha);
           if (!live()) return;
           collected.push({ sha: commit.sha, files });
@@ -1197,14 +1226,16 @@ export class RepoStore {
         }
         if (commits.length < HISTORY_PAGE_SIZE) break; // reached the end of history
       }
-      publish('ready', collected.length === 0 ? 'No commit history found.' : undefined);
+      const empty = options.path ? 'No history found for this file.' : 'No commit history found.';
+      publish('ready', collected.length === 0 ? empty : undefined);
     } catch (error) {
       if (!live()) return; // a cleared/superseded walk must not resurrect state
       this._coChange.set({
         status: 'error',
+        focus: options.focus,
         scanned: collected.length,
-        target: CO_CHANGE_COMMIT_CAP,
-        result: computeCoChange(collected),
+        target: options.cap,
+        result: computeCoChange(collected, { minSupport: options.minSupport }),
         message: toRepoProviderError(error).message,
       });
     }

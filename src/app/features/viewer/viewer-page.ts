@@ -307,15 +307,6 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
             {{ store.phase() === 'tree' ? 'Loading file tree…' : 'Fetching repository metadata…' }}
           </p>
         </div>
-      } @else if (insightsMode()) {
-        <app-insights-view
-          class="min-h-0 flex-1"
-          [state]="store.coChange()"
-          [commitCap]="commitCap"
-          (analyze)="store.computeCoChange()"
-          (clear)="store.clearCoChange()"
-          (openFile)="onInsightsOpenFile($event)"
-        />
       } @else {
         <div class="flex min-h-0 flex-1">
           @if (!treeCollapsed()) {
@@ -328,10 +319,12 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
               } @else {
                 <app-file-tree
                   [nodes]="store.tree()"
-                  [selectedPath]="store.selectedPath()"
+                  [selectedPath]="
+                    insightsMode() ? (store.coChange()?.focus ?? null) : store.selectedPath()
+                  "
                   [expanded]="store.expandedDirs()"
                   [metrics]="store.fileMetrics()"
-                  (fileSelect)="onFileSelect($event)"
+                  (fileSelect)="onTreeFileSelect($event)"
                   (dirToggle)="store.toggleDir($event)"
                 />
               }
@@ -351,238 +344,250 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
             ></div>
           }
 
-          <section class="flex min-w-0 flex-1 flex-col bg-zinc-950">
-            @if (store.selectedPath()) {
-              <div
-                class="flex shrink-0 items-center gap-2 border-b px-4 py-1.5 text-xs"
-                [class]="
-                  store.viewAt()
-                    ? 'border-slate-500/30 bg-slate-500/10 text-slate-200'
-                    : 'border-zinc-800 bg-zinc-900/40 text-zinc-400'
-                "
-              >
-                <svg
-                  class="size-3.5 shrink-0"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  aria-hidden="true"
-                >
-                  <path d="M3 12a9 9 0 1 0 3-6.7" />
-                  <path d="M3 4v4h4" />
-                  <path d="M12 7v5l3.5 2" />
-                </svg>
-                <span class="min-w-0 truncate">
-                  @if (store.viewAt(); as at) {
-                    Viewing at
-                    @if (store.viewAtCommit(); as commit) {
-                      <a
-                        class="font-mono underline-offset-2 hover:underline"
-                        [href]="commit.htmlUrl"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        >{{ abbrev(at) }}</a
-                      >
-                      — {{ commit.summary }}
-                      <span class="opacity-60">
-                        · {{ commit.authorName }} · {{ when(commit.authoredAt) }}</span
-                      >
-                    } @else {
-                      <span class="font-mono">{{ abbrev(at) }}</span>
-                    }
-                  } @else {
-                    Current version
-                    <span class="font-mono opacity-70">· {{ store.ref() }}</span>
-                  }
-                </span>
-                <span class="flex-1"></span>
-                <button
-                  type="button"
-                  class="shrink-0 rounded border px-2 py-0.5 transition"
-                  [class]="
-                    ownersOpen()
-                      ? 'border-indigo-400/40 bg-indigo-500/20 text-indigo-200'
-                      : store.viewAt()
-                        ? 'border-slate-400/30 hover:bg-slate-400/10'
-                        : 'border-zinc-700 hover:bg-white/10'
-                  "
-                  [attr.aria-pressed]="ownersOpen()"
-                  (click)="toggleOwners()"
-                  title="Who wrote this file and folder — folded from blame (o)"
-                >
-                  Owners
-                </button>
+          @if (insightsMode()) {
+            <app-insights-view
+              class="min-h-0 flex-1"
+              [state]="store.coChange()"
+              [commitCap]="commitCap"
+              (analyze)="store.computeCoChange()"
+              (clear)="store.clearCoChange()"
+              (focusFile)="store.computeCoChangeFor($event)"
+              (openFile)="onInsightsOpenFile($event)"
+            />
+          } @else {
+            <section class="flex min-w-0 flex-1 flex-col bg-zinc-950">
+              @if (store.selectedPath()) {
                 <div
-                  class="flex shrink-0 overflow-hidden rounded border"
-                  [class]="store.viewAt() ? 'border-slate-400/30' : 'border-zinc-700'"
-                  role="group"
-                  aria-label="View mode"
+                  class="flex shrink-0 items-center gap-2 border-b px-4 py-1.5 text-xs"
+                  [class]="
+                    store.viewAt()
+                      ? 'border-slate-500/30 bg-slate-500/10 text-slate-200'
+                      : 'border-zinc-800 bg-zinc-900/40 text-zinc-400'
+                  "
                 >
-                  <button
-                    type="button"
-                    class="px-2 py-0.5 transition"
-                    [class]="
-                      !diffMode()
-                        ? store.viewAt()
-                          ? 'bg-slate-400/25 font-medium'
-                          : 'bg-zinc-700/60 font-medium text-zinc-200'
-                        : 'hover:bg-white/10'
-                    "
-                    (click)="setDiffMode(false)"
+                  <svg
+                    class="size-3.5 shrink-0"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
                   >
-                    File
-                  </button>
+                    <path d="M3 12a9 9 0 1 0 3-6.7" />
+                    <path d="M3 4v4h4" />
+                    <path d="M12 7v5l3.5 2" />
+                  </svg>
+                  <span class="min-w-0 truncate">
+                    @if (store.viewAt(); as at) {
+                      Viewing at
+                      @if (store.viewAtCommit(); as commit) {
+                        <a
+                          class="font-mono underline-offset-2 hover:underline"
+                          [href]="commit.htmlUrl"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          >{{ abbrev(at) }}</a
+                        >
+                        — {{ commit.summary }}
+                        <span class="opacity-60">
+                          · {{ commit.authorName }} · {{ when(commit.authoredAt) }}</span
+                        >
+                      } @else {
+                        <span class="font-mono">{{ abbrev(at) }}</span>
+                      }
+                    } @else {
+                      Current version
+                      <span class="font-mono opacity-70">· {{ store.ref() }}</span>
+                    }
+                  </span>
+                  <span class="flex-1"></span>
                   <button
                     type="button"
-                    class="border-l px-2 py-0.5 transition disabled:cursor-not-allowed disabled:opacity-40"
+                    class="shrink-0 rounded border px-2 py-0.5 transition"
                     [class]="
-                      (store.viewAt() ? 'border-slate-400/30 ' : 'border-zinc-700 ') +
-                      (diffMode() ? 'bg-slate-400/25 font-medium' : 'enabled:hover:bg-white/10')
+                      ownersOpen()
+                        ? 'border-indigo-400/40 bg-indigo-500/20 text-indigo-200'
+                        : store.viewAt()
+                          ? 'border-slate-400/30 hover:bg-slate-400/10'
+                          : 'border-zinc-700 hover:bg-white/10'
                     "
-                    [disabled]="!store.viewAt()"
-                    [title]="
+                    [attr.aria-pressed]="ownersOpen()"
+                    (click)="toggleOwners()"
+                    title="Who wrote this file and folder — folded from blame (o)"
+                  >
+                    Owners
+                  </button>
+                  <div
+                    class="flex shrink-0 overflow-hidden rounded border"
+                    [class]="store.viewAt() ? 'border-slate-400/30' : 'border-zinc-700'"
+                    role="group"
+                    aria-label="View mode"
+                  >
+                    <button
+                      type="button"
+                      class="px-2 py-0.5 transition"
+                      [class]="
+                        !diffMode()
+                          ? store.viewAt()
+                            ? 'bg-slate-400/25 font-medium'
+                            : 'bg-zinc-700/60 font-medium text-zinc-200'
+                          : 'hover:bg-white/10'
+                      "
+                      (click)="setDiffMode(false)"
+                    >
+                      File
+                    </button>
+                    <button
+                      type="button"
+                      class="border-l px-2 py-0.5 transition disabled:cursor-not-allowed disabled:opacity-40"
+                      [class]="
+                        (store.viewAt() ? 'border-slate-400/30 ' : 'border-zinc-700 ') +
+                        (diffMode() ? 'bg-slate-400/25 font-medium' : 'enabled:hover:bg-white/10')
+                      "
+                      [disabled]="!store.viewAt()"
+                      [title]="
+                        store.viewAt()
+                          ? 'Show what this commit changed in the file'
+                          : 'Step to a commit to see its changes'
+                      "
+                      (click)="setDiffMode(true)"
+                    >
+                      Changes
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    class="shrink-0 rounded border px-2 py-0.5 transition disabled:cursor-not-allowed disabled:opacity-40"
+                    [class]="
                       store.viewAt()
-                        ? 'Show what this commit changed in the file'
-                        : 'Step to a commit to see its changes'
+                        ? 'border-slate-400/30 enabled:hover:bg-slate-400/10'
+                        : 'border-zinc-700 enabled:hover:bg-white/10'
                     "
-                    (click)="setDiffMode(true)"
+                    [disabled]="olderDisabled()"
+                    (click)="stepOlder()"
+                    title="One commit older (←)"
                   >
-                    Changes
+                    ← Older
                   </button>
-                </div>
-                <button
-                  type="button"
-                  class="shrink-0 rounded border px-2 py-0.5 transition disabled:cursor-not-allowed disabled:opacity-40"
-                  [class]="
-                    store.viewAt()
-                      ? 'border-slate-400/30 enabled:hover:bg-slate-400/10'
-                      : 'border-zinc-700 enabled:hover:bg-white/10'
-                  "
-                  [disabled]="olderDisabled()"
-                  (click)="stepOlder()"
-                  title="One commit older (←)"
-                >
-                  ← Older
-                </button>
-                <button
-                  type="button"
-                  class="shrink-0 rounded border px-2 py-0.5 transition disabled:cursor-not-allowed disabled:opacity-40"
-                  [class]="
-                    store.viewAt()
-                      ? 'border-slate-400/30 enabled:hover:bg-slate-400/10'
-                      : 'border-zinc-700 enabled:hover:bg-white/10'
-                  "
-                  [disabled]="newerDisabled()"
-                  (click)="stepNewer()"
-                  [title]="
-                    store.viewAt() ? 'One commit newer (→)' : 'Already at the newest version'
-                  "
-                >
-                  Newer →
-                </button>
-                @if (store.viewAt()) {
                   <button
                     type="button"
-                    class="shrink-0 rounded bg-slate-400/15 px-2 py-0.5 font-medium transition hover:bg-slate-400/25"
-                    (click)="goToCommit(null)"
+                    class="shrink-0 rounded border px-2 py-0.5 transition disabled:cursor-not-allowed disabled:opacity-40"
+                    [class]="
+                      store.viewAt()
+                        ? 'border-slate-400/30 enabled:hover:bg-slate-400/10'
+                        : 'border-zinc-700 enabled:hover:bg-white/10'
+                    "
+                    [disabled]="newerDisabled()"
+                    (click)="stepNewer()"
+                    [title]="
+                      store.viewAt() ? 'One commit newer (→)' : 'Already at the newest version'
+                    "
                   >
-                    Back to {{ store.ref() }}
+                    Newer →
                   </button>
-                }
-              </div>
-            }
-            @if (diffMode()) {
-              <app-diff-view
-                class="min-h-0 flex-1"
-                [state]="store.selectedDiff()"
-                [path]="store.selectedPath()"
-                [highlightLine]="lineNumber()"
-                [splitMode]="blameOn()"
-                [leftBlame]="leftBlame()"
-                [rightBlame]="rightBlame()"
-                [blameActive]="blameOn()"
-                [historyActive]="historyOpen()"
-                [highlightRange]="activeHighlightRange()"
-                [beforeAvailable]="hunkBeforeAvailable()"
-                (retry)="onDiffRetry()"
-                (before)="onHunkBefore($event)"
-                (trace)="onHunkTrace($event)"
-                (blameToggle)="toggleBlame()"
-                (blameSelect)="onBlameSelect($event)"
-                (historyToggle)="toggleHistory()"
-                (comparisonClear)="onComparisonClear()"
-              />
-            } @else {
-              <app-file-view
-                class="min-h-0 flex-1"
-                [state]="store.selectedFile()"
-                [links]="selectedFileLinks()"
-                [historyActive]="historyOpen()"
-                [blameActive]="blameOn()"
-                [blame]="store.selectedBlame()"
-                [viewKey]="store.viewAt()"
-                [highlightLine]="lineNumber()"
-                [highlightRange]="activeHighlightRange()"
-                (retry)="onFileRetry($event)"
-                (historyToggle)="toggleHistory()"
-                (blameToggle)="toggleBlame()"
-                (blameSelect)="onBlameSelect($event)"
-                (trace)="onFileTrace($event)"
-              />
-            }
-          </section>
+                  @if (store.viewAt()) {
+                    <button
+                      type="button"
+                      class="shrink-0 rounded bg-slate-400/15 px-2 py-0.5 font-medium transition hover:bg-slate-400/25"
+                      (click)="goToCommit(null)"
+                    >
+                      Back to {{ store.ref() }}
+                    </button>
+                  }
+                </div>
+              }
+              @if (diffMode()) {
+                <app-diff-view
+                  class="min-h-0 flex-1"
+                  [state]="store.selectedDiff()"
+                  [path]="store.selectedPath()"
+                  [highlightLine]="lineNumber()"
+                  [splitMode]="blameOn()"
+                  [leftBlame]="leftBlame()"
+                  [rightBlame]="rightBlame()"
+                  [blameActive]="blameOn()"
+                  [historyActive]="historyOpen()"
+                  [highlightRange]="activeHighlightRange()"
+                  [beforeAvailable]="hunkBeforeAvailable()"
+                  (retry)="onDiffRetry()"
+                  (before)="onHunkBefore($event)"
+                  (trace)="onHunkTrace($event)"
+                  (blameToggle)="toggleBlame()"
+                  (blameSelect)="onBlameSelect($event)"
+                  (historyToggle)="toggleHistory()"
+                  (comparisonClear)="onComparisonClear()"
+                />
+              } @else {
+                <app-file-view
+                  class="min-h-0 flex-1"
+                  [state]="store.selectedFile()"
+                  [links]="selectedFileLinks()"
+                  [historyActive]="historyOpen()"
+                  [blameActive]="blameOn()"
+                  [blame]="store.selectedBlame()"
+                  [viewKey]="store.viewAt()"
+                  [highlightLine]="lineNumber()"
+                  [highlightRange]="activeHighlightRange()"
+                  (retry)="onFileRetry($event)"
+                  (historyToggle)="toggleHistory()"
+                  (blameToggle)="toggleBlame()"
+                  (blameSelect)="onBlameSelect($event)"
+                  (trace)="onFileTrace($event)"
+                />
+              }
+            </section>
 
-          @if (ownersOpen()) {
-            <aside class="w-80 shrink-0 border-l border-zinc-800 bg-zinc-950">
-              <app-ownership-panel
-                [path]="store.selectedPath()"
-                [fileSummary]="store.selectedOwnership()"
-                [blameUnavailable]="fileBlameUnavailable()"
-                [folderPath]="selectedFolder()"
-                [folder]="store.folderOwnership()"
-                [folderCap]="folderCap"
-                [folderFileCount]="folderFileCount()"
-                (closed)="toggleOwners()"
-                (scanFolder)="onScanFolder()"
-                (scanAll)="onScanAllFolder()"
-                (clearFolder)="store.clearFolderOwnership()"
-              />
-            </aside>
-          }
+            @if (ownersOpen()) {
+              <aside class="w-80 shrink-0 border-l border-zinc-800 bg-zinc-950">
+                <app-ownership-panel
+                  [path]="store.selectedPath()"
+                  [fileSummary]="store.selectedOwnership()"
+                  [blameUnavailable]="fileBlameUnavailable()"
+                  [folderPath]="selectedFolder()"
+                  [folder]="store.folderOwnership()"
+                  [folderCap]="folderCap"
+                  [folderFileCount]="folderFileCount()"
+                  (closed)="toggleOwners()"
+                  (scanFolder)="onScanFolder()"
+                  (scanAll)="onScanAllFolder()"
+                  (clearFolder)="store.clearFolderOwnership()"
+                />
+              </aside>
+            }
 
-          @if (historyOpen()) {
-            <aside class="w-80 shrink-0 border-l border-zinc-800 bg-zinc-950">
-              <app-file-history
-                [path]="store.selectedPath()"
-                [tipRef]="store.ref()"
-                [commits]="store.history()"
-                [status]="store.historyStatus()"
-                [error]="store.historyError()"
-                [hasMore]="store.historyHasMore()"
-                [selectedSha]="store.viewAt()"
-                [renames]="store.selectedRenames()"
-                [trace]="store.lineTrace()"
-                [origins]="store.traceOrigins()"
-                [related]="store.selectedRelated()"
-                (commitSelect)="goToCommit($event)"
-                (relatedSelect)="onFileSelect($event)"
-                (traceSelect)="onTraceSelect($event)"
-                (loadMore)="store.loadMoreHistory()"
-                (loadAll)="store.loadAllHistory()"
-                (retry)="store.retryHistory()"
-                (closed)="toggleHistory()"
-                (findRenames)="onFindRenames()"
-                (candidateSelect)="onCandidateSelect($event)"
-                (candidateDiff)="onCandidateDiff($event)"
-                (traceClear)="store.clearLineTrace()"
-                (traceOlder)="store.extendLineTrace()"
-                (searchOrigins)="store.searchTraceOrigins($event)"
-                (originSelect)="onOriginSelect($event)"
-              />
-            </aside>
+            @if (historyOpen()) {
+              <aside class="w-80 shrink-0 border-l border-zinc-800 bg-zinc-950">
+                <app-file-history
+                  [path]="store.selectedPath()"
+                  [tipRef]="store.ref()"
+                  [commits]="store.history()"
+                  [status]="store.historyStatus()"
+                  [error]="store.historyError()"
+                  [hasMore]="store.historyHasMore()"
+                  [selectedSha]="store.viewAt()"
+                  [renames]="store.selectedRenames()"
+                  [trace]="store.lineTrace()"
+                  [origins]="store.traceOrigins()"
+                  [related]="store.selectedRelated()"
+                  (commitSelect)="goToCommit($event)"
+                  (relatedSelect)="onFileSelect($event)"
+                  (traceSelect)="onTraceSelect($event)"
+                  (loadMore)="store.loadMoreHistory()"
+                  (loadAll)="store.loadAllHistory()"
+                  (retry)="store.retryHistory()"
+                  (closed)="toggleHistory()"
+                  (findRenames)="onFindRenames()"
+                  (candidateSelect)="onCandidateSelect($event)"
+                  (candidateDiff)="onCandidateDiff($event)"
+                  (traceClear)="store.clearLineTrace()"
+                  (traceOlder)="store.extendLineTrace()"
+                  (searchOrigins)="store.searchTraceOrigins($event)"
+                  (originSelect)="onOriginSelect($event)"
+                />
+              </aside>
+            }
           }
         </div>
       }
@@ -988,12 +993,25 @@ export class ViewerPage {
     this.onFileSelect(path);
   }
 
+  /**
+   * Tree clicks focus the co-change analysis while Insights is open, and open
+   * the file otherwise.
+   */
+  protected onTreeFileSelect(path: string): void {
+    if (this.insightsMode()) {
+      void this.store.computeCoChangeFor(path);
+      return;
+    }
+    this.onFileSelect(path);
+  }
+
   protected onFileSelect(path: string): void {
     // Switching files always returns to the snapshot tip: `at`, `view` and
     // `line` belong to the previous file's timeline. Blame mode is sticky.
+    // Opening a file also leaves the Insights view.
     void this.router.navigate([], {
       relativeTo: this.route,
-      queryParams: { path, at: null, view: null, line: null, base: null },
+      queryParams: { path, at: null, view: null, line: null, base: null, insights: null },
       queryParamsHandling: 'merge',
     });
   }

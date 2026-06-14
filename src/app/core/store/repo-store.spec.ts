@@ -1389,5 +1389,33 @@ describe('RepoStore', () => {
 
       expect(store.coChange()).toBeNull();
     });
+
+    it('focuses a single file’s full history, keeping low-support couplings', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c1'), commit('c2')]);
+      provider.commitFilesResult = (sha) =>
+        Promise.resolve(
+          sha === 'c2'
+            ? [
+                { path: 'README.md', status: 'modified' },
+                { path: 'rare.ts', status: 'modified' },
+              ]
+            : [
+                { path: 'README.md', status: 'modified' },
+                { path: 'src/deep/main.ts', status: 'modified' },
+              ],
+        );
+
+      await store.computeCoChangeFor('README.md');
+
+      const state = store.coChange();
+      expect(state?.focus).toBe('README.md');
+      expect(state?.status).toBe('ready');
+      // minSupport 1 in focus mode, so even the single co-change is kept.
+      const partners = state!.result.pairs
+        .filter((p) => p.a === 'README.md' || p.b === 'README.md')
+        .map((p) => (p.a === 'README.md' ? p.b : p.a))
+        .sort();
+      expect(partners).toEqual(['rare.ts', 'src/deep/main.ts']);
+    });
   });
 });

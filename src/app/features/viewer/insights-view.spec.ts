@@ -5,16 +5,29 @@ import { CoChangeState } from '../../core/store/repo-store';
 import { computeCoChange } from '../../core/util/co-change';
 import { InsightsView } from './insights-view';
 
-const RESULT = computeCoChange([
+const COMMITS = [
   { sha: 'c1', files: ['src/auth.ts', 'src/session.ts'] },
   { sha: 'c2', files: ['src/auth.ts', 'src/session.ts'] },
   { sha: 'c3', files: ['src/auth.ts', 'README.md'] },
-]);
-const READY: CoChangeState = { status: 'ready', scanned: 3, target: 75, result: RESULT };
+];
+const OVERVIEW: CoChangeState = {
+  status: 'ready',
+  scanned: 3,
+  target: 75,
+  result: computeCoChange(COMMITS),
+};
+const FOCUSED: CoChangeState = {
+  status: 'ready',
+  focus: 'src/auth.ts',
+  scanned: 3,
+  target: 400,
+  result: computeCoChange(COMMITS, { minSupport: 1 }),
+};
 
 describe('InsightsView', () => {
   let fixture: ComponentFixture<InsightsView>;
   let analyzed: number;
+  let focused: string[];
   let opened: string[];
 
   beforeEach(async () => {
@@ -25,8 +38,10 @@ describe('InsightsView', () => {
 
     fixture = TestBed.createComponent(InsightsView);
     analyzed = 0;
+    focused = [];
     opened = [];
     fixture.componentInstance.analyze.subscribe(() => analyzed++);
+    fixture.componentInstance.focusFile.subscribe((p) => focused.push(p));
     fixture.componentInstance.openFile.subscribe((p) => opened.push(p));
     await fixture.whenStable();
   });
@@ -47,7 +62,7 @@ describe('InsightsView', () => {
     expect(analyzed).toBe(1);
   });
 
-  it('reports progress while computing, against the state target', async () => {
+  it('reports progress against the state target, and surfaces a ready message', async () => {
     fixture.componentRef.setInput('state', {
       status: 'computing',
       scanned: 10,
@@ -56,9 +71,7 @@ describe('InsightsView', () => {
     } satisfies CoChangeState);
     await fixture.whenStable();
     expect(text()).toContain('Walking commits… 10/50');
-  });
 
-  it('surfaces a ready status message instead of the empty fallback', async () => {
     fixture.componentRef.setInput('state', {
       status: 'ready',
       scanned: 0,
@@ -71,18 +84,30 @@ describe('InsightsView', () => {
     expect(text()).not.toContain('No files changed together');
   });
 
-  it('lists coupled pairs and opens a file when clicked', async () => {
-    fixture.componentRef.setInput('state', READY);
+  it('lists repo-wide pairs and focuses a file when clicked', async () => {
+    fixture.componentRef.setInput('state', OVERVIEW);
+    await fixture.whenStable();
+    expect(text()).toContain('auth.ts');
+    expect(text()).toContain('session.ts');
+    expect(text()).not.toContain('README.md'); // support 1 < default minSupport
+
+    button('auth.ts')!.click();
+    expect(focused).toEqual(['src/auth.ts']);
+  });
+
+  it('shows a focused file’s full coupling; drills on click and opens from the banner', async () => {
+    fixture.componentRef.setInput('state', FOCUSED);
     await fixture.whenStable();
 
     const t = text();
-    expect(t).toContain('auth.ts');
+    expect(t).toContain('Changes with');
     expect(t).toContain('session.ts');
-    expect(t).toContain('2×'); // changed together in 2 commits
-    // README.md coupled only once (< minSupport), so it is not shown.
-    expect(t).not.toContain('README.md');
+    expect(t).toContain('README.md'); // shown here (minSupport 1 for a focused file)
 
-    button('auth.ts')!.click();
+    button('session.ts')!.click();
+    expect(focused).toEqual(['src/session.ts']); // drill
+
+    button('Open file')!.click();
     expect(opened).toEqual(['src/auth.ts']);
   });
 });
