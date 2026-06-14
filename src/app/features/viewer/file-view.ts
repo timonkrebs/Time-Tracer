@@ -104,7 +104,7 @@ interface BlameWindow {
           "
           (click)="blameToggle.emit()"
           aria-label="Toggle blame annotations"
-          title="Annotate each line with the commit that introduced it"
+          title="Annotate each line with the commit that introduced it (b)"
         >
           <svg
             class="size-3"
@@ -132,7 +132,7 @@ interface BlameWindow {
           "
           (click)="historyToggle.emit()"
           aria-label="Toggle history panel"
-          title="Show the commits that changed this file"
+          title="Show the commits that changed this file (h)"
         >
           <svg
             class="size-3"
@@ -196,7 +196,11 @@ interface BlameWindow {
           </div>
         }
         @if (blameWindow(); as win) {
-          <div #scroller (scroll)="onBlameScroll($event)" class="slim-scrollbar min-h-0 flex-1 overflow-auto">
+          <div
+            #scroller
+            (scroll)="onBlameScroll($event)"
+            class="slim-scrollbar min-h-0 flex-1 overflow-auto"
+          >
             <div class="relative min-w-max font-mono text-[13px] leading-6">
               @if (effectiveHighlightRange(); as range) {
                 <div

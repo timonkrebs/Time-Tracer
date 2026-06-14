@@ -64,7 +64,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
             (click)="toggleTree()"
             [attr.aria-label]="treeCollapsed() ? 'Show file tree' : 'Hide file tree'"
             [attr.aria-pressed]="!treeCollapsed()"
-            [title]="treeCollapsed() ? 'Show file tree' : 'Hide file tree'"
+            [title]="treeCollapsed() ? 'Show file tree (t)' : 'Hide file tree (t)'"
           >
             <svg
               class="size-4"
@@ -364,7 +364,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
                   "
                   [attr.aria-pressed]="ownersOpen()"
                   (click)="toggleOwners()"
-                  title="Who wrote this file and folder — folded from blame"
+                  title="Who wrote this file and folder — folded from blame (o)"
                 >
                   Owners
                 </button>
@@ -416,7 +416,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
                   "
                   [disabled]="olderDisabled()"
                   (click)="stepOlder()"
-                  title="One commit older"
+                  title="One commit older (←)"
                 >
                   ← Older
                 </button>
@@ -430,7 +430,9 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
                   "
                   [disabled]="newerDisabled()"
                   (click)="stepNewer()"
-                  [title]="store.viewAt() ? 'One commit newer' : 'Already at the newest version'"
+                  [title]="
+                    store.viewAt() ? 'One commit newer (→)' : 'Already at the newest version'
+                  "
                 >
                   Newer →
                 </button>
@@ -837,13 +839,69 @@ export class ViewerPage {
     });
   }
 
-  /** Ctrl/⌘ P opens the quick file finder (overriding the browser print dialog). */
+  /**
+   * App-wide keyboard shortcuts (the viewer is otherwise mouse-driven):
+   * Ctrl/⌘ P quick-open · ←/→ older/newer commit · b blame · h history ·
+   * o owners · t file tree · Esc closes the side panels. Single-key shortcuts
+   * are skipped while a field is focused or the finder overlay is open, and
+   * never fire with a modifier held (so they don't shadow browser keys).
+   */
   protected onGlobalKeydown(event: KeyboardEvent): void {
+    if (this.store.phase() !== 'ready') return;
+
+    // Ctrl/⌘ P opens the finder, overriding the browser print dialog — this one
+    // works even while a field is focused.
     if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'p') {
-      if (this.store.phase() !== 'ready') return;
       event.preventDefault();
       this.finderOpen.set(true);
+      return;
     }
+
+    // Leave alone: keys another handler already consumed (e.g. the finder's
+    // Esc/arrows), keys typed into a field, anything while the finder is open,
+    // and modifier combos.
+    if (event.defaultPrevented || this.finderOpen() || isEditableTarget(event.target)) return;
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+
+    switch (event.key) {
+      case 'ArrowLeft':
+        event.preventDefault();
+        void this.stepOlder();
+        break;
+      case 'ArrowRight':
+        event.preventDefault();
+        this.stepNewer();
+        break;
+      case 'b':
+      case 'B':
+        event.preventDefault();
+        this.toggleBlame();
+        break;
+      case 'h':
+      case 'H':
+        event.preventDefault();
+        this.toggleHistory();
+        break;
+      case 'o':
+      case 'O':
+        event.preventDefault();
+        this.toggleOwners();
+        break;
+      case 't':
+      case 'T':
+        event.preventDefault();
+        this.toggleTree();
+        break;
+      case 'Escape':
+        this.closePanels();
+        break;
+    }
+  }
+
+  /** Esc: dismiss the open side panels (owners, then history). */
+  private closePanels(): void {
+    if (this.ownersOpen()) this.toggleOwners();
+    if (this.historyOpen()) this.toggleHistory();
   }
 
   protected openFinder(): void {
@@ -1232,6 +1290,15 @@ export class ViewerPage {
     this.treeWidth.set(TREE_WIDTH_DEFAULT);
     persistTreeWidth(TREE_WIDTH_DEFAULT);
   }
+}
+
+/** Whether the keydown target is a text field, so shortcuts shouldn't fire. */
+function isEditableTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  const tag = el?.tagName?.toLowerCase();
+  return (
+    tag === 'input' || tag === 'textarea' || tag === 'select' || el?.isContentEditable === true
+  );
 }
 
 function restoreTreeWidth(): number {

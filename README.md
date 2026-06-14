@@ -57,6 +57,10 @@ renames — see the feature list and roadmap below for what's done and what's ne
   overlay to fuzzy-find any file by path — filename hits rank first, with boundary- and
   run-aware scoring and the matched characters highlighted; arrow keys move, Enter opens, Escape
   dismisses. It searches the tree already in memory, so it costs no extra API requests.
+- **Keyboard shortcuts**: drive the viewer without the mouse — `←`/`→` step to the older/newer
+  commit, `b` toggles blame, `h` history, `o` owners, `t` the file tree, `Ctrl/⌘ P` opens the
+  finder, and `Esc` closes the side panels. Shortcuts stand down while a field is focused or the
+  finder is open, and the relevant buttons show their key in the tooltip.
 - **Per-file commit history**: a History panel lists the commits that touched the selected file
   (paginated — page through older commits or **Load all** at once), with author and relative date.
   Its open/closed state is remembered, so it can stay open permanently across files and sessions.
@@ -235,8 +239,9 @@ npm run build      # production build into dist/
     ✅ Done.
 12. **Quality of life** — fuzzy file finder (✅ done — `Ctrl/⌘ P` quick open with
     boundary-aware ranking, `core/util/fuzzy.ts`); syntax highlighting next.
-13. **Keyboard shortcuts** — step older/newer, toggle blame, history and the file tree, and dismiss
-    overlays from the keyboard; a natural companion to the `Ctrl/⌘ P` finder.
+13. ~~**Keyboard shortcuts** — step older/newer, toggle blame, history and the file tree, and
+    dismiss overlays from the keyboard; a natural companion to the `Ctrl/⌘ P` finder.~~ ✅ Done
+    (`←`/`→`, `b`/`h`/`o`/`t`, `Ctrl/⌘ P`, `Esc`; one guarded `(document:keydown)` on the viewer).
 14. **Word-level diff** — intra-line +added/−removed highlighting layered on the line-level Myers
     engine in `core/util/diff.ts`.
 15. ~~**Code ownership** — fold the per-line blame attribution into a per-file and per-folder
