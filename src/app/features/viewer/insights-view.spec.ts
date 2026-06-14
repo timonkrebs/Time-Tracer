@@ -21,11 +21,12 @@ const HOTSPOTS = computeHotspots(
 );
 const OVERVIEW: CoChangeState = {
   status: 'ready',
-  scanned: 3,
   target: 75,
+  scanned: 3,
   result: computeCoChange(COMMITS),
   hotspots: HOTSPOTS,
 };
+// A single file's full-history coupling — driven through the `focus` input.
 const FOCUSED: CoChangeState = {
   status: 'ready',
   focus: 'src/auth.ts',
@@ -59,7 +60,9 @@ const CLUSTERED: CoChangeState = {
 describe('InsightsView', () => {
   let fixture: ComponentFixture<InsightsView>;
   let analyzed: number;
+  let loadedAll: number;
   let focused: string[];
+  let clearedFocus: number;
   let opened: string[];
 
   beforeEach(async () => {
@@ -70,10 +73,14 @@ describe('InsightsView', () => {
 
     fixture = TestBed.createComponent(InsightsView);
     analyzed = 0;
+    loadedAll = 0;
     focused = [];
+    clearedFocus = 0;
     opened = [];
     fixture.componentInstance.analyze.subscribe(() => analyzed++);
+    fixture.componentInstance.loadAll.subscribe(() => loadedAll++);
     fixture.componentInstance.focusFile.subscribe((p) => focused.push(p));
+    fixture.componentInstance.clearFocus.subscribe(() => clearedFocus++);
     fixture.componentInstance.openFile.subscribe((p) => opened.push(p));
     await fixture.whenStable();
   });
@@ -100,10 +107,17 @@ describe('InsightsView', () => {
     await fixture.whenStable();
   }
 
-  it('prompts to analyze when there is no result yet, and emits on click', () => {
-    expect(text()).toContain('Repository insights');
+  async function setFocus(focus: CoChangeState): Promise<void> {
+    fixture.componentRef.setInput('focus', focus);
+    await fixture.whenStable();
+  }
+
+  it('prompts when there is no result yet, and emits from both buttons', () => {
+    expect(text()).toContain('Find files that change together');
     button('Analyze recent history')!.click();
     expect(analyzed).toBe(1);
+    button('Load all commits')!.click();
+    expect(loadedAll).toBe(1);
   });
 
   it('reports progress against the state target, and surfaces a ready message', async () => {
@@ -189,11 +203,18 @@ describe('InsightsView', () => {
     expect(text()).toContain('src/b/index.ts');
   });
 
-  it('shows a focused file’s full coupling; drills on click and opens from the banner', async () => {
-    await setState(FOCUSED);
+  it('keeps both tabs available once anything is analysed', async () => {
+    // Even with only a file filter (no repo-wide overview), the tabs show.
+    await setFocus(FOCUSED);
+    expect(button('Hotspots')).toBeTruthy();
+    expect(button('Coupling')).toBeTruthy();
+  });
+
+  it('filters coupling to one file, drills on click, and opens/clears from the banner', async () => {
+    await setFocus(FOCUSED); // the focus input auto-selects the Coupling tab
 
     const t = text();
-    expect(t).toContain('Changes with');
+    expect(t).toContain('Coupling for');
     expect(t).toContain('session.ts');
     expect(t).toContain('README.md'); // minSupport 1 in focus mode
 
@@ -202,5 +223,21 @@ describe('InsightsView', () => {
 
     button('Open file')!.click();
     expect(opened).toEqual(['src/auth.ts']);
+
+    button('Clear filter')!.click();
+    expect(clearedFocus).toBe(1);
+  });
+
+  it('shows the file filter alongside the overview, and keeps the overview when cleared', async () => {
+    await setState(OVERVIEW);
+    await setFocus(FOCUSED);
+
+    // The filter takes over the coupling tab…
+    expect(text()).toContain('Coupling for');
+
+    // …and the repo-wide hotspots are still there underneath.
+    button('Hotspots')!.click();
+    await fixture.whenStable();
+    expect(text()).toContain('hot.ts');
   });
 });

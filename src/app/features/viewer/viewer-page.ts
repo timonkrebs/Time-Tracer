@@ -320,7 +320,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
                 <app-file-tree
                   [nodes]="store.tree()"
                   [selectedPath]="
-                    insightsMode() ? (store.coChange()?.focus ?? null) : store.selectedPath()
+                    insightsMode() ? (store.coupleFocus()?.focus ?? null) : store.selectedPath()
                   "
                   [expanded]="store.expandedDirs()"
                   [metrics]="store.fileMetrics()"
@@ -348,10 +348,13 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
             <app-insights-view
               class="min-h-0 flex-1"
               [state]="store.coChange()"
+              [focus]="store.coupleFocus()"
               [commitCap]="commitCap"
               (analyze)="store.computeCoChange()"
+              (loadAll)="store.computeCoChange({ all: true })"
               (clear)="store.clearCoChange()"
               (focusFile)="store.computeCoChangeFor($event)"
+              (clearFocus)="store.clearCoupleFocus()"
               (openFile)="onInsightsOpenFile($event)"
             />
           } @else {

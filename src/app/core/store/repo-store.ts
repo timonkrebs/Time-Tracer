@@ -315,11 +315,15 @@ export class RepoStore {
   private readonly _folderOwnership = signal<FolderOwnershipState | null>(null);
   /** Bumped to cancel a superseded or cleared folder scan. */
   private folderRun = 0;
-  /** Co-change analysis (files that change together), when started. */
+  /** Repo-wide co-change analysis (hotspots + coupling), when started. */
   private readonly _coChange = signal<CoChangeState | null>(null);
-  /** Bumped to cancel a superseded or cleared co-change walk. */
+  /** Bumped to cancel a superseded or cleared repo-wide walk. */
   private coChangeRun = 0;
-  /** Changed-file lists per commit sha, shared by the co-change walk. */
+  /** The active "filter coupling by file" — that file's full-history coupling. */
+  private readonly _coupleFocus = signal<CoChangeState | null>(null);
+  /** Bumped to cancel a superseded or cleared focus walk. */
+  private focusRun = 0;
+  /** Changed-file lists per commit sha, shared by the co-change walks. */
   private readonly commitFilesCache = new Map<string, Promise<readonly string[]>>();
 
   readonly phase = this._phase.asReadonly();
@@ -340,11 +344,12 @@ export class RepoStore {
   readonly traceOrigins = this._traceOrigins.asReadonly();
   readonly folderOwnership = this._folderOwnership.asReadonly();
   readonly coChange = this._coChange.asReadonly();
+  readonly coupleFocus = this._coupleFocus.asReadonly();
   readonly fileMetrics = this._fileMetrics.asReadonly();
 
   /** Files coupled to the selected one (empty until co-change has been run). */
   readonly selectedRelated = computed<RelatedFile[]>(() => {
-    const state = this._coChange();
+    const state = this._coupleFocus() ?? this._coChange();
     const path = this._selectedPath();
     if (!state || !path) return [];
     return relatedFiles(state.result, path);
@@ -1152,37 +1157,57 @@ export class RepoStore {
     publish('ready');
   }
 
-  /** Drops any co-change result and cancels a walk in progress. */
+  /** Drops both co-change results (repo-wide + filter) and cancels their walks. */
   clearCoChange(): void {
     this.coChangeRun++;
+    this.focusRun++;
     this._coChange.set(null);
+    this._coupleFocus.set(null);
+  }
+
+  /** Removes the coupling file filter, keeping the repo-wide analysis intact. */
+  clearCoupleFocus(): void {
+    this.focusRun++;
+    this._coupleFocus.set(null);
   }
 
   /**
-   * Repo-wide co-change: walks the most recent commits (up to
-   * {@link CO_CHANGE_COMMIT_CAP}) and surfaces the strongest coupling overall.
+   * Repo-wide co-change: walks recent commits (up to
+   * {@link CO_CHANGE_COMMIT_CAP}, or the whole history with `all`) and surfaces
+   * hotspots plus the strongest coupling overall.
    */
-  computeCoChange(): Promise<void> {
-    return this.walkCoChange({ cap: CO_CHANGE_COMMIT_CAP });
+  computeCoChange(options?: { all?: boolean }): Promise<void> {
+    return this.walkCoChange({
+      cap: options?.all ? Number.POSITIVE_INFINITY : CO_CHANGE_COMMIT_CAP,
+      target: 'overview',
+    });
   }
 
   /**
-   * File-focused co-change: walks `path`'s **full** history (it is one file, so
-   * usually far fewer commits than the repo) for complete insight into what
-   * changes together with it. Surfaced as `focus` on the published state.
+   * Filters coupling by a file: walks `path`'s **full** history (one file, so
+   * usually far fewer commits than the repo) for the complete list of what
+   * changes together with it. Published separately, so the repo-wide overview
+   * survives and the filter can be cleared.
    */
   computeCoChangeFor(path: string): Promise<void> {
-    return this.walkCoChange({ path, focus: path, cap: FILE_COCHANGE_COMMIT_CAP, minSupport: 1 });
+    return this.walkCoChange({
+      path,
+      focus: path,
+      cap: FILE_COCHANGE_COMMIT_CAP,
+      minSupport: 1,
+      target: 'focus',
+    });
   }
 
   /**
    * The shared co-change walk: pages commits (optionally limited to `path`),
    * fetches each one's changed files (cached per sha — request-heavy) and folds
-   * them into temporal coupling, publishing as it streams. Cancelled by
-   * navigation or a superseding run via the run/sequence guards.
+   * them into temporal coupling, publishing as it streams to the overview or
+   * filter signal. Cancelled by navigation or a superseding run via the guards.
    */
   private async walkCoChange(options: {
     readonly cap: number;
+    readonly target: 'overview' | 'focus';
     readonly path?: string;
     readonly focus?: string;
     readonly minSupport?: number;
@@ -1192,9 +1217,12 @@ export class RepoStore {
     const provider = this.registry.byId(slug.provider);
     const ref = this.ref() ?? undefined;
 
-    const run = ++this.coChangeRun;
+    const sink = options.target === 'focus' ? this._coupleFocus : this._coChange;
     const seq = this.loadSeq;
-    const live = (): boolean => seq === this.loadSeq && run === this.coChangeRun;
+    const run = options.target === 'focus' ? ++this.focusRun : ++this.coChangeRun;
+    const live = (): boolean =>
+      seq === this.loadSeq &&
+      run === (options.target === 'focus' ? this.focusRun : this.coChangeRun);
 
     // File sizes from the tree drive the hotspot treemap rectangles.
     const sizes = new Map<string, number>();
@@ -1205,7 +1233,7 @@ export class RepoStore {
     // Each commit keeps its date/author (for churn scoring) and changed files.
     const collected: (CommitFiles & { authoredAt: string; authorName: string })[] = [];
     const publish = (status: CoChangeState['status'], message?: string): void =>
-      this._coChange.set({
+      sink.set({
         status,
         focus: options.focus,
         scanned: collected.length,
@@ -1246,7 +1274,7 @@ export class RepoStore {
       publish('ready', collected.length === 0 ? empty : undefined);
     } catch (error) {
       if (!live()) return; // a cleared/superseded walk must not resurrect state
-      this._coChange.set({
+      sink.set({
         status: 'error',
         focus: options.focus,
         scanned: collected.length,

@@ -69,20 +69,23 @@ renames — see the feature list and roadmap below for what's done and what's ne
   this?") — for free from the blame already computed. An opt-in folder scan blames the files under
   the folder (subfolders included) — largest first and capped, with the scanned files listed on
   hover and a one-click option to load them all — and aggregates them, streaming as each is added.
-- **Insights — a metrics view** (the chart toggle in the header), from one capped walk of recent
-  commits, in the spirit of Tornhill's _Your Code as a Crime Scene_:
+- **Insights — a metrics view** (the chart toggle in the header), from one walk of recent
+  commits — capped by default, or **"Load all commits"** to walk the whole history — in the spirit
+  of Tornhill's _Your Code as a Crime Scene_. **Hotspots** and **Coupling** are always a tab-switch
+  apart:
   - **Hotspots** — files ranked by **recency-weighted churn** (`core/util/hotspots.ts`), shown as
     a **treemap** (rectangle = size/LOC, colour = heat) _and_ a ranked list; click a file to open
     it.
   - **Change coupling** — the **files that change together** ("touch `auth.ts`, you usually touch
     `session.ts`"), shown as the **top ~10 most-coupled clusters** drawn as node-link graphs
     (connected components of the strong couplings, 3 files up to an adjustable max — a slider tames
-    "everything-touches-everything" hairballs) plus the full pair list. Pick a file in the tree
-    to **focus** on its _full_ history for the complete list of what changes alongside it; click any
-    file (cluster node or pair) to drill the focus onto it. The same data powers an **"Often changes
-    with"** list on the open file in the History panel.
+    "everything-touches-everything" hairballs) plus the full pair list. **Filter to one file** —
+    pick it in the tree or click any file (cluster node or pair) — to walk its _full_ history and
+    see only the connections to and from it; **Clear filter** drops it again while the repo-wide
+    overview stays put. The same data powers an **"Often changes with"** list on the open file in
+    the History panel.
 
-  Mega-commits are filtered out as churn noise; the walk is capped and streams.
+  Mega-commits are filtered out as churn noise; the walk streams as it goes.
 
 - **Time travel**: pick any commit to see the file exactly as it was, with a banner showing where
   in time you are and a one-click way back to the tip. The ← Older / Newer → steppers are always
