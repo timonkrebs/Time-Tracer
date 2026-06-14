@@ -681,37 +681,6 @@ describe('ViewerPage (integration)', () => {
     expect(localStorage.getItem('time-tracer.owners-open')).toBe('0');
   });
 
-  it('copies a sha-pinned permalink to the current view', async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    const originalClipboard = navigator.clipboard;
-    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
-    try {
-      await harness.navigateByUrl('/r/acme/rocket?path=README.md');
-      // The button stays disabled until history loads and a pin sha is known.
-      await vi.waitFor(async () => {
-        await textOnScreen();
-        const copy = Array.from(harness.routeNativeElement!.querySelectorAll('button')).find(
-          (b) => b.textContent?.trim() === 'Copy link',
-        );
-        expect(copy && !copy.disabled).toBe(true);
-      });
-
-      clickButton('Copy link');
-      await harness.fixture.whenStable();
-
-      expect(writeText).toHaveBeenCalledTimes(1);
-      const copied = writeText.mock.calls[0][0] as string;
-      expect(copied).toContain('/r/acme/rocket');
-      expect(copied).toContain('path=README.md');
-      expect(copied).toContain('at='); // pinned to a commit, not the bare branch
-    } finally {
-      Object.defineProperty(navigator, 'clipboard', {
-        value: originalClipboard,
-        configurable: true,
-      });
-    }
-  });
-
   it('splits the changes view with blame on both sides', async () => {
     await harness.navigateByUrl(`/r/acme/rocket?path=README.md&at=${NEW_SHA}&view=diff`);
 

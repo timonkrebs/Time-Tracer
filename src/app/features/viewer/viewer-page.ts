@@ -22,7 +22,6 @@ import {
 import { LineRange } from '../../core/util/line-range';
 import { relativeTime, shortSha } from '../../core/util/relative-time';
 import { DiffView } from './diff-view';
-import { CopyButton } from './copy-button';
 import { FileFinder } from './file-finder';
 import { FileHistory } from './file-history';
 import { FileTree } from './file-tree';
@@ -51,16 +50,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
 @Component({
   selector: 'app-viewer-page',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [
-    RouterLink,
-    FileTree,
-    FileView,
-    FileHistory,
-    DiffView,
-    FileFinder,
-    OwnershipPanel,
-    CopyButton,
-  ],
+  imports: [RouterLink, FileTree, FileView, FileHistory, DiffView, FileFinder, OwnershipPanel],
   host: { class: 'block h-full', '(document:keydown)': 'onGlobalKeydown($event)' },
   template: `
     <div class="flex h-full flex-col" [class.select-none]="dragging()">
@@ -453,26 +443,6 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
                     Back to {{ store.ref() }}
                   </button>
                 }
-                @if (provider() !== 'local') {
-                  <app-copy-button
-                    [value]="shareUrl()"
-                    label="Copy link"
-                    [buttonClass]="barButtonClass()"
-                    [disabled]="!pinnedSha()"
-                    [title]="
-                      pinnedSha()
-                        ? 'Copy a permalink to this view (pinned to a commit)'
-                        : 'Loading history to pin the link…'
-                    "
-                  />
-                  <app-copy-button
-                    [value]="shareMarkdown()"
-                    label="Markdown"
-                    [buttonClass]="barButtonClass()"
-                    [disabled]="!pinnedSha()"
-                    title="Copy a Markdown link to this view"
-                  />
-                }
               </div>
             }
             @if (diffMode()) {
@@ -649,54 +619,6 @@ export class ViewerPage {
     const prefix = folder ? `${folder}/` : '';
     return this.store.files().filter((f) => f.path.startsWith(prefix)).length;
   });
-
-  /** Commit a shared link pins to: the viewed commit, else the file's latest. */
-  protected readonly pinnedSha = computed(() => {
-    const at = this.store.viewAt();
-    if (at) return at;
-    const history = this.store.history();
-    if (this.store.historyPath() === this.store.selectedPath() && history.length > 0) {
-      return history[0].sha;
-    }
-    return null;
-  });
-
-  /** Absolute, sha-pinned permalink to the current view. */
-  protected readonly shareUrl = computed(() => {
-    // Read the route params so this recomputes whenever the view changes.
-    this.path();
-    this.at();
-    this.view();
-    this.blame();
-    this.line();
-    this.base();
-    const origin =
-      typeof window !== 'undefined' ? window.location.origin : 'https://gittimetracer.netlify.app';
-    const url = new URL(this.router.url, origin);
-    const sha = this.pinnedSha();
-    if (sha) url.searchParams.set('at', sha);
-    return url.toString();
-  });
-
-  /** A Markdown link citing the current file/line/commit. */
-  protected readonly shareMarkdown = computed(() => {
-    const repo = this.store.metadata()?.fullName ?? `${this.owner()}/${this.repo()}`;
-    const path = this.store.selectedPath();
-    const line = this.lineNumber();
-    const sha = this.pinnedSha();
-    const where = path ? `${repo} › ${path}${line ? ':' + line : ''}` : repo;
-    const label = sha ? `${where} @ ${shortSha(sha)}` : where;
-    return `[${label}](${this.shareUrl()})`;
-  });
-
-  /** Shared styling for the buttons in the per-file bar (matches the steppers). */
-  protected readonly barButtonClass = computed(
-    () =>
-      'shrink-0 rounded border px-2 py-0.5 transition disabled:cursor-not-allowed disabled:opacity-40 ' +
-      (this.store.viewAt()
-        ? 'border-amber-300/30 enabled:hover:bg-amber-300/10'
-        : 'border-zinc-700 enabled:hover:bg-white/10'),
-  );
 
   protected readonly lineNumber = computed<number | null>(() => {
     const parsed = Number(this.line());
