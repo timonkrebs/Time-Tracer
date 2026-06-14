@@ -47,15 +47,28 @@ describe('InsightsView', () => {
     expect(analyzed).toBe(1);
   });
 
-  it('reports progress while computing', async () => {
+  it('reports progress while computing, against the state target', async () => {
     fixture.componentRef.setInput('state', {
       status: 'computing',
       scanned: 10,
-      target: 75,
+      target: 50,
       result: computeCoChange([]),
     } satisfies CoChangeState);
     await fixture.whenStable();
-    expect(text()).toContain('Walking commits… 10/75');
+    expect(text()).toContain('Walking commits… 10/50');
+  });
+
+  it('surfaces a ready status message instead of the empty fallback', async () => {
+    fixture.componentRef.setInput('state', {
+      status: 'ready',
+      scanned: 0,
+      target: 75,
+      result: computeCoChange([]),
+      message: 'No commit history found.',
+    } satisfies CoChangeState);
+    await fixture.whenStable();
+    expect(text()).toContain('No commit history found.');
+    expect(text()).not.toContain('No files changed together');
   });
 
   it('lists coupled pairs and opens a file when clicked', async () => {

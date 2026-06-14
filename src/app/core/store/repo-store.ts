@@ -1199,6 +1199,7 @@ export class RepoStore {
       }
       publish('ready', collected.length === 0 ? 'No commit history found.' : undefined);
     } catch (error) {
+      if (!live()) return; // a cleared/superseded walk must not resurrect state
       this._coChange.set({
         status: 'error',
         scanned: collected.length,

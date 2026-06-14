@@ -1377,5 +1377,17 @@ describe('RepoStore', () => {
 
       expect(store.coChange()).toBeNull();
     });
+
+    it('does not resurrect state if a cleared walk later rejects', async () => {
+      const pending = deferred<CommitInfo[]>();
+      provider.listCommitsResult = () => pending.promise;
+
+      const walk = store.computeCoChange();
+      store.clearCoChange();
+      pending.reject(new RepoProviderError('boom', 'network'));
+      await walk;
+
+      expect(store.coChange()).toBeNull();
+    });
   });
 });

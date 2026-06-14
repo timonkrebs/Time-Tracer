@@ -60,7 +60,9 @@ const MAX_PAIRS = 60;
         } @else {
           <p class="mb-3 text-xs text-zinc-500">
             @if (s.status === 'computing') {
-              Walking commits… {{ s.scanned }}/{{ commitCap() }}
+              Walking commits… {{ s.scanned }}/{{ s.target }}
+            } @else if (s.message) {
+              {{ s.message }}
             } @else {
               From the last {{ s.result.commitsUsed }}
               {{ s.result.commitsUsed === 1 ? 'commit' : 'commits' }}. Pairs that changed together
@@ -111,7 +113,7 @@ const MAX_PAIRS = 60;
             @if (more() > 0) {
               <p class="mt-2 text-[11px] text-zinc-600">+{{ more() }} more pairs</p>
             }
-          } @else if (s.status === 'ready') {
+          } @else if (s.status === 'ready' && !s.message) {
             <p class="text-sm text-zinc-500">
               No files changed together often enough in the last {{ s.result.commitsUsed }} commits.
             </p>
