@@ -76,7 +76,8 @@ renames — see the feature list and roadmap below for what's done and what's ne
     it.
   - **Change coupling** — the **files that change together** ("touch `auth.ts`, you usually touch
     `session.ts`"), shown as the **top ~10 most-coupled clusters** drawn as node-link graphs
-    (connected components of the strong couplings) plus the full pair list. Pick a file in the tree
+    (connected components of the strong couplings; oversized "everything-touches-everything"
+    hairballs are dropped as unreadable) plus the full pair list. Pick a file in the tree
     to **focus** on its _full_ history for the complete list of what changes alongside it; click any
     file (cluster node or pair) to drill the focus onto it. The same data powers an **"Often changes
     with"** list on the open file in the History panel.

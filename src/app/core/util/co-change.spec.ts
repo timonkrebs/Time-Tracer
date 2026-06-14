@@ -92,6 +92,19 @@ describe('clusterCoChange', () => {
     expect(clusterCoChange(pairs, { minDegree: 0.3, limit: 1 })).toHaveLength(1);
   });
 
+  it('drops super-clusters larger than the size cap', () => {
+    const tangled = [
+      { a: 'a', b: 'b', support: 3, degree: 0.9 },
+      { a: 'b', b: 'c', support: 3, degree: 0.9 },
+      { a: 'c', b: 'd', support: 3, degree: 0.9 }, // a–b–c–d: a 4-file hairball
+      { a: 'x', b: 'y', support: 5, degree: 0.9 },
+    ];
+    // With maxFiles 3 the 4-file component is excluded; only x–y survives.
+    expect(clusterCoChange(tangled, { minDegree: 0.3, maxFiles: 3 }).map((c) => c.files)).toEqual([
+      ['x', 'y'],
+    ]);
+  });
+
   it('returns nothing when every coupling is below the degree threshold', () => {
     expect(clusterCoChange(pairs, { minDegree: 0.95 })).toEqual([]);
   });
