@@ -13,6 +13,7 @@ import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 
 import { LocalRepos } from '../../core/git/local/local-repos';
 import {
+  CO_CHANGE_COMMIT_CAP,
   FOLDER_OWNERSHIP_CAP,
   HunkOriginCandidate,
   LineTraceHit,
@@ -26,6 +27,7 @@ import { FileFinder } from './file-finder';
 import { FileHistory } from './file-history';
 import { FileTree } from './file-tree';
 import { FileView } from './file-view';
+import { InsightsView } from './insights-view';
 import { OwnershipPanel } from './ownership-panel';
 
 const TREE_WIDTH_KEY = 'time-tracer.tree-width';
@@ -50,7 +52,16 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
 @Component({
   selector: 'app-viewer-page',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [RouterLink, FileTree, FileView, FileHistory, DiffView, FileFinder, OwnershipPanel],
+  imports: [
+    RouterLink,
+    FileTree,
+    FileView,
+    FileHistory,
+    DiffView,
+    FileFinder,
+    OwnershipPanel,
+    InsightsView,
+  ],
   host: { class: 'block h-full', '(document:keydown)': 'onGlobalKeydown($event)' },
   template: `
     <div class="flex h-full flex-col" [class.select-none]="dragging()">
@@ -99,6 +110,33 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
             >
               <circle cx="11" cy="11" r="7" />
               <path d="m21 21-4.3-4.3" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="shrink-0 rounded p-1.5 transition"
+            [class]="
+              insightsMode()
+                ? 'bg-indigo-500/20 text-indigo-200'
+                : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100'
+            "
+            (click)="toggleInsights()"
+            aria-label="Repository insights"
+            [attr.aria-pressed]="insightsMode()"
+            title="Insights — files that change together"
+          >
+            <svg
+              class="size-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M3 3v18h18" />
+              <path d="m7 14 4-4 3 3 5-5" />
             </svg>
           </button>
         }
@@ -269,6 +307,15 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
             {{ store.phase() === 'tree' ? 'Loading file tree…' : 'Fetching repository metadata…' }}
           </p>
         </div>
+      } @else if (insightsMode()) {
+        <app-insights-view
+          class="min-h-0 flex-1"
+          [state]="store.coChange()"
+          [commitCap]="commitCap"
+          (analyze)="store.computeCoChange()"
+          (clear)="store.clearCoChange()"
+          (openFile)="onInsightsOpenFile($event)"
+        />
       } @else {
         <div class="flex min-h-0 flex-1">
           @if (!treeCollapsed()) {
@@ -519,7 +566,9 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
                 [renames]="store.selectedRenames()"
                 [trace]="store.lineTrace()"
                 [origins]="store.traceOrigins()"
+                [related]="store.selectedRelated()"
                 (commitSelect)="goToCommit($event)"
+                (relatedSelect)="onFileSelect($event)"
                 (traceSelect)="onTraceSelect($event)"
                 (loadMore)="store.loadMoreHistory()"
                 (loadAll)="store.loadAllHistory()"
@@ -574,6 +623,10 @@ export class ViewerPage {
   readonly line = input<string | undefined>();
   /** Predecessor path to diff the file against (a chosen rename candidate). */
   readonly base = input<string | undefined>();
+  /** `1` shows the repository Insights view instead of the file browser. */
+  readonly insights = input<string | undefined>();
+
+  protected readonly commitCap = CO_CHANGE_COMMIT_CAP;
 
   protected readonly treeWidth = signal(restoreTreeWidth());
   protected readonly dragging = signal(false);
@@ -600,6 +653,9 @@ export class ViewerPage {
 
   /** Blame is available in both views: gutter in File, split in Changes. */
   protected readonly blameOn = computed(() => this.blame() !== '0');
+
+  /** The repository Insights view replaces the file browser when on. */
+  protected readonly insightsMode = computed(() => this.insights() === '1');
 
   /** Parent folder of the selected file ('' for the repository root). */
   protected readonly selectedFolder = computed(() => {
@@ -906,6 +962,24 @@ export class ViewerPage {
 
   protected openFinder(): void {
     this.finderOpen.set(true);
+  }
+
+  /** Shows or hides the repository Insights view (deep-linked via `?insights=1`). */
+  protected toggleInsights(): void {
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { insights: this.insightsMode() ? null : '1' },
+      queryParamsHandling: 'merge',
+    });
+  }
+
+  /** A file was picked in Insights: open it and leave the Insights view. */
+  protected onInsightsOpenFile(path: string): void {
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { path, insights: null, at: null, view: null, line: null, base: null },
+      queryParamsHandling: 'merge',
+    });
   }
 
   /** A file was picked in the finder: open it and dismiss the overlay. */

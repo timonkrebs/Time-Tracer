@@ -69,6 +69,11 @@ renames — see the feature list and roadmap below for what's done and what's ne
   this?") — for free from the blame already computed. An opt-in folder scan blames the files under
   the folder (subfolders included) — largest first and capped, with the scanned files listed on
   hover and a one-click option to load them all — and aggregates them, streaming as each is added.
+- **Insights — change coupling**: a dedicated view (the chart toggle in the header) that, on
+  demand, walks recent commits and surfaces the **files that change together** — temporal coupling
+  in the spirit of Tornhill's _Your Code as a Crime Scene_ ("touch `auth.ts`, you usually touch
+  `session.ts`"). Mega-commits are filtered out as noise; the walk is capped and streams. The same
+  data powers an **"Often changes with"** list on the open file in the History panel.
 - **Time travel**: pick any commit to see the file exactly as it was, with a banner showing where
   in time you are and a one-click way back to the tip. The ← Older / Newer → steppers are always
   visible (only the dead direction is disabled) and work straight from the current version,
@@ -266,3 +271,6 @@ npm run build      # production build into dist/
 21. **Off-main-thread analysis & more hosts** — move blame/Trace/pickaxe walks to a Web Worker so
     long histories stay responsive, and add Gitea / Forgejo / Codeberg behind the `GitProvider`
     interface.
+22. **Repository Insights** — a metrics view over the history. ✅ Started with **change coupling**
+    (`core/util/co-change.ts`); next: a hotspot treemap, a contributor leaderboard, and a
+    bus-factor/knowledge map, all from the same capped commit walk.

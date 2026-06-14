@@ -1319,4 +1319,63 @@ describe('RepoStore', () => {
       expect(store.folderOwnership()).toBeNull();
     });
   });
+
+  describe('co-change (computeCoChange)', () => {
+    beforeEach(async () => {
+      await store.loadRepo(slug);
+    });
+
+    it('walks recent commits and couples files that change together', async () => {
+      provider.listCommitsResult = () =>
+        Promise.resolve([commit('c1'), commit('c2'), commit('c3')]);
+      provider.commitFilesResult = (sha) =>
+        Promise.resolve(
+          sha === 'c3'
+            ? [
+                { path: 'a.ts', status: 'modified' },
+                { path: 'c.ts', status: 'modified' },
+              ]
+            : [
+                { path: 'a.ts', status: 'modified' },
+                { path: 'b.ts', status: 'modified' },
+              ],
+        );
+
+      await store.computeCoChange();
+
+      const state = store.coChange();
+      expect(state?.status).toBe('ready');
+      expect(state?.result.commitsUsed).toBe(3);
+      // a.ts↔b.ts in c1 & c2 (support 2); a.ts↔c.ts only once (dropped).
+      expect(state?.result.pairs.map((p) => `${p.a}-${p.b}`)).toEqual(['a.ts-b.ts']);
+    });
+
+    it('surfaces related files for the selected file', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c1'), commit('c2')]);
+      provider.commitFilesResult = () =>
+        Promise.resolve([
+          { path: 'README.md', status: 'modified' },
+          { path: 'src/deep/main.ts', status: 'modified' },
+        ]);
+
+      await store.openFile('README.md');
+      await store.computeCoChange();
+
+      expect(store.selectedRelated().map((r) => r.path)).toEqual(['src/deep/main.ts']);
+    });
+
+    it('cancels an in-flight walk when cleared', async () => {
+      const pending = deferred<CommitInfo[]>();
+      provider.listCommitsResult = () => pending.promise;
+
+      const walk = store.computeCoChange();
+      expect(store.coChange()?.status).toBe('computing');
+
+      store.clearCoChange();
+      pending.resolve([commit('c1')]);
+      await walk;
+
+      expect(store.coChange()).toBeNull();
+    });
+  });
 });
