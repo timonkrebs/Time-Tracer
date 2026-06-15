@@ -138,6 +138,14 @@ describe('moduleOf', () => {
   it('maps a repository-root file to the empty module', () => {
     expect(moduleOf('README.md', 1)).toBe('');
   });
+
+  it('sanitises a malformed depth to a whole number ≥ 1', () => {
+    expect(moduleOf('src/auth/login.ts', Number.NaN)).toBe('src');
+    expect(moduleOf('src/auth/login.ts', 0)).toBe('src');
+    expect(moduleOf('src/auth/login.ts', -3)).toBe('src');
+    expect(moduleOf('src/auth/login.ts', 2.9)).toBe('src/auth'); // truncated to 2
+    expect(moduleOf('src/auth/login.ts', Number.POSITIVE_INFINITY)).toBe('src/auth');
+  });
 });
 
 describe('computeModuleCoChange', () => {

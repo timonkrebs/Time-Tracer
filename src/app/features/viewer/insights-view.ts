@@ -419,7 +419,12 @@ interface ClusterGraph {
               <p class="text-sm text-rose-400">{{ s.message }}</p>
             } @else if (s.message) {
               <p class="text-sm text-zinc-500">{{ s.message }}</p>
-            } @else if (pairs().length) {
+            } @else if (s.result.commitsUsed) {
+              <!--
+                Gated on commits analysed (not file pairs): module coupling can
+                exist even when no file pair clears minSupport, so the toggle
+                must stay reachable. Each mode renders its own empty state.
+              -->
               <div class="mb-2 flex items-center gap-3 text-xs text-zinc-500">
                 <span
                   class="inline-flex overflow-hidden rounded border border-zinc-700"
@@ -434,6 +439,7 @@ interface ClusterGraph {
                         ? 'bg-zinc-700/60 font-medium text-zinc-200'
                         : 'hover:bg-white/10'
                     "
+                    [attr.aria-pressed]="granularity() === 'files'"
                     (click)="granularity.set('files')"
                   >
                     Files
@@ -446,6 +452,7 @@ interface ClusterGraph {
                         ? 'bg-zinc-700/60 font-medium text-zinc-200'
                         : 'hover:bg-white/10'
                     "
+                    [attr.aria-pressed]="granularity() === 'modules'"
                     (click)="granularity.set('modules')"
                   >
                     Modules
@@ -566,67 +573,77 @@ interface ClusterGraph {
                       +{{ moduleMore() }} more module pairs
                     </p>
                   }
+                } @else if (s.status === 'computing') {
+                  <p class="text-sm text-zinc-500">Finding coupling…</p>
                 } @else {
                   <p class="text-sm text-zinc-500">
                     No modules change together at depth {{ moduleDepth() }} — try a different depth.
                   </p>
                 }
               } @else {
-                <p class="mb-2 text-xs text-zinc-500">
-                  Most-coupled clusters — each edge is how often the two files change in the same
-                  commit. Click a file to filter by it.
-                </p>
-                @if (clusters().length) {
-                  <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    @for (graph of clusterGraphs(); track $index) {
-                      <ng-container
-                        [ngTemplateOutlet]="graphCard"
-                        [ngTemplateOutletContext]="{
-                          $implicit: graph,
-                          clickable: true,
-                          unit: 'files',
-                        }"
-                      />
-                    }
-                  </div>
-                  <p
-                    class="mt-3 mb-1 text-[11px] font-medium tracking-wide text-zinc-500 uppercase"
-                  >
-                    All pairs
+                @if (pairs().length) {
+                  <p class="mb-2 text-xs text-zinc-500">
+                    Most-coupled clusters — each edge is how often the two files change in the same
+                    commit. Click a file to filter by it.
                   </p>
-                }
-                <ul class="space-y-1">
-                  @for (pair of pairs(); track $index) {
-                    <li
-                      class="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-white/[0.03]"
+                  @if (clusters().length) {
+                    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      @for (graph of clusterGraphs(); track $index) {
+                        <ng-container
+                          [ngTemplateOutlet]="graphCard"
+                          [ngTemplateOutletContext]="{
+                            $implicit: graph,
+                            clickable: true,
+                            unit: 'files',
+                          }"
+                        />
+                      }
+                    </div>
+                    <p
+                      class="mt-3 mb-1 text-[11px] font-medium tracking-wide text-zinc-500 uppercase"
                     >
-                      <span class="flex min-w-0 flex-1 items-center gap-1.5">
-                        <button
-                          type="button"
-                          class="truncate font-mono text-xs text-zinc-200 underline-offset-2 hover:text-indigo-300 hover:underline"
-                          [title]="pair.a"
-                          (click)="focusFile.emit(pair.a)"
-                        >
-                          {{ label(pair.a) }}
-                        </button>
-                        <span class="shrink-0 text-zinc-600">↔</span>
-                        <button
-                          type="button"
-                          class="truncate font-mono text-xs text-zinc-200 underline-offset-2 hover:text-indigo-300 hover:underline"
-                          [title]="pair.b"
-                          (click)="focusFile.emit(pair.b)"
-                        >
-                          {{ label(pair.b) }}
-                        </button>
-                      </span>
-                      <span class="shrink-0 text-[11px] text-zinc-500 tabular-nums">
-                        {{ pair.support }}× · {{ pct(pair.degree) }}%
-                      </span>
-                    </li>
+                      All pairs
+                    </p>
                   }
-                </ul>
-                @if (more() > 0) {
-                  <p class="mt-2 text-[11px] text-zinc-600">+{{ more() }} more pairs</p>
+                  <ul class="space-y-1">
+                    @for (pair of pairs(); track $index) {
+                      <li
+                        class="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-white/[0.03]"
+                      >
+                        <span class="flex min-w-0 flex-1 items-center gap-1.5">
+                          <button
+                            type="button"
+                            class="truncate font-mono text-xs text-zinc-200 underline-offset-2 hover:text-indigo-300 hover:underline"
+                            [title]="pair.a"
+                            (click)="focusFile.emit(pair.a)"
+                          >
+                            {{ label(pair.a) }}
+                          </button>
+                          <span class="shrink-0 text-zinc-600">↔</span>
+                          <button
+                            type="button"
+                            class="truncate font-mono text-xs text-zinc-200 underline-offset-2 hover:text-indigo-300 hover:underline"
+                            [title]="pair.b"
+                            (click)="focusFile.emit(pair.b)"
+                          >
+                            {{ label(pair.b) }}
+                          </button>
+                        </span>
+                        <span class="shrink-0 text-[11px] text-zinc-500 tabular-nums">
+                          {{ pair.support }}× · {{ pct(pair.degree) }}%
+                        </span>
+                      </li>
+                    }
+                  </ul>
+                  @if (more() > 0) {
+                    <p class="mt-2 text-[11px] text-zinc-600">+{{ more() }} more pairs</p>
+                  }
+                } @else if (s.status === 'computing') {
+                  <p class="text-sm text-zinc-500">Finding coupling…</p>
+                } @else {
+                  <p class="text-sm text-zinc-500">
+                    No files changed together often enough in the analysed commits.
+                  </p>
                 }
               }
             } @else if (s.status === 'ready') {

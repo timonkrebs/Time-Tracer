@@ -114,14 +114,15 @@ export function computeCoChange(
  * `src/auth/login.ts` → `src` at depth 1, `src/auth` at depth 2; a file with
  * fewer directories than `depth` rolls up to its own folder, and a file at the
  * repository root has no module (''). Modules are how change coupling is rolled
- * up from files to the architecture level.
+ * up from files to the architecture level. `depth` is sanitised so a malformed
+ * value can't skew bucketing: NaN falls back to 1, anything below 1 clamps to
+ * 1, floats truncate to whole levels, and Infinity keeps the full folder path.
  */
 export function moduleOf(path: string, depth: number): string {
+  const levels = Number.isNaN(depth) ? 1 : Math.max(1, Math.trunc(depth));
   const slash = path.lastIndexOf('/');
   if (slash < 0) return ''; // a file at the repository root
-  const dir = path.slice(0, slash);
-  if (depth <= 0) return dir;
-  return dir.split('/').slice(0, depth).join('/');
+  return path.slice(0, slash).split('/').slice(0, levels).join('/');
 }
 
 /**

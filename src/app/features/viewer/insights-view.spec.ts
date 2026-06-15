@@ -105,6 +105,20 @@ const MODULE_CLUSTER: CoChangeState = {
   commits: MODULE_CLUSTER_COMMITS,
   hotspots: [],
 };
+// Two folders that always change together, but via *different* files each time
+// → no file pair clears minSupport, yet module coupling exists.
+const MODULE_ONLY_COMMITS = [
+  { sha: 'r1', files: ['auth/a.ts', 'ui/x.ts'] },
+  { sha: 'r2', files: ['auth/b.ts', 'ui/y.ts'] },
+];
+const MODULE_ONLY: CoChangeState = {
+  status: 'ready',
+  scanned: 2,
+  target: 75,
+  result: computeCoChange(MODULE_ONLY_COMMITS),
+  commits: MODULE_ONLY_COMMITS,
+  hotspots: [],
+};
 
 describe('InsightsView', () => {
   let fixture: ComponentFixture<InsightsView>;
@@ -309,6 +323,21 @@ describe('InsightsView', () => {
       fixture.nativeElement.querySelectorAll('svg text') as SVGTextElement[],
     ).map((t) => t.textContent?.trim());
     expect(labels).toContain('100%');
+  });
+
+  it('reaches module coupling even when no file pair survives minSupport', async () => {
+    await setState(MODULE_ONLY);
+    button('Coupling')!.click();
+    await fixture.whenStable();
+
+    // No file pairs cleared minSupport, but the granularity toggle is still here…
+    expect(text()).toContain('No files changed together');
+    button('Modules')!.click();
+    await fixture.whenStable();
+
+    // …and the module roll-up surfaces the auth ↔ ui coupling.
+    expect(text()).toContain('auth');
+    expect(text()).toContain('ui');
   });
 
   it('shows a live folder-depth example that tracks the slider', async () => {
