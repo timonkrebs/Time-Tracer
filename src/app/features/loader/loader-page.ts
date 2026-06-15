@@ -11,6 +11,7 @@ import { RecentRepos, RecentRepo } from '../../core/store/recent-repos';
 // Popular, heavily co-developed engineering projects — thousands of authors and
 // rich history to explore (blame, diffs, line traces).
 const EXAMPLES = [
+  'timonkrebs/MemoizR',
   'microsoft/vscode',
   'kubernetes/kubernetes',
   'rust-lang/rust',
