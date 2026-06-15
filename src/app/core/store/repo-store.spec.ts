@@ -783,6 +783,37 @@ describe('RepoStore', () => {
 
       expect(store.selectedBlame()).toMatchObject({ status: 'unavailable' });
     });
+
+    it('attributes a deleted-then-re-added file to the re-add, not a not-found error', async () => {
+      // README.md was deleted at c2 and re-added at c3, so its history lists all
+      // three commits — but the file is absent from c2's tree.
+      provider.listCommitsResult = () =>
+        Promise.resolve([commit('c3'), commit('c2'), commit('c1')]);
+      provider.fileResult = (entry) => text(entry.path, entry.sha, 'A\nB\n');
+      provider.fileAtRefResult = (path, ref) => {
+        if (ref === 'c2') {
+          return Promise.reject(
+            new RepoProviderError(
+              `"${path}" does not exist at c2 — deleted by this commit.`,
+              'not-found',
+            ),
+          );
+        }
+        return text(path, `blob-${ref}`, 'A\nB\n');
+      };
+
+      await store.openFile('README.md');
+      await store.loadBlame('README.md');
+
+      const blame = store.selectedBlame();
+      // The gap at c2 is not surfaced as an error: every line is attributed to
+      // the re-add (c3), exactly as if c3 had created the file.
+      expect(blame?.status).toBe('ready');
+      expect(blame?.truncated).toBe(false);
+      expect(ownerShas()).toEqual(['c3', 'c3']);
+      // The walk stopped at the gap and never fetched the older c1.
+      expect(provider.fileAtRefCalls).toEqual([{ path: 'README.md', ref: 'c2' }]);
+    });
   });
 
   describe('line trace (startLineTrace)', () => {
@@ -1002,6 +1033,33 @@ describe('RepoStore', () => {
       await store.startLineTrace('README.md', 'ghost', { start: 1, end: 1 });
 
       expect(store.lineTrace()).toMatchObject({ status: 'error' });
+    });
+
+    it('ends the trail at the re-add when the file is absent before it', async () => {
+      // README.md was deleted at c2 and re-added at c3 (history lists all three).
+      provider.listCommitsResult = () =>
+        Promise.resolve([commit('c3'), commit('c2'), commit('c1')]);
+      provider.fileAtRefResult = (path, ref) => {
+        if (ref === 'c2') {
+          return Promise.reject(
+            new RepoProviderError(
+              `"${path}" does not exist at c2 — deleted by this commit.`,
+              'not-found',
+            ),
+          );
+        }
+        return text(path, `blob-${ref}`, 'A\nB\n');
+      };
+
+      await store.openFile('README.md', 'c3');
+      await store.startLineTrace('README.md', 'c3', { start: 1, end: 1 });
+
+      const state = store.lineTrace();
+      // The gap at c2 ends the trail at the re-add (c3) instead of erroring.
+      expect(state?.status).toBe('ready');
+      expect(state?.truncated).toBe(false);
+      expect(state?.origin).toEqual({ sha: 'c3', range: { start: 1, end: 1 } });
+      expect(traceShas()).toEqual(['c3']);
     });
 
     it('survives time travel within the file but not a file switch', async () => {
