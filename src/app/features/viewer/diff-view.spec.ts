@@ -51,10 +51,49 @@ function readyState(): DiffState {
   };
 }
 
+/** A ready diff whose only change is a removal between two context lines. */
+function removalState(): DiffState {
+  const diff: FileDiff = {
+    added: 0,
+    removed: 1,
+    oldLineCount: 3,
+    newLineCount: 2,
+    identical: false,
+    hunks: [
+      {
+        oldStart: 1,
+        oldCount: 3,
+        newStart: 1,
+        newCount: 2,
+        header: '@@ -1,3 +1,2 @@',
+        ops: [
+          { kind: 'equal', text: 'keep one', oldLine: 1, newLine: 1 },
+          { kind: 'remove', text: 'removed line', oldLine: 2 },
+          { kind: 'equal', text: 'keep two', oldLine: 3, newLine: 2 },
+        ],
+      },
+    ],
+  };
+  return {
+    status: 'ready',
+    diff,
+    commit: COMMIT,
+    baseSha: 'b'.repeat(40),
+    basePath: 'f.ts',
+    headPath: 'f.ts',
+  };
+}
+
 function panes(fixture: ComponentFixture<DiffView>): HTMLElement[] {
   return Array.from(
     (fixture.nativeElement as HTMLElement).querySelectorAll<HTMLElement>('.overflow-auto'),
   );
+}
+
+function traceButtonsIn(pane: HTMLElement): number {
+  return Array.from(pane.querySelectorAll('button')).filter(
+    (b) => (b.textContent ?? '').trim() === 'Trace',
+  ).length;
 }
 
 describe('DiffView split scrolling', () => {
@@ -105,5 +144,22 @@ describe('DiffView split scrolling', () => {
 
     expect(left.scrollTop).toBe(72);
     expect(left.scrollLeft).toBe(200);
+  });
+
+  it('keeps Trace on the After side, never the Before side', () => {
+    // The default fixture is a replace run (remove paired with add).
+    const [before, after] = panes(fixture);
+    expect(traceButtonsIn(before)).toBe(0);
+    expect(traceButtonsIn(after)).toBeGreaterThan(0);
+  });
+
+  it('surfaces a pure-removal block its Trace on the After side', async () => {
+    fixture.componentRef.setInput('state', removalState());
+    await fixture.whenStable();
+
+    const [before, after] = panes(fixture);
+    // The removed line shows on the Before side, but its Trace stays on the After side.
+    expect(traceButtonsIn(before)).toBe(0);
+    expect(traceButtonsIn(after)).toBe(1);
   });
 });

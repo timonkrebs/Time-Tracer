@@ -331,20 +331,8 @@ interface SplitRow {
                         aria-hidden="true"
                         >{{ cell.lineNo }}</span
                       >
-                      <span class="w-12 shrink-0 text-center select-none">
-                        @if (!comparingPath() && row.traceRange; as range) {
-                          @if (!row.right) {
-                            <button
-                              type="button"
-                              class="rounded border border-sky-300/30 px-1.5 text-[11px] leading-4 text-sky-200/90 transition hover:bg-sky-300/10"
-                              title="Trace this changed block"
-                              (click)="trace.emit(range)"
-                            >
-                              Trace
-                            </button>
-                          }
-                        }
-                      </span>
+                      <!-- Trace lives only on the After side; keep the slot so both sides line up. -->
+                      <span class="w-12 shrink-0 select-none"></span>
                       <span
                         class="pr-4 pl-3 whitespace-pre [tab-size:4]"
                         [class]="row.left.changed ? 'text-rose-200' : 'text-zinc-300'"
@@ -415,16 +403,14 @@ interface SplitRow {
                       </span>
                       <span class="w-12 shrink-0 text-center select-none">
                         @if (!comparingPath() && row.traceRange; as range) {
-                          @if (row.right) {
-                            <button
-                              type="button"
-                              class="rounded border border-sky-300/30 px-1.5 text-[11px] leading-4 text-sky-200/90 transition hover:bg-sky-300/10"
-                              title="Trace this changed block"
-                              (click)="trace.emit(range)"
-                            >
-                              Trace
-                            </button>
-                          }
+                          <button
+                            type="button"
+                            class="rounded border border-sky-300/30 px-1.5 text-[11px] leading-4 text-sky-200/90 transition hover:bg-sky-300/10"
+                            title="Trace this changed block"
+                            (click)="trace.emit(range)"
+                          >
+                            Trace
+                          </button>
                         }
                       </span>
                       <span
@@ -432,6 +418,25 @@ interface SplitRow {
                         [class]="row.right.changed ? 'text-emerald-200' : 'text-zinc-300'"
                         >{{ cell.text }}</span
                       >
+                    } @else if (!comparingPath() && row.traceRange; as range) {
+                      <!--
+                        Pure-removal run: it has no After line, but its trace range
+                        still tracks the surviving lines around the gap. Surface its
+                        Trace here on the After side, aligned in the trace slot, rather
+                        than on the Before side.
+                      -->
+                      <span class="w-40 shrink-0 select-none" aria-hidden="true"></span>
+                      <span class="w-9 shrink-0 select-none" aria-hidden="true"></span>
+                      <span class="w-12 shrink-0 text-center select-none">
+                        <button
+                          type="button"
+                          class="rounded border border-sky-300/30 px-1.5 text-[11px] leading-4 text-sky-200/90 transition hover:bg-sky-300/10"
+                          title="Trace this changed block"
+                          (click)="trace.emit(range)"
+                        >
+                          Trace
+                        </button>
+                      </span>
                     }
                   </div>
                 }
