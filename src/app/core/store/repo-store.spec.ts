@@ -891,12 +891,13 @@ describe('RepoStore', () => {
       ]);
     });
 
-    it('keeps a multi-line range whole across a block rewrite', async () => {
+    it('keeps a multi-line range its size across a block rewrite', async () => {
       provider.listCommitsResult = () =>
         Promise.resolve([commit('c2'), commit('c1'), commit('c0')]);
       // c1 introduces a four-line block (b,c,d,e); c2 rewrites it into X,Y.
-      // Tracing the two-line selection X,Y must expand to cover the whole
-      // block it replaced (2..5), not narrow below the selection.
+      // Tracing the two-line selection X,Y follows two lines back (2..3), not
+      // the block's whole old extent (2..5): a selection keeps its size as it
+      // travels through history rather than ballooning (issue #9).
       provider.fileAtRefResult = (path, ref) =>
         text(
           path,
@@ -909,11 +910,45 @@ describe('RepoStore', () => {
 
       const state = store.lineTrace();
       expect(state?.status).toBe('ready');
-      expect(state?.origin).toEqual({ sha: 'c1', range: { start: 2, end: 5 } });
+      expect(state?.origin).toEqual({ sha: 'c1', range: { start: 2, end: 3 } });
       expect(traceShas()).toEqual(['c2', 'c1']);
       expect(traceHits()).toEqual([
         { sha: 'c2', range: { start: 2, end: 3 } },
-        { sha: 'c1', range: { start: 2, end: 5 } },
+        { sha: 'c1', range: { start: 2, end: 3 } },
+      ]);
+    });
+
+    it('does not balloon a multi-line range across a near-whole-file rewrite', async () => {
+      provider.listCommitsResult = () =>
+        Promise.resolve([commit('c2'), commit('c1'), commit('c0')]);
+      // c0 already has the lines; c1 rewrites the whole top block (a..g →
+      // A..G) — the degenerate diff that broke MemoizR's ReactionBase.cs in
+      // issue #9; c2 edits one line inside it (C → C2). Tracing the two-line
+      // selection must stay two lines at every commit, never expanding to the
+      // whole rewritten block ("the earlier commits select all the lines").
+      provider.fileAtRefResult = (path, ref) =>
+        text(
+          path,
+          `blob-${ref}`,
+          ref === 'c2'
+            ? 'A\nB\nC2\nD\nE\nF\nG\nh\n'
+            : ref === 'c1'
+              ? 'A\nB\nC\nD\nE\nF\nG\nh\n'
+              : 'a\nb\nc\nd\ne\nf\ng\nh\n',
+        );
+
+      await store.openFile('README.md', 'c2');
+      await store.startLineTrace('README.md', 'c2', { start: 3, end: 4 });
+
+      const state = store.lineTrace();
+      expect(state?.status).toBe('ready');
+      // Every hit is the two lines that were selected — including across the
+      // c1→c0 whole-block rewrite, which previously ballooned to 1..7.
+      expect(traceShas()).toEqual(['c2', 'c1', 'c0']);
+      expect(traceHits()).toEqual([
+        { sha: 'c2', range: { start: 3, end: 4 } },
+        { sha: 'c1', range: { start: 3, end: 4 } },
+        { sha: 'c0', range: { start: 3, end: 4 } },
       ]);
     });
 

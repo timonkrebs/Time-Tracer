@@ -116,9 +116,9 @@ renames — see the feature list and roadmap below for what's done and what's ne
   trace any range **straight from the current version**, not only from a commit's changes. The
   History panel narrows to only the commits that ever changed those lines, `git log -L` in the
   browser. The hunk's line range is followed backwards through every version with the same minimal diff
-  blame uses (client-side, so it works for all providers): edits above shift the range, a single
-  traced line follows its predecessor one line at a time through a rewrite while a multi-line
-  selection keeps the whole block together (expanding over what it replaced), and the walk stops
+  blame uses (client-side, so it works for all providers): edits above shift the range and each edge
+  follows its own line one step at a time through a rewrite, so the selection keeps its size instead of
+  ballooning over a rewritten block — a single line stays a single line — and the walk stops
   at the commit that introduced the lines. The traced range lives in the URL (`line=18` or
   `line=18-19`), so it is shareable and survives reloads and view switches.
   Matches stream in as they are found, the walk pauses at the end of the
@@ -128,8 +128,9 @@ renames — see the feature list and roadmap below for what's done and what's ne
   **"Where did these lines come from?"** hunts for the block's origin: the introducing commit's
   other files (deleted ones are prime suspects) — or, on demand, the whole snapshot just before
   it — are searched with a line-level local alignment (exact lines anchor, edited lines score by
-  per-line Levenshtein), and each ranked hit jumps straight to the matching file and line in the
-  predecessor's own timeline.
+  per-line Levenshtein), and each ranked hit either jumps straight to the matching file and line in
+  the predecessor's own timeline or, via **Diff**, lines the introduced block up against that source
+  side by side (their shared lines fall to context, the rest reads as +/−).
 - **Rename candidates**: where a file's recorded history ends, the History panel can search the
   commit just before it for likely predecessors — GitHub's own rename detection, files the
   creating commit _deleted_ (prime rename suspects, content-compared one by one), identical blobs

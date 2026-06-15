@@ -588,6 +588,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
                   (traceOlder)="store.extendLineTrace()"
                   (searchOrigins)="store.searchTraceOrigins($event)"
                   (originSelect)="onOriginSelect($event)"
+                  (originDiff)="onOriginDiff($event)"
                 />
               </aside>
             }
@@ -1269,6 +1270,33 @@ export class ViewerPage {
         view: 'file',
         line: formatLineRange(range),
         base: null,
+      },
+      queryParamsHandling: 'merge',
+    });
+  }
+
+  /**
+   * "Diff" on a hunk-origin candidate: compare the introduced block against
+   * the source it may have moved from. Mirrors the rename-candidate Diff — the
+   * traced file at the introducing commit stays the head side and the candidate
+   * at that commit's parent becomes the old side (set via `base`), so the lines
+   * the two share line up as context while everything else reads as +/−. The
+   * introduced range is highlighted on the new side. The trace and its origin
+   * list survive (the path is unchanged), so other candidates stay one click
+   * away.
+   */
+  protected onOriginDiff(candidate: HunkOriginCandidate): void {
+    const trace = this.store.lineTrace();
+    if (trace?.status !== 'ready' || !trace.origin) return;
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: {
+        path: trace.path,
+        at: trace.origin.sha,
+        view: 'diff',
+        base: candidate.path,
+        line: formatLineRange(trace.origin.range),
+        blame: null,
       },
       queryParamsHandling: 'merge',
     });
