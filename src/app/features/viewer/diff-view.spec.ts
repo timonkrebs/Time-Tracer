@@ -4,6 +4,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { CommitInfo } from '../../core/models';
 import { DiffState } from '../../core/store/repo-store';
 import { FileDiff } from '../../core/util/diff';
+import { LineRange } from '../../core/util/line-range';
 import { DiffView } from './diff-view';
 
 const COMMIT: CommitInfo = {
@@ -96,6 +97,12 @@ function traceButtonsIn(pane: HTMLElement): number {
   ).length;
 }
 
+function traceButton(pane: HTMLElement): HTMLButtonElement | undefined {
+  return Array.from(pane.querySelectorAll<HTMLButtonElement>('button')).find(
+    (b) => (b.textContent ?? '').trim() === 'Trace',
+  );
+}
+
 describe('DiffView split scrolling', () => {
   let fixture: ComponentFixture<DiffView>;
 
@@ -161,5 +168,34 @@ describe('DiffView split scrolling', () => {
     // The removed line shows on the Before side, but its Trace stays on the After side.
     expect(traceButtonsIn(before)).toBe(0);
     expect(traceButtonsIn(after)).toBe(1);
+  });
+
+  it('emits a deletion trace with the old-side range for a pure removal', async () => {
+    fixture.componentRef.setInput('state', removalState());
+    await fixture.whenStable();
+
+    let normal: LineRange | undefined;
+    let deletion: LineRange | undefined;
+    fixture.componentInstance.trace.subscribe((r) => (normal = r));
+    fixture.componentInstance.traceDeletion.subscribe((r) => (deletion = r));
+
+    traceButton(panes(fixture)[1])!.click();
+
+    // Tracing a deleted line follows the old-side lines it removed, not the gap.
+    expect(normal).toBeUndefined();
+    expect(deletion).toEqual({ start: 2, end: 2 });
+  });
+
+  it('emits a normal new-side trace for a changed (non-deletion) block', () => {
+    // The default fixture is a replace run: the new line exists, so it traces normally.
+    let normal: LineRange | undefined;
+    let deletion: LineRange | undefined;
+    fixture.componentInstance.trace.subscribe((r) => (normal = r));
+    fixture.componentInstance.traceDeletion.subscribe((r) => (deletion = r));
+
+    traceButton(panes(fixture)[1])!.click();
+
+    expect(deletion).toBeUndefined();
+    expect(normal).toEqual({ start: 2, end: 2 });
   });
 });

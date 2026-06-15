@@ -25,7 +25,7 @@ import { FileMetric, Hotspot, computeFileMetric, computeHotspots } from '../util
 import {
   LineRange,
   changeRegions,
-  mapRangeToParentIncludingMoves,
+  followRange,
   movedLinePairs,
   regionTouchesRange,
 } from '../util/line-range';
@@ -1427,7 +1427,7 @@ export class RepoStore {
       if (regions.some((region) => regionTouchesRange(region, r))) recordHit(newer, r);
       scanned++;
 
-      const mapped = mapRangeToParentIncludingMoves(ops, regions, r);
+      const mapped = followRange(ops, r);
       if (!mapped) {
         // The whole range was introduced by `newer` — nothing older to follow.
         finish({ sha: newer.sha, range: r });

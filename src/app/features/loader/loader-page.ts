@@ -8,7 +8,15 @@ import { ZipRepos } from '../../core/git/local/zip-repos';
 import { ParsedRepoUrl } from '../../core/models';
 import { RecentRepos, RecentRepo } from '../../core/store/recent-repos';
 
-const EXAMPLES = ['angular/angular', 'sindresorhus/ky', 'octocat/Hello-World'];
+// Popular, heavily co-developed engineering projects — thousands of authors and
+// rich history to explore (blame, diffs, line traces).
+const EXAMPLES = [
+  'microsoft/vscode',
+  'kubernetes/kubernetes',
+  'rust-lang/rust',
+  'roc-lang/roc',
+  'torvalds/linux',
+];
 
 /** Full commit shas need no ref/path disambiguation — they never contain `/`. */
 const COMMIT_SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
@@ -505,7 +513,9 @@ export class LoaderPage {
     return key ? this.tokens.tokenFor(key) : '';
   });
   protected readonly customRepoPlaceholder = computed(() =>
-    this.customFlavor() === 'bitbucket-server' ? 'PROJECT/repo or a browse URL' : 'owner/repo or a full URL',
+    this.customFlavor() === 'bitbucket-server'
+      ? 'PROJECT/repo or a browse URL'
+      : 'owner/repo or a full URL',
   );
 
   protected onInput(event: Event): void {
@@ -576,7 +586,12 @@ export class LoaderPage {
       this.busy.set(true);
       try {
         const resolved = await provider.resolveRefPath(
-          { provider: provider.id, owner: parsed.owner, repo: parsed.repo, ...(host ? { host } : {}) },
+          {
+            provider: provider.id,
+            owner: parsed.owner,
+            repo: parsed.repo,
+            ...(host ? { host } : {}),
+          },
           `${ref}/${path}`,
         );
         if (resolved) ({ ref, path } = resolved);

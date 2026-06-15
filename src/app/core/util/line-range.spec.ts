@@ -2,16 +2,21 @@ import { computeFileDiff, diffLines, splitLines } from './diff';
 import {
   LineRange,
   changeRegions,
+  followRange,
   formatLineRange,
   hunkChangeRanges,
+  hunkChangeRuns,
   hunkChangedRange,
-  mapRangeToParent,
   parseLineRange,
   regionTouchesRange,
 } from './line-range';
 
 function regionsOf(oldText: string, newText: string) {
   return changeRegions(diffLines(splitLines(oldText), splitLines(newText)));
+}
+
+function opsOf(oldText: string, newText: string) {
+  return diffLines(splitLines(oldText), splitLines(newText));
 }
 
 describe('changeRegions', () => {
@@ -79,62 +84,69 @@ describe('regionTouchesRange', () => {
   });
 });
 
-describe('mapRangeToParent', () => {
+describe('followRange', () => {
   it('maps one-to-one when nothing changed before the range', () => {
-    const regions = regionsOf('a\nb\nc\nd\n', 'a\nb\nc\nd\nE\n');
-    expect(mapRangeToParent(regions, { start: 2, end: 3 })).toEqual({ start: 2, end: 3 });
+    const ops = opsOf('a\nb\nc\nd\n', 'a\nb\nc\nd\nE\n');
+    expect(followRange(ops, { start: 2, end: 3 })).toEqual({ start: 2, end: 3 });
   });
 
   it('shifts by insertions and removals above the range', () => {
     // Two lines inserted at the top: new 5..6 were old 3..4.
-    const inserted = regionsOf('a\nb\nc\n', 'X\nY\na\nb\nc\n');
-    expect(mapRangeToParent(inserted, { start: 5, end: 5 })).toEqual({ start: 3, end: 3 });
+    const inserted = opsOf('a\nb\nc\n', 'X\nY\na\nb\nc\n');
+    expect(followRange(inserted, { start: 5, end: 5 })).toEqual({ start: 3, end: 3 });
     // One line removed at the top: new 1..2 were old 2..3.
-    const removed = regionsOf('a\nb\nc\n', 'b\nc\n');
-    expect(mapRangeToParent(removed, { start: 1, end: 2 })).toEqual({ start: 2, end: 3 });
+    const removed = opsOf('a\nb\nc\n', 'b\nc\n');
+    expect(followRange(removed, { start: 1, end: 2 })).toEqual({ start: 2, end: 3 });
   });
 
   it('maps a single line inside a replaced block to its positional predecessor', () => {
     // Old 2..5 replaced by new 2..3.
-    const regions = regionsOf('a\nb\nc\nd\ne\nf\n', 'a\nX\nY\nf\n');
+    const ops = opsOf('a\nb\nc\nd\ne\nf\n', 'a\nX\nY\nf\n');
     // New 3 (Y) is at offset 1 of the new block → old 3, not the whole 2..5:
     // a single traced line keeps following a single line.
-    expect(mapRangeToParent(regions, { start: 3, end: 3 })).toEqual({ start: 3, end: 3 });
+    expect(followRange(ops, { start: 3, end: 3 })).toEqual({ start: 3, end: 3 });
     // New 2 (X, offset 0) → old 2.
-    expect(mapRangeToParent(regions, { start: 2, end: 2 })).toEqual({ start: 2, end: 2 });
+    expect(followRange(ops, { start: 2, end: 2 })).toEqual({ start: 2, end: 2 });
   });
 
   it('keeps a single line single when a block collapses to one line', () => {
     // Old 2..5 (four lines) collapse into the single new line 2.
-    const regions = regionsOf('a\nb\nc\nd\ne\nf\n', 'a\nZ\nf\n');
-    expect(mapRangeToParent(regions, { start: 2, end: 2 })).toEqual({ start: 2, end: 2 });
+    const ops = opsOf('a\nb\nc\nd\ne\nf\n', 'a\nZ\nf\n');
+    expect(followRange(ops, { start: 2, end: 2 })).toEqual({ start: 2, end: 2 });
   });
 
   it('keeps a multi-line range its size over a replaced block (no ballooning)', () => {
-    // Old 2..5 replaced by new 2..3. Each edge follows its own position inside
+    // Old 2..5 replaced by new 2..3. Each line follows its own position inside
     // the block, so the two traced lines map back to two lines (2..3), not the
     // block's whole old extent (2..5) — see issue #9.
-    const regions = regionsOf('a\nb\nc\nd\ne\nf\n', 'a\nX\nY\nf\n');
-    expect(mapRangeToParent(regions, { start: 2, end: 3 })).toEqual({ start: 2, end: 3 });
+    const ops = opsOf('a\nb\nc\nd\ne\nf\n', 'a\nX\nY\nf\n');
+    expect(followRange(ops, { start: 2, end: 3 })).toEqual({ start: 2, end: 3 });
     // A range only reaching into the block tracks just the lines it covers.
-    expect(mapRangeToParent(regions, { start: 1, end: 2 })).toEqual({ start: 1, end: 2 });
+    expect(followRange(ops, { start: 1, end: 2 })).toEqual({ start: 1, end: 2 });
   });
 
   it('covers a removal gap inside the range', () => {
     // Old 3..4 removed; gap between new 2 and 3.
-    const regions = regionsOf('a\nb\nx\ny\nc\n', 'a\nb\nc\n');
-    expect(mapRangeToParent(regions, { start: 2, end: 3 })).toEqual({ start: 2, end: 5 });
+    const ops = opsOf('a\nb\nx\ny\nc\n', 'a\nb\nc\n');
+    expect(followRange(ops, { start: 2, end: 3 })).toEqual({ start: 2, end: 5 });
   });
 
   it('returns null when the range was introduced by this diff', () => {
-    const regions = regionsOf('a\nb\n', 'a\nX\nY\nb\n');
-    expect(mapRangeToParent(regions, { start: 2, end: 3 })).toBeNull();
+    const ops = opsOf('a\nb\n', 'a\nX\nY\nb\n');
+    expect(followRange(ops, { start: 2, end: 3 })).toBeNull();
   });
 
   it('keeps the surviving part of a partially introduced range', () => {
-    const regions = regionsOf('a\nb\n', 'a\nX\nY\nb\n');
+    const ops = opsOf('a\nb\n', 'a\nX\nY\nb\n');
     // New 1 (old) + new 2..3 (introduced): only line 1 survives.
-    expect(mapRangeToParent(regions, { start: 1, end: 3 })).toEqual({ start: 1, end: 1 });
+    expect(followRange(ops, { start: 1, end: 3 })).toEqual({ start: 1, end: 1 });
+  });
+
+  it('follows an exact same-file move to its old position', () => {
+    // Line b is carried to the bottom. Positional edge-mapping alone would treat
+    // the new spot as introduced; following content tracks it to its old line.
+    const ops = opsOf('a\nb\nc\nd\n', 'a\nc\nd\nb\n');
+    expect(followRange(ops, { start: 4, end: 4 })).toEqual({ start: 2, end: 2 });
   });
 });
 
@@ -191,6 +203,31 @@ describe('hunkChangedRange', () => {
   });
 });
 
+describe('hunkChangeRuns', () => {
+  function runsOf(oldText: string, newText: string) {
+    return hunkChangeRuns(computeFileDiff(oldText, newText).hunks[0]);
+  }
+
+  it('gives a pure removal an old-side range and a gap new-side range', () => {
+    // b and c removed between the surviving a and d: the deletion can be traced
+    // by the old lines 2..3 it removed, not just the new-side gap.
+    expect(runsOf('a\nb\nc\nd\n', 'a\nd\n')).toEqual([
+      { newRange: { start: 1, end: 2 }, oldRange: { start: 2, end: 3 } },
+    ]);
+  });
+
+  it('leaves additions and replacements without an old-side range', () => {
+    // Pure insertion of X — traced on the new side.
+    expect(runsOf('a\nb\n', 'a\nX\nb\n')).toEqual([
+      { newRange: { start: 2, end: 2 }, oldRange: null },
+    ]);
+    // Replacement b → B — the new line exists, so it is traced on the new side.
+    expect(runsOf('a\nb\nc\n', 'a\nB\nc\n')).toEqual([
+      { newRange: { start: 2, end: 2 }, oldRange: null },
+    ]);
+  });
+});
+
 describe('range tracking across versions (integration)', () => {
   it('follows a range through unrelated edits back to its origin', () => {
     // v1 → v2 introduces the block; v2 → v3 edits above it; v3 → v4 edits it.
@@ -209,9 +246,10 @@ describe('range tracking across versions (integration)', () => {
       ['v2', v1, v2],
     ];
     for (const [name, older, newer] of pairs) {
-      const regions = regionsOf(older, newer);
+      const ops = opsOf(older, newer);
+      const regions = changeRegions(ops);
       if (regions.some((region) => regionTouchesRange(region, range!))) touched.push(name);
-      range = mapRangeToParent(regions, range!);
+      range = followRange(ops, range!);
       if (!range) break;
     }
 
