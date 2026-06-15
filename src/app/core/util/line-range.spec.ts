@@ -110,12 +110,14 @@ describe('mapRangeToParent', () => {
     expect(mapRangeToParent(regions, { start: 2, end: 2 })).toEqual({ start: 2, end: 2 });
   });
 
-  it('expands a multi-line range over a replaced block to keep it whole', () => {
-    // Old 2..5 replaced by new 2..3; the range keeps covering the block.
+  it('keeps a multi-line range its size over a replaced block (no ballooning)', () => {
+    // Old 2..5 replaced by new 2..3. Each edge follows its own position inside
+    // the block, so the two traced lines map back to two lines (2..3), not the
+    // block's whole old extent (2..5) — see issue #9.
     const regions = regionsOf('a\nb\nc\nd\ne\nf\n', 'a\nX\nY\nf\n');
-    expect(mapRangeToParent(regions, { start: 2, end: 3 })).toEqual({ start: 2, end: 5 });
-    // A range only reaching into the block still expands to the block's end.
-    expect(mapRangeToParent(regions, { start: 1, end: 2 })).toEqual({ start: 1, end: 5 });
+    expect(mapRangeToParent(regions, { start: 2, end: 3 })).toEqual({ start: 2, end: 3 });
+    // A range only reaching into the block tracks just the lines it covers.
+    expect(mapRangeToParent(regions, { start: 1, end: 2 })).toEqual({ start: 1, end: 2 });
   });
 
   it('covers a removal gap inside the range', () => {

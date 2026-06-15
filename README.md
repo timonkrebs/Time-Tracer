@@ -116,9 +116,9 @@ renames — see the feature list and roadmap below for what's done and what's ne
   trace any range **straight from the current version**, not only from a commit's changes. The
   History panel narrows to only the commits that ever changed those lines, `git log -L` in the
   browser. The hunk's line range is followed backwards through every version with the same minimal diff
-  blame uses (client-side, so it works for all providers): edits above shift the range, a single
-  traced line follows its predecessor one line at a time through a rewrite while a multi-line
-  selection keeps the whole block together (expanding over what it replaced), and the walk stops
+  blame uses (client-side, so it works for all providers): edits above shift the range and each edge
+  follows its own line one step at a time through a rewrite, so the selection keeps its size instead of
+  ballooning over a rewritten block — a single line stays a single line — and the walk stops
   at the commit that introduced the lines. The traced range lives in the URL (`line=18` or
   `line=18-19`), so it is shareable and survives reloads and view switches.
   Matches stream in as they are found, the walk pauses at the end of the

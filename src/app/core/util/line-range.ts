@@ -103,22 +103,20 @@ export function changeRegionRange(region: ChangeRegion): LineRange {
 }
 
 /**
- * Maps a new-side range onto the old side of the same diff. A *single*
- * traced line follows the old line at the same offset within a replaced
- * block, so one line keeps tracking one line through a rewrite. A
- * *multi-line* range instead keeps the whole block together: an edge inside
- * a replaced block expands to the block's old extent (as git's line-log
- * does), so the range never narrows below the selection across a rewrite.
- * Returns null when the whole range was introduced by this very diff: there
- * is nothing older to follow.
+ * Maps a new-side range onto the old side of the same diff. Each edge follows
+ * the old line at the same offset within a replaced block (clamped to the
+ * block), so a traced range keeps its size as it is followed back rather than
+ * ballooning to a rewritten block's full old extent — a single line stays a
+ * single line, an N-line selection stays about N lines. Returns null when the
+ * whole range was introduced by this very diff: there is nothing older to
+ * follow.
  */
 export function mapRangeToParent(
   regions: readonly ChangeRegion[],
   range: LineRange,
 ): LineRange | null {
-  const single = range.start === range.end;
-  const start = Math.max(1, mapEdge(regions, range.start, 'start', single));
-  const end = mapEdge(regions, range.end, 'end', single);
+  const start = Math.max(1, mapEdge(regions, range.start, 'start'));
+  const end = mapEdge(regions, range.end, 'end');
   return start > end ? null : { start, end };
 }
 
@@ -171,12 +169,7 @@ export function movedLinePairs(ops: readonly DiffOp[]): ReadonlyMap<number, numb
   return pairs;
 }
 
-function mapEdge(
-  regions: readonly ChangeRegion[],
-  line: number,
-  edge: 'start' | 'end',
-  single: boolean,
-): number {
+function mapEdge(regions: readonly ChangeRegion[], line: number, edge: 'start' | 'end'): number {
   let delta = 0;
   for (const region of regions) {
     if (region.newCount > 0) {
@@ -188,16 +181,13 @@ function mapEdge(
           // `end` one short of it, so a wholly-introduced range yields null.
           return edge === 'start' ? region.oldStart : region.oldStart - 1;
         }
-        if (single) {
-          // One traced line stays one line: follow the old line at the same
-          // offset within the block (clamped), not the whole block.
-          const offset = Math.min(line - region.newStart, region.oldCount - 1);
-          return region.oldStart + offset;
-        }
-        // A multi-line range keeps the block together: an edge inside a
-        // replaced block expands to the block's old extent, so the range
-        // never narrows below the selection across a rewrite.
-        return edge === 'start' ? region.oldStart : region.oldStart + region.oldCount - 1;
+        // Follow the old line at the same offset within the replaced block
+        // (clamped to it). Each edge tracks its own position, so a traced
+        // range keeps its size across a rewrite — one line stays one line,
+        // N lines stay ~N — instead of ballooning to the block's full old
+        // extent, which for a near-whole-file rewrite selected everything.
+        const offset = Math.min(line - region.newStart, region.oldCount - 1);
+        return region.oldStart + offset;
       }
       if (last >= line) break; // first region beyond the edge — nothing else shifts it
       delta += region.oldCount - region.newCount;
