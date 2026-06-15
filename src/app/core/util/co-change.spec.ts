@@ -1,4 +1,11 @@
-import { CommitFiles, clusterCoChange, computeCoChange, relatedFiles } from './co-change';
+import {
+  CommitFiles,
+  clusterCoChange,
+  computeCoChange,
+  computeModuleCoChange,
+  moduleOf,
+  relatedFiles,
+} from './co-change';
 
 const COMMITS: CommitFiles[] = [
   { sha: 'c1', files: ['a', 'b'] },
@@ -114,5 +121,63 @@ describe('clusterCoChange', () => {
 
   it('returns nothing when every coupling is below the degree threshold', () => {
     expect(clusterCoChange(pairs, { minDegree: 0.95 })).toEqual([]);
+  });
+});
+
+describe('moduleOf', () => {
+  it('takes the directory prefix at the requested depth', () => {
+    expect(moduleOf('src/auth/login.ts', 1)).toBe('src');
+    expect(moduleOf('src/auth/login.ts', 2)).toBe('src/auth');
+    expect(moduleOf('src/auth/login.ts', 9)).toBe('src/auth'); // deeper than the path
+  });
+
+  it('rolls a file up to its own folder when shallower than the depth', () => {
+    expect(moduleOf('src/main.ts', 2)).toBe('src');
+  });
+
+  it('maps a repository-root file to the empty module', () => {
+    expect(moduleOf('README.md', 1)).toBe('');
+  });
+});
+
+describe('computeModuleCoChange', () => {
+  const COMMITS: CommitFiles[] = [
+    { sha: 'm1', files: ['src/auth/a.ts', 'src/ui/b.ts'] },
+    { sha: 'm2', files: ['src/auth/a.ts', 'src/ui/c.ts'] },
+    { sha: 'm3', files: ['src/auth/a.ts', 'src/auth/d.ts'] }, // within one module
+  ];
+
+  it('couples modules that change together, ignoring within-module churn', () => {
+    const result = computeModuleCoChange(COMMITS, { depth: 2, minSupport: 2 });
+
+    // src/auth changed in all three commits; src/ui in two.
+    expect(result.changes.get('src/auth')).toBe(3);
+    expect(result.changes.get('src/ui')).toBe(2);
+    // m3 touched two files in the same module, so it couples nothing.
+    expect(result.pairs).toEqual([{ a: 'src/auth', b: 'src/ui', support: 2, degree: 2 / 3 }]);
+  });
+
+  it('re-buckets by depth — a shallower depth merges siblings', () => {
+    // At depth 1 everything is just "src", so there is no cross-module coupling.
+    const result = computeModuleCoChange(COMMITS, { depth: 1, minSupport: 2 });
+    expect(result.changes.get('src')).toBe(3);
+    expect(result.pairs).toEqual([]);
+  });
+
+  it('drops sweeps by their real file count, before the roll-up', () => {
+    const sweep: CommitFiles = {
+      sha: 'sweep',
+      files: Array.from({ length: 30 }, (_, i) => `mod${i}/f.ts`),
+    };
+    const result = computeModuleCoChange(
+      [
+        sweep, // 30 files > cap → dropped even though it spans many modules
+        { sha: 'n', files: ['a/x.ts', 'b/y.ts'] },
+        { sha: 'o', files: ['a/x.ts', 'b/y.ts'] },
+      ],
+      { depth: 1, minSupport: 2 },
+    );
+    expect(result.commitsUsed).toBe(2);
+    expect(result.pairs).toEqual([{ a: 'a', b: 'b', support: 2, degree: 1 }]);
   });
 });

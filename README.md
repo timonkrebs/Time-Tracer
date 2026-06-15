@@ -83,8 +83,11 @@ renames — see the feature list and roadmap below for what's done and what's ne
     clusters from the bottom) plus the full pair list. **Filter to one file** —
     pick it in the tree or click any file (cluster node or pair) — to walk its _full_ history and
     see only the connections to and from it; **Clear filter** drops it again while the repo-wide
-    overview stays put. The same data powers an **"Often changes with"** list on the open file in
-    the History panel.
+    overview stays put. Flip the granularity to **Modules** to roll the same coupling up to
+    **folders** (`computeModuleCoChange`, depth adjustable 1–4): which parts of the tree change
+    together. Cross-boundary coupling (`auth/ ↔ ui/`) is the architectural-decay smell; within-module
+    churn is expected and collapses away. The same data powers an **"Often changes with"** list on
+    the open file in the History panel.
 
   Mega-commits are filtered out as churn noise; the walk streams as it goes.
 

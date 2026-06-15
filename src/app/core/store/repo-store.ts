@@ -230,6 +230,8 @@ export interface CoChangeState {
   readonly target: number;
   /** Coupling aggregated from the commits scanned so far. */
   readonly result: CoChangeResult;
+  /** The raw commit file-sets behind the result, for client-side module roll-up. */
+  readonly commits: readonly CommitFiles[];
   /** Files ranked by recency-weighted churn (repo-wide only; empty for a focus). */
   readonly hotspots: readonly Hotspot[];
   readonly message?: string;
@@ -1239,6 +1241,7 @@ export class RepoStore {
         scanned: collected.length,
         target: options.cap,
         result: computeCoChange(collected, { minSupport: options.minSupport }),
+        commits: collected,
         // Hotspots are a repo-wide metric; a single file's walk doesn't have them.
         hotspots: options.focus ? [] : computeHotspots(collected, sizes),
         message,
@@ -1280,6 +1283,7 @@ export class RepoStore {
         scanned: collected.length,
         target: options.cap,
         result: computeCoChange(collected, { minSupport: options.minSupport }),
+        commits: collected,
         hotspots: options.focus ? [] : computeHotspots(collected, sizes),
         message: toRepoProviderError(error).message,
       });

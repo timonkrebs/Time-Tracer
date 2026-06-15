@@ -109,6 +109,55 @@ export function computeCoChange(
   return { commitsUsed, changes, pairs };
 }
 
+/**
+ * The "module" a file belongs to: its directory prefix at `depth` segments.
+ * `src/auth/login.ts` → `src` at depth 1, `src/auth` at depth 2; a file with
+ * fewer directories than `depth` rolls up to its own folder, and a file at the
+ * repository root has no module (''). Modules are how change coupling is rolled
+ * up from files to the architecture level.
+ */
+export function moduleOf(path: string, depth: number): string {
+  const slash = path.lastIndexOf('/');
+  if (slash < 0) return ''; // a file at the repository root
+  const dir = path.slice(0, slash);
+  if (depth <= 0) return dir;
+  return dir.split('/').slice(0, depth).join('/');
+}
+
+/**
+ * Change coupling rolled up to **modules** (directory prefixes at `depth`):
+ * which parts of the tree change together. Each commit's files collapse to the
+ * set of modules they live in, so a commit touching two files in the same
+ * folder couples nothing, while one spanning `auth/` and `ui/` couples those
+ * modules — surfacing cross-boundary entanglement (the architectural-decay
+ * smell) and hiding the within-module churn that is expected.
+ *
+ * Sweeps are dropped by their real file count *before* the roll-up (a 50-file
+ * refactor stays noise even if it spans only three folders), then the same
+ * pairing and scoring as {@link computeCoChange} runs over the modules.
+ */
+export function computeModuleCoChange(
+  commits: Iterable<CommitFiles>,
+  options: { depth?: number; maxCommitFiles?: number; minSupport?: number } = {},
+): CoChangeResult {
+  const depth = options.depth ?? 1;
+  const maxCommitFiles = options.maxCommitFiles ?? DEFAULT_MAX_COMMIT_FILES;
+  const moduleCommits: CommitFiles[] = [];
+  for (const commit of commits) {
+    const files = [...new Set(commit.files)];
+    // Filter sweeps by the actual files touched, not the (smaller) module count.
+    if (files.length === 0 || files.length > maxCommitFiles) continue;
+    const modules = new Set<string>();
+    for (const file of files) modules.add(moduleOf(file, depth));
+    moduleCommits.push({ sha: commit.sha, files: [...modules] });
+  }
+  // Sweep filtering is already done, so don't re-cap on the module count.
+  return computeCoChange(moduleCommits, {
+    minSupport: options.minSupport,
+    maxCommitFiles: Number.POSITIVE_INFINITY,
+  });
+}
+
 /** Files most coupled to `path`, by how often they rode along with its changes. */
 export function relatedFiles(result: CoChangeResult, path: string, limit = 8): RelatedFile[] {
   const total = result.changes.get(path) ?? 0;

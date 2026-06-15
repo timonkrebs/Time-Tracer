@@ -9,7 +9,12 @@ import {
 } from '@angular/core';
 
 import { CoChangeState } from '../../core/store/repo-store';
-import { CoChangeCluster, clusterCoChange, relatedFiles } from '../../core/util/co-change';
+import {
+  CoChangeCluster,
+  clusterCoChange,
+  computeModuleCoChange,
+  relatedFiles,
+} from '../../core/util/co-change';
 import { Hotspot, heatLevel } from '../../core/util/hotspots';
 import { disambiguateLabels } from '../../core/util/path-label';
 import { relativeTime } from '../../core/util/relative-time';
@@ -25,6 +30,9 @@ const CLUSTER_SIZE_CEIL = 50;
 /** Default visible band: 3 up to 20 files; bigger ones become hairballs. */
 const DEFAULT_MIN_CLUSTER_FILES = 3;
 const DEFAULT_MAX_CLUSTER_FILES = 20;
+/** Default folder depth for module coupling (e.g. `src/auth`), adjustable 1–4. */
+const DEFAULT_MODULE_DEPTH = 2;
+const MODULE_MIN_SUPPORT = 2;
 /** Treemap coordinate space (16:9, scaled uniformly to fill its box). */
 const TREEMAP_W = 1600;
 const TREEMAP_H = 900;
@@ -345,123 +353,210 @@ interface ClusterGraph {
               <p class="text-sm text-zinc-500">{{ s.message }}</p>
             } @else if (pairs().length) {
               <div class="mb-2 flex items-center gap-3 text-xs text-zinc-500">
-                <span>Most-coupled clusters — click a file to filter by it.</span>
-                <span class="flex-1"></span>
-                <span class="text-zinc-600">files</span>
-                <span class="w-7 text-right tabular-nums text-zinc-400">{{
-                  minClusterSize()
-                }}</span>
                 <span
-                  class="dual-range relative h-3 w-28"
+                  class="inline-flex overflow-hidden rounded border border-zinc-700"
                   role="group"
-                  aria-label="Cluster size range"
+                  aria-label="Coupling granularity"
                 >
-                  <span
-                    class="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded bg-zinc-700"
-                  ></span>
-                  <span
-                    class="pointer-events-none absolute top-1/2 h-1 -translate-y-1/2 rounded bg-indigo-400"
-                    [style.left.%]="rangePercent().left"
-                    [style.right.%]="rangePercent().right"
-                  ></span>
-                  <input
-                    type="range"
-                    [min]="floor"
-                    [max]="ceil"
-                    step="1"
-                    [value]="minClusterSize()"
-                    (input)="onMinClusterSize($event)"
-                    aria-label="Minimum cluster size"
-                  />
-                  <input
-                    type="range"
-                    [min]="floor"
-                    [max]="ceil"
-                    step="1"
-                    [value]="maxClusterSize()"
-                    (input)="onMaxClusterSize($event)"
-                    aria-label="Maximum cluster size"
-                  />
-                </span>
-                <span class="w-7 tabular-nums text-zinc-400">{{ maxClusterSize() }}</span>
-              </div>
-              @if (clusters().length) {
-                <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  @for (graph of clusterGraphs(); track $index) {
-                    <div class="rounded border border-zinc-800 bg-zinc-900/30 p-1">
-                      <svg
-                        [attr.viewBox]="'0 0 ' + clusterW + ' ' + clusterH"
-                        class="w-full"
-                        role="img"
-                      >
-                        @for (edge of graph.edges; track $index) {
-                          <line
-                            [attr.x1]="edge.x1"
-                            [attr.y1]="edge.y1"
-                            [attr.x2]="edge.x2"
-                            [attr.y2]="edge.y2"
-                            stroke="#6366f1"
-                            stroke-opacity="0.35"
-                            [attr.stroke-width]="edge.width"
-                          />
-                        }
-                        @for (node of graph.nodes; track node.path) {
-                          <g class="cursor-pointer" (click)="focusFile.emit(node.path)">
-                            <title>{{ node.path }}</title>
-                            <circle [attr.cx]="node.x" [attr.cy]="node.y" r="5" fill="#818cf8" />
-                            <text
-                              [attr.x]="node.x"
-                              [attr.y]="node.y - 9"
-                              text-anchor="middle"
-                              font-size="11"
-                              fill="#e4e4e7"
-                              class="pointer-events-none font-mono"
-                            >
-                              {{ node.label }}
-                            </text>
-                          </g>
-                        }
-                      </svg>
-                      <p class="text-center text-[11px] text-zinc-600">{{ graph.files }} files</p>
-                    </div>
-                  }
-                </div>
-                <p class="mt-3 mb-1 text-[11px] font-medium tracking-wide text-zinc-500 uppercase">
-                  All pairs
-                </p>
-              }
-              <ul class="space-y-1">
-                @for (pair of pairs(); track $index) {
-                  <li
-                    class="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-white/[0.03]"
+                  <button
+                    type="button"
+                    class="px-2 py-0.5 transition"
+                    [class]="
+                      granularity() === 'files'
+                        ? 'bg-zinc-700/60 font-medium text-zinc-200'
+                        : 'hover:bg-white/10'
+                    "
+                    (click)="granularity.set('files')"
                   >
-                    <span class="flex min-w-0 flex-1 items-center gap-1.5">
-                      <button
-                        type="button"
-                        class="truncate font-mono text-xs text-zinc-200 underline-offset-2 hover:text-indigo-300 hover:underline"
-                        [title]="pair.a"
-                        (click)="focusFile.emit(pair.a)"
-                      >
-                        {{ label(pair.a) }}
-                      </button>
-                      <span class="shrink-0 text-zinc-600">↔</span>
-                      <button
-                        type="button"
-                        class="truncate font-mono text-xs text-zinc-200 underline-offset-2 hover:text-indigo-300 hover:underline"
-                        [title]="pair.b"
-                        (click)="focusFile.emit(pair.b)"
-                      >
-                        {{ label(pair.b) }}
-                      </button>
-                    </span>
-                    <span class="shrink-0 text-[11px] text-zinc-500 tabular-nums">
-                      {{ pair.support }}× · {{ pct(pair.degree) }}%
-                    </span>
-                  </li>
+                    Files
+                  </button>
+                  <button
+                    type="button"
+                    class="border-l border-zinc-700 px-2 py-0.5 transition"
+                    [class]="
+                      granularity() === 'modules'
+                        ? 'bg-zinc-700/60 font-medium text-zinc-200'
+                        : 'hover:bg-white/10'
+                    "
+                    (click)="granularity.set('modules')"
+                  >
+                    Modules
+                  </button>
+                </span>
+                <span class="flex-1"></span>
+                @if (granularity() === 'modules') {
+                  <label class="flex items-center gap-1.5">
+                    <span class="text-zinc-600">depth</span>
+                    <input
+                      type="range"
+                      min="1"
+                      max="4"
+                      step="1"
+                      [value]="moduleDepth()"
+                      (input)="onModuleDepth($event)"
+                      class="h-1 w-20 cursor-pointer accent-indigo-400"
+                      aria-label="Module depth"
+                    />
+                    <span class="w-3 tabular-nums text-zinc-400">{{ moduleDepth() }}</span>
+                  </label>
+                } @else {
+                  <span class="text-zinc-600">files</span>
+                  <span class="w-7 text-right tabular-nums text-zinc-400">{{
+                    minClusterSize()
+                  }}</span>
+                  <span
+                    class="dual-range relative h-3 w-28"
+                    role="group"
+                    aria-label="Cluster size range"
+                  >
+                    <span
+                      class="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded bg-zinc-700"
+                    ></span>
+                    <span
+                      class="pointer-events-none absolute top-1/2 h-1 -translate-y-1/2 rounded bg-indigo-400"
+                      [style.left.%]="rangePercent().left"
+                      [style.right.%]="rangePercent().right"
+                    ></span>
+                    <input
+                      type="range"
+                      [min]="floor"
+                      [max]="ceil"
+                      step="1"
+                      [value]="minClusterSize()"
+                      (input)="onMinClusterSize($event)"
+                      aria-label="Minimum cluster size"
+                    />
+                    <input
+                      type="range"
+                      [min]="floor"
+                      [max]="ceil"
+                      step="1"
+                      [value]="maxClusterSize()"
+                      (input)="onMaxClusterSize($event)"
+                      aria-label="Maximum cluster size"
+                    />
+                  </span>
+                  <span class="w-7 tabular-nums text-zinc-400">{{ maxClusterSize() }}</span>
                 }
-              </ul>
-              @if (more() > 0) {
-                <p class="mt-2 text-[11px] text-zinc-600">+{{ more() }} more pairs</p>
+              </div>
+              @if (granularity() === 'modules') {
+                <p class="mb-2 text-xs text-zinc-500">
+                  Modules that change together — cross-boundary coupling is the architectural-decay
+                  smell; within-module churn is expected.
+                </p>
+                @if (modulePairs().length) {
+                  <ul class="space-y-1">
+                    @for (pair of modulePairs(); track $index) {
+                      <li class="flex items-center gap-2 rounded px-2 py-1.5 text-sm">
+                        <span class="flex min-w-0 flex-1 items-center gap-1.5">
+                          <span class="truncate font-mono text-xs text-zinc-200" [title]="pair.a">{{
+                            moduleLabel(pair.a)
+                          }}</span>
+                          <span class="shrink-0 text-zinc-600">↔</span>
+                          <span class="truncate font-mono text-xs text-zinc-200" [title]="pair.b">{{
+                            moduleLabel(pair.b)
+                          }}</span>
+                        </span>
+                        <span class="shrink-0 text-[11px] text-zinc-500 tabular-nums">
+                          {{ pair.support }}× · {{ pct(pair.degree) }}%
+                        </span>
+                      </li>
+                    }
+                  </ul>
+                  @if (moduleMore() > 0) {
+                    <p class="mt-2 text-[11px] text-zinc-600">
+                      +{{ moduleMore() }} more module pairs
+                    </p>
+                  }
+                } @else {
+                  <p class="text-sm text-zinc-500">
+                    No modules change together at depth {{ moduleDepth() }} — try a different depth.
+                  </p>
+                }
+              } @else {
+                <p class="mb-2 text-xs text-zinc-500">
+                  Most-coupled clusters — click a file to filter by it.
+                </p>
+                @if (clusters().length) {
+                  <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    @for (graph of clusterGraphs(); track $index) {
+                      <div class="rounded border border-zinc-800 bg-zinc-900/30 p-1">
+                        <svg
+                          [attr.viewBox]="'0 0 ' + clusterW + ' ' + clusterH"
+                          class="w-full"
+                          role="img"
+                        >
+                          @for (edge of graph.edges; track $index) {
+                            <line
+                              [attr.x1]="edge.x1"
+                              [attr.y1]="edge.y1"
+                              [attr.x2]="edge.x2"
+                              [attr.y2]="edge.y2"
+                              stroke="#6366f1"
+                              stroke-opacity="0.35"
+                              [attr.stroke-width]="edge.width"
+                            />
+                          }
+                          @for (node of graph.nodes; track node.path) {
+                            <g class="cursor-pointer" (click)="focusFile.emit(node.path)">
+                              <title>{{ node.path }}</title>
+                              <circle [attr.cx]="node.x" [attr.cy]="node.y" r="5" fill="#818cf8" />
+                              <text
+                                [attr.x]="node.x"
+                                [attr.y]="node.y - 9"
+                                text-anchor="middle"
+                                font-size="11"
+                                fill="#e4e4e7"
+                                class="pointer-events-none font-mono"
+                              >
+                                {{ node.label }}
+                              </text>
+                            </g>
+                          }
+                        </svg>
+                        <p class="text-center text-[11px] text-zinc-600">{{ graph.files }} files</p>
+                      </div>
+                    }
+                  </div>
+                  <p
+                    class="mt-3 mb-1 text-[11px] font-medium tracking-wide text-zinc-500 uppercase"
+                  >
+                    All pairs
+                  </p>
+                }
+                <ul class="space-y-1">
+                  @for (pair of pairs(); track $index) {
+                    <li
+                      class="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-white/[0.03]"
+                    >
+                      <span class="flex min-w-0 flex-1 items-center gap-1.5">
+                        <button
+                          type="button"
+                          class="truncate font-mono text-xs text-zinc-200 underline-offset-2 hover:text-indigo-300 hover:underline"
+                          [title]="pair.a"
+                          (click)="focusFile.emit(pair.a)"
+                        >
+                          {{ label(pair.a) }}
+                        </button>
+                        <span class="shrink-0 text-zinc-600">↔</span>
+                        <button
+                          type="button"
+                          class="truncate font-mono text-xs text-zinc-200 underline-offset-2 hover:text-indigo-300 hover:underline"
+                          [title]="pair.b"
+                          (click)="focusFile.emit(pair.b)"
+                        >
+                          {{ label(pair.b) }}
+                        </button>
+                      </span>
+                      <span class="shrink-0 text-[11px] text-zinc-500 tabular-nums">
+                        {{ pair.support }}× · {{ pct(pair.degree) }}%
+                      </span>
+                    </li>
+                  }
+                </ul>
+                @if (more() > 0) {
+                  <p class="mt-2 text-[11px] text-zinc-600">+{{ more() }} more pairs</p>
+                }
               }
             } @else if (s.status === 'ready') {
               <p class="text-sm text-zinc-500">
@@ -543,9 +638,25 @@ export class InsightsView {
     };
   });
 
+  /** Coupling granularity: individual files vs. rolled-up folder modules. */
+  protected readonly granularity = signal<'files' | 'modules'>('files');
+  protected readonly moduleDepth = signal(DEFAULT_MODULE_DEPTH);
+
   protected readonly pairs = computed(() => (this.state()?.result.pairs ?? []).slice(0, MAX_PAIRS));
   protected readonly more = computed(() =>
     Math.max(0, (this.state()?.result.pairs.length ?? 0) - MAX_PAIRS),
+  );
+
+  /** Coupling rolled up to folder modules, re-bucketed live by the depth slider. */
+  private readonly moduleResult = computed(() =>
+    computeModuleCoChange(this.state()?.commits ?? [], {
+      depth: this.moduleDepth(),
+      minSupport: MODULE_MIN_SUPPORT,
+    }),
+  );
+  protected readonly modulePairs = computed(() => this.moduleResult().pairs.slice(0, MAX_PAIRS));
+  protected readonly moduleMore = computed(() =>
+    Math.max(0, this.moduleResult().pairs.length - MAX_PAIRS),
   );
   protected readonly focusRelated = computed(() => {
     const f = this.focus();
@@ -631,6 +742,15 @@ export class InsightsView {
   protected onMaxClusterSize(event: Event): void {
     const value = Number((event.target as HTMLInputElement).value);
     this.maxClusterSize.set(Math.max(value, this.minClusterSize()));
+  }
+
+  protected onModuleDepth(event: Event): void {
+    this.moduleDepth.set(Number((event.target as HTMLInputElement).value));
+  }
+
+  /** A module is a folder path; the repository root reads as "(root)". */
+  protected moduleLabel(module: string): string {
+    return module === '' ? '(root)' : module;
   }
 
   protected fill(hot: Hotspot): string {

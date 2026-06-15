@@ -24,6 +24,7 @@ const OVERVIEW: CoChangeState = {
   target: 75,
   scanned: 3,
   result: computeCoChange(COMMITS),
+  commits: COMMITS,
   hotspots: HOTSPOTS,
 };
 // A hotspot whose file is absent from the current tree → size 0. squarify
@@ -33,6 +34,7 @@ const ZERO_SIZED: CoChangeState = {
   target: 75,
   scanned: 2,
   result: computeCoChange([]),
+  commits: [],
   hotspots: computeHotspots(
     [
       { authorName: 'Ada', authoredAt: '2026-06-13T00:00:00Z', files: ['gone.ts'] },
@@ -49,27 +51,45 @@ const FOCUSED: CoChangeState = {
   scanned: 3,
   target: 400,
   result: computeCoChange(COMMITS, { minSupport: 1 }),
+  commits: COMMITS,
   hotspots: [],
 };
+const COLLIDING_COMMITS = [
+  { sha: 'd1', files: ['src/a/index.ts', 'src/b/index.ts'] },
+  { sha: 'd2', files: ['src/a/index.ts', 'src/b/index.ts'] },
+];
 const COLLIDING: CoChangeState = {
   status: 'ready',
   scanned: 2,
   target: 75,
-  result: computeCoChange([
-    { sha: 'd1', files: ['src/a/index.ts', 'src/b/index.ts'] },
-    { sha: 'd2', files: ['src/a/index.ts', 'src/b/index.ts'] },
-  ]),
+  result: computeCoChange(COLLIDING_COMMITS),
+  commits: COLLIDING_COMMITS,
   hotspots: [],
 };
 // A 4-file clique → forms a cluster (≥ 3 files) for the graph.
+const CLUSTERED_COMMITS = [
+  { sha: 'k1', files: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts'] },
+  { sha: 'k2', files: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts'] },
+];
 const CLUSTERED: CoChangeState = {
   status: 'ready',
   scanned: 2,
   target: 75,
-  result: computeCoChange([
-    { sha: 'k1', files: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts'] },
-    { sha: 'k2', files: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts'] },
-  ]),
+  result: computeCoChange(CLUSTERED_COMMITS),
+  commits: CLUSTERED_COMMITS,
+  hotspots: [],
+};
+// Two folders that always change together → module coupling at depth 2.
+const MODULES_COMMITS = [
+  { sha: 'p1', files: ['src/auth/login.ts', 'src/ui/button.ts'] },
+  { sha: 'p2', files: ['src/auth/login.ts', 'src/ui/button.ts'] },
+];
+const MODULES: CoChangeState = {
+  status: 'ready',
+  scanned: 2,
+  target: 75,
+  result: computeCoChange(MODULES_COMMITS),
+  commits: MODULES_COMMITS,
   hotspots: [],
 };
 
@@ -151,6 +171,7 @@ describe('InsightsView', () => {
       scanned: 10,
       target: 50,
       result: computeCoChange([]),
+      commits: [],
       hotspots: [],
     });
     expect(text()).toContain('10/50');
@@ -160,6 +181,7 @@ describe('InsightsView', () => {
       scanned: 0,
       target: 75,
       result: computeCoChange([]),
+      commits: [],
       hotspots: [],
       message: 'No commit history found.',
     });
@@ -238,6 +260,23 @@ describe('InsightsView', () => {
     // Two index.ts files → labels fall back to the full path to disambiguate.
     expect(text()).toContain('src/a/index.ts');
     expect(text()).toContain('src/b/index.ts');
+  });
+
+  it('rolls coupling up to modules and re-buckets by depth', async () => {
+    await setState(MODULES);
+    button('Coupling')!.click();
+    await fixture.whenStable();
+    button('Modules')!.click();
+    await fixture.whenStable();
+
+    // Depth 2 (default): src/auth ↔ src/ui change together.
+    expect(text()).toContain('src/auth');
+    expect(text()).toContain('src/ui');
+
+    // Depth 1 collapses both into "src", so there is no cross-module coupling.
+    drag('Module depth', 1);
+    await fixture.whenStable();
+    expect(text()).toContain('No modules change together');
   });
 
   it('keeps both tabs available once anything is analysed', async () => {
