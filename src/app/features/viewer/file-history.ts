@@ -233,25 +233,37 @@ import { CopyButton } from './copy-button';
                       }
                     }
                     @for (candidate of o.candidates; track candidate.path) {
-                      <button
-                        type="button"
-                        class="mt-1 block w-full rounded border border-zinc-800 bg-zinc-900/60 px-2 py-1.5 text-left transition hover:border-indigo-400/40 hover:bg-indigo-500/10"
-                        title="Open this file just before the commit, at the matched line"
-                        (click)="originSelect.emit(candidate)"
-                      >
-                        <span class="block truncate font-mono text-[11px] text-zinc-200">{{
-                          candidate.path
-                        }}</span>
-                        <span class="mt-0.5 flex items-center gap-1.5 text-[10px]">
-                          <span class="text-indigo-300">{{ percent(candidate.score) }} match</span>
-                          <span class="text-zinc-500">line {{ candidate.line }}</span>
-                          @if (candidate.deleted) {
-                            <span class="rounded-full border border-zinc-700 px-1.5 text-zinc-500"
-                              >deleted</span
+                      <div class="mt-1 flex items-stretch gap-1">
+                        <button
+                          type="button"
+                          class="min-w-0 flex-1 rounded border border-zinc-800 bg-zinc-900/60 px-2 py-1.5 text-left transition hover:border-indigo-400/40 hover:bg-indigo-500/10"
+                          title="Open this file just before the commit, at the matched line"
+                          (click)="originSelect.emit(candidate)"
+                        >
+                          <span class="block truncate font-mono text-[11px] text-zinc-200">{{
+                            candidate.path
+                          }}</span>
+                          <span class="mt-0.5 flex items-center gap-1.5 text-[10px]">
+                            <span class="text-indigo-300"
+                              >{{ percent(candidate.score) }} match</span
                             >
-                          }
-                        </span>
-                      </button>
+                            <span class="text-zinc-500">line {{ candidate.line }}</span>
+                            @if (candidate.deleted) {
+                              <span class="rounded-full border border-zinc-700 px-1.5 text-zinc-500"
+                                >deleted</span
+                              >
+                            }
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          class="shrink-0 self-stretch rounded border border-zinc-800 bg-zinc-900/60 px-2 text-[11px] font-medium text-indigo-200 transition hover:border-indigo-400/40 hover:bg-indigo-500/10"
+                          title="Diff the introduced lines against this source"
+                          (click)="originDiff.emit(candidate)"
+                        >
+                          Diff
+                        </button>
+                      </div>
                     }
                     @if (o.status === 'ready') {
                       @if (o.candidates.length === 0) {
@@ -487,6 +499,8 @@ export class FileHistory {
   readonly traceOlder = output<void>();
   readonly searchOrigins = output<HunkOriginScope>();
   readonly originSelect = output<HunkOriginCandidate>();
+  /** "Diff" on an origin candidate: compare the introduced block against it. */
+  readonly originDiff = output<HunkOriginCandidate>();
 
   protected unavailableReason(): string {
     const state = this.renames();

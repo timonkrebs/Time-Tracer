@@ -128,8 +128,9 @@ renames — see the feature list and roadmap below for what's done and what's ne
   **"Where did these lines come from?"** hunts for the block's origin: the introducing commit's
   other files (deleted ones are prime suspects) — or, on demand, the whole snapshot just before
   it — are searched with a line-level local alignment (exact lines anchor, edited lines score by
-  per-line Levenshtein), and each ranked hit jumps straight to the matching file and line in the
-  predecessor's own timeline.
+  per-line Levenshtein), and each ranked hit either jumps straight to the matching file and line in
+  the predecessor's own timeline or, via **Diff**, lines the introduced block up against that source
+  side by side (their shared lines fall to context, the rest reads as +/−).
 - **Rename candidates**: where a file's recorded history ends, the History panel can search the
   commit just before it for likely predecessors — GitHub's own rename detection, files the
   creating commit _deleted_ (prime rename suspects, content-compared one by one), identical blobs

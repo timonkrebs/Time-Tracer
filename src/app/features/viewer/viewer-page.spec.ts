@@ -1181,6 +1181,37 @@ describe('ViewerPage (integration)', () => {
     });
   });
 
+  it('diffs the introduced lines against an origin candidate', async () => {
+    await harness.navigateByUrl(`/r/acme/rocket?path=README.md&at=${NEW_SHA}&view=diff`);
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('@@ -1,1 +1,3 @@');
+    });
+
+    clickButton('Trace');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('The oldest commit above introduced these lines.');
+    });
+
+    clickButton('Where did these lines come from?');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('NOTES.md');
+    });
+
+    clickButton('Diff'); // the per-candidate "Diff against this source" action
+
+    await vi.waitFor(async () => {
+      // The traced file at the introducing commit, compared against the source:
+      // the lines they share (the moved block) line up while the rest is +/−.
+      expect(router.url).toContain(`at=${NEW_SHA}`);
+      expect(router.url).toContain('base=NOTES.md');
+      expect(router.url).toContain('view=diff');
+      expect(router.url).toContain('line=2-3');
+      const text = await textOnScreen();
+      expect(text).toContain('vs NOTES.md'); // header names the compared source
+      expect(text).toContain('hello'); // the source's differing line, on the before side
+    });
+  });
+
   it('shows a file introduced by a rename as added, with the predecessor offered in history', async () => {
     // The oldest commit of a path's recorded history reads as the file's
     // creation: it is shown as added, not diffed against the file it was
