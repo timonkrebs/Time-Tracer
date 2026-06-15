@@ -171,6 +171,17 @@ describe('RepoStore', () => {
     expect(provider.treeRefs).toEqual(['v2']);
   });
 
+  it('reports local data availability from the provider capability', async () => {
+    // No repository loaded yet: there is nothing to read locally.
+    expect(store.hasLocalData()).toBe(false);
+
+    await store.loadRepo(slug);
+
+    // The fake provider implements primeHistories — the local-database marker
+    // that makes bulk passes (the folder ownership scan) free of network calls.
+    expect(store.hasLocalData()).toBe(true);
+  });
+
   it('does not reload an already-loaded target', async () => {
     await store.loadRepo(slug);
     await store.loadRepo({ ...slug, owner: 'ACME' });
@@ -1406,6 +1417,31 @@ describe('RepoStore', () => {
       pending.resolve([commit('c1')]);
       await scan;
 
+      expect(store.folderOwnership()).toBeNull();
+    });
+
+    it('folds the folder chart from cached blame, with no scan and no requests', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c1')]);
+
+      // Nothing blamed yet: the chart cannot be shown for free.
+      expect(store.folderOwnershipFromCache('')).toBeNull();
+
+      // Blaming one of the two root files is not enough on its own.
+      await store.loadBlame('src/deep/main.ts', null);
+      expect(store.folderOwnershipFromCache('')).toBeNull();
+
+      // Once every file the scan would cover is blamed, the summary is ready —
+      // built purely from cache, marked so the panel knows it wasn't scanned.
+      await store.loadBlame('README.md', null);
+      const cached = store.folderOwnershipFromCache('');
+      expect(cached?.status).toBe('ready');
+      expect(cached?.fromCache).toBe(true);
+      expect(cached?.filesScanned).toBe(2);
+      expect(cached?.summary.authors).toEqual([
+        expect.objectContaining({ name: 'Ada', lines: 2, share: 1 }),
+      ]);
+
+      // It read the blame cache only — no extra commit/file scan was kicked off.
       expect(store.folderOwnership()).toBeNull();
     });
   });

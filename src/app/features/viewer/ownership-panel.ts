@@ -185,24 +185,30 @@ export class OwnershipSummaryView {
               <p class="mb-2 text-xs text-zinc-600">{{ fo.message }}</p>
             }
             <app-ownership-summary [summary]="fo.summary" />
-            <div class="mt-3 flex flex-wrap items-center gap-2">
-              @if (fo.capped) {
-                <button
-                  type="button"
-                  class="rounded border border-indigo-400/30 bg-indigo-500/10 px-2 py-1 text-[11px] font-medium text-indigo-200 transition hover:bg-indigo-500/20"
-                  (click)="scanAll.emit()"
-                >
-                  Scan all {{ fo.matchedTotal }} files
-                </button>
-              }
-              <button
-                type="button"
-                class="rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-400 transition hover:border-zinc-500 hover:text-zinc-200"
-                (click)="clearFolder.emit()"
-              >
-                Clear
-              </button>
-            </div>
+            @if (fo.capped || !fo.fromCache) {
+              <div class="mt-3 flex flex-wrap items-center gap-2">
+                @if (fo.capped) {
+                  <button
+                    type="button"
+                    class="rounded border border-indigo-400/30 bg-indigo-500/10 px-2 py-1 text-[11px] font-medium text-indigo-200 transition hover:bg-indigo-500/20"
+                    (click)="scanAll.emit()"
+                  >
+                    Scan all {{ fo.matchedTotal }} files
+                  </button>
+                }
+                <!-- A chart folded from cache has nothing to clear; only an
+                     explicit scan offers a Clear (which also cancels it). -->
+                @if (!fo.fromCache) {
+                  <button
+                    type="button"
+                    class="rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-400 transition hover:border-zinc-500 hover:text-zinc-200"
+                    (click)="clearFolder.emit()"
+                  >
+                    Clear
+                  </button>
+                }
+              </div>
+            }
           } @else {
             <p class="mt-1 mb-2 text-[11px] leading-4 text-zinc-600">
               Blame the files under this folder (subfolders included, up to {{ folderCap() }},

@@ -218,6 +218,12 @@ export interface FolderOwnershipState {
   readonly capped: boolean;
   /** Paths included in this scan, for the "files scanned" tooltip. */
   readonly files: readonly string[];
+  /**
+   * True when folded from blame already in cache rather than an explicit scan
+   * — the chart is then "free" data the panel shows without an opt-in, and
+   * there is nothing to clear.
+   */
+  readonly fromCache?: boolean;
   readonly message?: string;
 }
 
@@ -363,6 +369,19 @@ export class RepoStore {
 
   /** Ref shown in the viewer: the requested one, or the default branch. */
   readonly ref = computed(() => this._requestedRef() ?? this._metadata()?.defaultBranch ?? null);
+
+  /**
+   * True when the active provider reads the whole repository from a local
+   * object database (the folder / zip reader) rather than a paged remote API.
+   * Bulk passes like the folder-ownership scan then cost no network requests,
+   * so callers can run them eagerly instead of behind an opt-in. Detected via
+   * the optional {@link GitProvider.primeHistories} capability, which only such
+   * providers implement.
+   */
+  readonly hasLocalData = computed(() => {
+    const slug = this._slug();
+    return slug != null && this.registry.byId(slug.provider).primeHistories != null;
+  });
 
   readonly tree = computed(() => buildTree(this._entries()));
 
@@ -1110,6 +1129,43 @@ export class RepoStore {
   clearFolderOwnership(): void {
     this.folderRun++;
     this._folderOwnership.set(null);
+  }
+
+  /**
+   * Folds a folder ownership summary from blame **already in cache** — no
+   * history walk, no requests. Returns a ready result only when every file the
+   * scan would cover (the capped, largest-first selection under `folderPath`)
+   * is already blamed, so the "Folder · …" chart can be shown for free instead
+   * of the opt-in "Scan this folder" prompt — for networked providers too.
+   * Returns null while any of those files is still unblamed, so the prompt
+   * stays until a scan (or enough browsing) has produced the data. Pure read of
+   * the entry/blame signals, so it stays reactive inside a computed.
+   */
+  folderOwnershipFromCache(folderPath: string): FolderOwnershipState | null {
+    const { files, capped, total } = selectOwnershipFiles(
+      this._entries(),
+      folderPath,
+      FOLDER_OWNERSHIP_CAP,
+    );
+    if (files.length === 0) return null;
+    const blames = this._blames();
+    const owners: BlameOwner[] = [];
+    for (const entry of files) {
+      const blame = blames.get(fileKey(entry.path, null));
+      if (!blame || blame.status !== 'ready') return null;
+      owners.push(...blame.lines);
+    }
+    return {
+      status: 'ready',
+      path: folderPath,
+      summary: summarizeOwnership(owners),
+      filesTotal: files.length,
+      filesScanned: files.length,
+      matchedTotal: total,
+      capped,
+      files: files.map((f) => f.path),
+      fromCache: true,
+    };
   }
 
   /**
