@@ -77,17 +77,17 @@ renames — see the feature list and roadmap below for what's done and what's ne
     a **treemap** (rectangle = size/LOC, colour = heat) _and_ a ranked list; click a file to open
     it.
   - **Change coupling** — the **files that change together** ("touch `auth.ts`, you usually touch
-    `session.ts`"), shown as the **top ~10 most-coupled clusters** drawn as node-link graphs
-    (connected components of the strong couplings, sized to an adjustable **min–max range
-    slider** — tame "everything-touches-everything" hairballs from the top, drop noisy small
-    clusters from the bottom) plus the full pair list. **Filter to one file** —
+    `session.ts`"), shown as the **top ~10 most-coupled clusters** drawn as node-link graphs with
+    the **co-change count on each edge** (connected components of the strong couplings, sized to an
+    adjustable **min–max range slider** — tame "everything-touches-everything" hairballs from the
+    top, drop noisy small clusters from the bottom) plus the full pair list. **Filter to one file** —
     pick it in the tree or click any file (cluster node or pair) — to walk its _full_ history and
     see only the connections to and from it; **Clear filter** drops it again while the repo-wide
     overview stays put. Flip the granularity to **Modules** to roll the same coupling up to
-    **folders** (`computeModuleCoChange`, depth adjustable 1–4): which parts of the tree change
-    together. Cross-boundary coupling (`auth/ ↔ ui/`) is the architectural-decay smell; within-module
-    churn is expected and collapses away. The same data powers an **"Often changes with"** list on
-    the open file in the History panel.
+    **folders** (`computeModuleCoChange`, depth adjustable 1–4), drawn as the same weighted graphs:
+    which parts of the tree change together. Cross-boundary coupling (`auth/ ↔ ui/`) is the
+    architectural-decay smell; within-module churn is expected and collapses away. The same data
+    powers an **"Often changes with"** list on the open file in the History panel.
 
   Mega-commits are filtered out as churn noise; the walk streams as it goes.
 

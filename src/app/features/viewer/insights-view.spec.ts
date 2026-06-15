@@ -92,6 +92,19 @@ const MODULES: CoChangeState = {
   commits: MODULES_COMMITS,
   hotspots: [],
 };
+// Three folders forming a clique → a module cluster (≥ 3) for the graph.
+const MODULE_CLUSTER_COMMITS = [
+  { sha: 'q1', files: ['api/a.ts', 'web/b.ts', 'db/c.ts'] },
+  { sha: 'q2', files: ['api/a.ts', 'web/b.ts', 'db/c.ts'] },
+];
+const MODULE_CLUSTER: CoChangeState = {
+  status: 'ready',
+  scanned: 2,
+  target: 75,
+  result: computeCoChange(MODULE_CLUSTER_COMMITS),
+  commits: MODULE_CLUSTER_COMMITS,
+  hotspots: [],
+};
 
 describe('InsightsView', () => {
   let fixture: ComponentFixture<InsightsView>;
@@ -277,6 +290,24 @@ describe('InsightsView', () => {
     drag('Module depth', 1);
     await fixture.whenStable();
     expect(text()).toContain('No modules change together');
+  });
+
+  it('draws a module cluster graph with weighted edges', async () => {
+    await setState(MODULE_CLUSTER);
+    button('Coupling')!.click();
+    await fixture.whenStable();
+    button('Modules')!.click();
+    await fixture.whenStable();
+
+    // Three folders forming a clique → a node-link graph (edges + nodes).
+    expect(fixture.nativeElement.querySelector('svg line')).not.toBeNull();
+    expect(fixture.nativeElement.querySelectorAll('svg circle').length).toBeGreaterThanOrEqual(3);
+
+    // Each edge is labelled with its co-change weight (support = 2 here).
+    const labels = Array.from(
+      fixture.nativeElement.querySelectorAll('svg text') as SVGTextElement[],
+    ).map((t) => t.textContent?.trim());
+    expect(labels).toContain('2');
   });
 
   it('keeps both tabs available once anything is analysed', async () => {
