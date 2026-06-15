@@ -113,7 +113,7 @@ interface SplitRow {
           }
         }
         <span class="flex-1"></span>
-        @if (selectedRange(); as range) {
+        @if (!comparingPath() && selectedRange(); as range) {
           <span class="shrink-0 text-[11px] text-indigo-300/80">
             {{ rangeLabel(range) }}
           </span>
@@ -326,7 +326,7 @@ interface SplitRow {
                         >{{ cell.lineNo }}</span
                       >
                       <span class="w-12 shrink-0 text-center select-none">
-                        @if (row.traceRange; as range) {
+                        @if (!comparingPath() && row.traceRange; as range) {
                           @if (!row.right) {
                             <button
                               type="button"
@@ -392,7 +392,7 @@ interface SplitRow {
                         </button>
                       </span>
                       <span class="w-12 shrink-0 text-center select-none">
-                        @if (row.traceRange; as range) {
+                        @if (!comparingPath() && row.traceRange; as range) {
                           @if (row.right) {
                             <button
                               type="button"
@@ -479,7 +479,7 @@ interface SplitRow {
                     >{{ row.marker }}</span
                   >
                   <span class="w-12 shrink-0 text-center select-none">
-                    @if (row.traceRange; as range) {
+                    @if (!comparingPath() && row.traceRange; as range) {
                       <button
                         type="button"
                         class="rounded border border-sky-300/30 px-1.5 text-[11px] leading-4 text-sky-200/90 transition hover:bg-sky-300/10"
@@ -563,7 +563,13 @@ export class DiffView {
 
   protected readonly canStepBefore = computed(() => {
     const s = this.state();
-    return s?.status === 'ready' && s.baseSha !== null && this.beforeAvailable();
+    // "◂ Before" and the per-hunk/selection "Trace" all step through the
+    // *selected file's* own timeline. A comparison against another file (the
+    // rename/origin "Diff") has an unrelated before side, so those actions
+    // would target the wrong file at the wrong lines — hide them there.
+    return (
+      s?.status === 'ready' && s.baseSha !== null && this.beforeAvailable() && !this.comparingPath()
+    );
   });
 
   /** Predecessor path when the diff compares against one, else null. */
@@ -715,6 +721,9 @@ export class DiffView {
   protected selectLine(line: number, event: MouseEvent): void {
     event.preventDefault();
     event.stopPropagation();
+    // Selecting lines only feeds "Trace selection", which is disabled while
+    // comparing against another file — so don't strand a highlight here.
+    if (this.comparingPath()) return;
     const key = this.diffKey();
     if (!key) return;
     const current = this.selection();
