@@ -24,6 +24,7 @@ const OVERVIEW: CoChangeState = {
   target: 75,
   scanned: 3,
   result: computeCoChange(COMMITS),
+  commits: COMMITS,
   hotspots: HOTSPOTS,
 };
 // A hotspot whose file is absent from the current tree → size 0. squarify
@@ -33,6 +34,7 @@ const ZERO_SIZED: CoChangeState = {
   target: 75,
   scanned: 2,
   result: computeCoChange([]),
+  commits: [],
   hotspots: computeHotspots(
     [
       { authorName: 'Ada', authoredAt: '2026-06-13T00:00:00Z', files: ['gone.ts'] },
@@ -49,27 +51,72 @@ const FOCUSED: CoChangeState = {
   scanned: 3,
   target: 400,
   result: computeCoChange(COMMITS, { minSupport: 1 }),
+  commits: COMMITS,
   hotspots: [],
 };
+const COLLIDING_COMMITS = [
+  { sha: 'd1', files: ['src/a/index.ts', 'src/b/index.ts'] },
+  { sha: 'd2', files: ['src/a/index.ts', 'src/b/index.ts'] },
+];
 const COLLIDING: CoChangeState = {
   status: 'ready',
   scanned: 2,
   target: 75,
-  result: computeCoChange([
-    { sha: 'd1', files: ['src/a/index.ts', 'src/b/index.ts'] },
-    { sha: 'd2', files: ['src/a/index.ts', 'src/b/index.ts'] },
-  ]),
+  result: computeCoChange(COLLIDING_COMMITS),
+  commits: COLLIDING_COMMITS,
   hotspots: [],
 };
 // A 4-file clique → forms a cluster (≥ 3 files) for the graph.
+const CLUSTERED_COMMITS = [
+  { sha: 'k1', files: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts'] },
+  { sha: 'k2', files: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts'] },
+];
 const CLUSTERED: CoChangeState = {
   status: 'ready',
   scanned: 2,
   target: 75,
-  result: computeCoChange([
-    { sha: 'k1', files: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts'] },
-    { sha: 'k2', files: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts'] },
-  ]),
+  result: computeCoChange(CLUSTERED_COMMITS),
+  commits: CLUSTERED_COMMITS,
+  hotspots: [],
+};
+// Two folders that always change together → module coupling at depth 2.
+const MODULES_COMMITS = [
+  { sha: 'p1', files: ['src/auth/login.ts', 'src/ui/button.ts'] },
+  { sha: 'p2', files: ['src/auth/login.ts', 'src/ui/button.ts'] },
+];
+const MODULES: CoChangeState = {
+  status: 'ready',
+  scanned: 2,
+  target: 75,
+  result: computeCoChange(MODULES_COMMITS),
+  commits: MODULES_COMMITS,
+  hotspots: [],
+};
+// Three folders forming a clique → a module cluster (≥ 3) for the graph.
+const MODULE_CLUSTER_COMMITS = [
+  { sha: 'q1', files: ['api/a.ts', 'web/b.ts', 'db/c.ts'] },
+  { sha: 'q2', files: ['api/a.ts', 'web/b.ts', 'db/c.ts'] },
+];
+const MODULE_CLUSTER: CoChangeState = {
+  status: 'ready',
+  scanned: 2,
+  target: 75,
+  result: computeCoChange(MODULE_CLUSTER_COMMITS),
+  commits: MODULE_CLUSTER_COMMITS,
+  hotspots: [],
+};
+// Two folders that always change together, but via *different* files each time
+// → no file pair clears minSupport, yet module coupling exists.
+const MODULE_ONLY_COMMITS = [
+  { sha: 'r1', files: ['auth/a.ts', 'ui/x.ts'] },
+  { sha: 'r2', files: ['auth/b.ts', 'ui/y.ts'] },
+];
+const MODULE_ONLY: CoChangeState = {
+  status: 'ready',
+  scanned: 2,
+  target: 75,
+  result: computeCoChange(MODULE_ONLY_COMMITS),
+  commits: MODULE_ONLY_COMMITS,
   hotspots: [],
 };
 
@@ -151,6 +198,7 @@ describe('InsightsView', () => {
       scanned: 10,
       target: 50,
       result: computeCoChange([]),
+      commits: [],
       hotspots: [],
     });
     expect(text()).toContain('10/50');
@@ -160,6 +208,7 @@ describe('InsightsView', () => {
       scanned: 0,
       target: 75,
       result: computeCoChange([]),
+      commits: [],
       hotspots: [],
       message: 'No commit history found.',
     });
@@ -238,6 +287,74 @@ describe('InsightsView', () => {
     // Two index.ts files → labels fall back to the full path to disambiguate.
     expect(text()).toContain('src/a/index.ts');
     expect(text()).toContain('src/b/index.ts');
+  });
+
+  it('rolls coupling up to modules and re-buckets by depth', async () => {
+    await setState(MODULES);
+    button('Coupling')!.click();
+    await fixture.whenStable();
+    button('Modules')!.click();
+    await fixture.whenStable();
+
+    // Depth 2 (default): src/auth ↔ src/ui change together.
+    expect(text()).toContain('src/auth');
+    expect(text()).toContain('src/ui');
+
+    // Depth 1 collapses both into "src", so there is no cross-module coupling.
+    drag('Module depth', 1);
+    await fixture.whenStable();
+    expect(text()).toContain('No modules change together');
+  });
+
+  it('draws a module cluster graph with weighted edges', async () => {
+    await setState(MODULE_CLUSTER);
+    button('Coupling')!.click();
+    await fixture.whenStable();
+    button('Modules')!.click();
+    await fixture.whenStable();
+
+    // Three folders forming a clique → a node-link graph (edges + nodes).
+    expect(fixture.nativeElement.querySelector('svg line')).not.toBeNull();
+    expect(fixture.nativeElement.querySelectorAll('svg circle').length).toBeGreaterThanOrEqual(3);
+
+    // Each edge is labelled with the coupling strength (these always change
+    // together → 100%).
+    const labels = Array.from(
+      fixture.nativeElement.querySelectorAll('svg text') as SVGTextElement[],
+    ).map((t) => t.textContent?.trim());
+    expect(labels).toContain('100%');
+  });
+
+  it('reaches module coupling even when no file pair survives minSupport', async () => {
+    await setState(MODULE_ONLY);
+    button('Coupling')!.click();
+    await fixture.whenStable();
+
+    // No file pairs cleared minSupport, but the granularity toggle is still here…
+    expect(text()).toContain('No files changed together');
+    button('Modules')!.click();
+    await fixture.whenStable();
+
+    // …and the module roll-up surfaces the auth ↔ ui coupling.
+    expect(text()).toContain('auth');
+    expect(text()).toContain('ui');
+  });
+
+  it('shows a live folder-depth example that tracks the slider', async () => {
+    await setState(MODULES); // files under src/auth and src/ui
+    button('Coupling')!.click();
+    await fixture.whenStable();
+    button('Modules')!.click();
+    await fixture.whenStable();
+
+    // Depth 2 groups two levels deep, e.g. src/auth.
+    expect(text()).toContain('e.g.');
+    expect(text()).toContain('src/auth');
+    // Depth 1 groups one level deep, so the example collapses to just "src".
+    drag('Module depth', 1);
+    await fixture.whenStable();
+    expect(text()).toContain('e.g. src');
+    expect(text()).not.toContain('src/auth');
   });
 
   it('keeps both tabs available once anything is analysed', async () => {
