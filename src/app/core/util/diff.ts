@@ -45,10 +45,18 @@ const SIZE_GUARD = 25_000_000;
 /**
  * Splits file text into lines for diffing: one trailing newline is not a
  * line of its own, and an empty file has zero lines.
+ *
+ * A leading UTF-8 byte-order mark and CRLF line endings are normalized away
+ * first, so two versions (or two files) that differ only in a BOM or in their
+ * line endings still diff as equal. Without this every line mismatches: the
+ * diff degrades to a full replace, blame mis-attributes every line, and the
+ * split view lines nothing up — some hosts serve blobs CRLF and/or BOM-prefixed
+ * while others serve the same content as bare LF.
  */
 export function splitLines(text: string): string[] {
   if (text === '') return [];
-  const trimmed = text.endsWith('\n') ? text.slice(0, -1) : text;
+  const normalized = (text.charCodeAt(0) === 0xfeff ? text.slice(1) : text).replace(/\r\n/g, '\n');
+  const trimmed = normalized.endsWith('\n') ? normalized.slice(0, -1) : normalized;
   return trimmed.split('\n');
 }
 

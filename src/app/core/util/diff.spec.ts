@@ -53,6 +53,30 @@ describe('splitLines', () => {
   it('keeps a file of one empty line distinct from an empty file', () => {
     expect(splitLines('\n')).toEqual(['']);
   });
+
+  it('normalizes CRLF endings so they match the same lines in LF', () => {
+    expect(splitLines('a\r\nb\r\n')).toEqual(['a', 'b']);
+    expect(splitLines('a\r\nb\r\n')).toEqual(splitLines('a\nb\n'));
+  });
+
+  it('strips a leading UTF-8 BOM', () => {
+    expect(splitLines('﻿a\nb\n')).toEqual(['a', 'b']);
+  });
+});
+
+describe('diff is line-ending agnostic', () => {
+  it('reports no changes between a CRLF file and its LF twin', () => {
+    // Two hosts serving the same content with different endings must not read
+    // as a full rewrite (every line replaced) — the bug behind the broken
+    // origin-candidate diff.
+    const diff = computeFileDiff(
+      'namespace N;\r\n\r\nclass C { }\r\n',
+      'namespace N;\n\nclass C { }\n',
+    );
+    expect(diff.identical).toBe(true);
+    expect(diff.added).toBe(0);
+    expect(diff.removed).toBe(0);
+  });
 });
 
 describe('diffLines', () => {
