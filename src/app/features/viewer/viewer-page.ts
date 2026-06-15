@@ -706,10 +706,33 @@ export class ViewerPage {
     return this.urlRange();
   });
 
-  protected readonly leftBlame = computed(() => {
+  /**
+   * Which version to blame for the diff's "before" side. The raw parent
+   * (`baseSha`) is almost never in the file's own history — that history lists
+   * only the commits that *touched* the file, and the parent usually didn't —
+   * so blaming it directly finds no anchor and the gutter stays empty. The
+   * previous entry in the file's history is the most recent commit that did
+   * touch it before the viewed one; nothing changed the file between there and
+   * the parent, so its content matches the before side and its blame annotates
+   * the old-side lines (including ones this commit deleted), making them
+   * navigable. Only resolved for a commit's own diff, where the old side is
+   * this same path; a compare-against-predecessor diff has a different old side.
+   */
+  protected readonly beforeBlameAnchor = computed<{ path: string; sha: string } | null>(() => {
     const diff = this.store.selectedDiff();
     if (diff?.status !== 'ready' || !diff.baseSha || !diff.basePath) return null;
-    return this.store.blameFor(diff.basePath, diff.baseSha);
+    const at = this.store.viewAt();
+    if (!at || diff.basePath !== this.store.selectedPath()) return null;
+    if (this.store.historyPath() !== diff.basePath) return null;
+    const history = this.store.history();
+    const idx = history.findIndex((c) => c.sha === at);
+    const previous = idx === -1 ? null : (history[idx + 1] ?? null);
+    return previous ? { path: diff.basePath, sha: previous.sha } : null;
+  });
+
+  protected readonly leftBlame = computed(() => {
+    const anchor = this.beforeBlameAnchor();
+    return anchor ? this.store.blameFor(anchor.path, anchor.sha) : null;
   });
 
   protected readonly rightBlame = computed(() => {
@@ -849,14 +872,15 @@ export class ViewerPage {
       // attributed to "older" (beyond the loaded pages) can finally be traced
       // to the commit that introduced them, so re-run blame.
       void this.store.history();
-      const basePath = diff && selectedDiff?.status === 'ready' ? selectedDiff.basePath : null;
-      const baseSha = diff && selectedDiff?.status === 'ready' ? selectedDiff.baseSha : null;
       const headPath = diff && selectedDiff?.status === 'ready' ? selectedDiff.headPath : path;
+      // The split changes view also annotates the version before, anchored on
+      // the previous commit that touched the file (the parent itself is rarely
+      // in the file's history).
+      const before = diff ? this.beforeBlameAnchor() : null;
       untracked(() => {
         if (phase !== 'ready' || !blame || !path) return;
         if (headPath) void this.store.loadBlame(headPath, at);
-        // The split changes view also annotates the version before.
-        if (diff && basePath && baseSha) void this.store.loadBlame(basePath, baseSha);
+        if (before) void this.store.loadBlame(before.path, before.sha);
       });
     });
 
