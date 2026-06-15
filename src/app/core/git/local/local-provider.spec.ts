@@ -85,6 +85,44 @@ describe('LocalGitProvider', () => {
     expect(commits.map((c) => c.sha)).toEqual([c3, c2, c1]);
   });
 
+  it('walks a path history once and serves later pages from cache', async () => {
+    const logSpy = vi.spyOn(git, 'log');
+    const page1 = await provider.listCommits(slug, {
+      ref: 'main',
+      path: 'hello.txt',
+      perPage: 2,
+      page: 1,
+    });
+    const page2 = await provider.listCommits(slug, {
+      ref: 'main',
+      path: 'hello.txt',
+      perPage: 2,
+      page: 2,
+    });
+
+    expect(page1.map((c) => c.sha)).toEqual([c3, c2]);
+    expect(page2.map((c) => c.sha)).toEqual([c1]);
+    // The full path-filtered walk happens once; the second page is a cache slice
+    // rather than another whole-history walk (the old quadratic "Load all").
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    logSpy.mockRestore();
+  });
+
+  it('paginates unfiltered history and reuses the grown cache', async () => {
+    const logSpy = vi.spyOn(git, 'log');
+    const page1 = await provider.listCommits(slug, { ref: 'main', perPage: 2, page: 1 });
+    const page2 = await provider.listCommits(slug, { ref: 'main', perPage: 2, page: 2 });
+    expect(page1.map((c) => c.sha)).toEqual([c3, c2]);
+    expect(page2.map((c) => c.sha)).toEqual([c1]);
+
+    // A page already covered by the cache is served without another walk.
+    const calls = logSpy.mock.calls.length;
+    const again = await provider.listCommits(slug, { ref: 'main', perPage: 2, page: 1 });
+    expect(again.map((c) => c.sha)).toEqual([c3, c2]);
+    expect(logSpy.mock.calls.length).toBe(calls);
+    logSpy.mockRestore();
+  });
+
   it('resolves single commits with parents and ISO dates', async () => {
     const commit = await provider.getCommit(slug, c2);
     expect(commit.parentShas).toEqual([c1]);

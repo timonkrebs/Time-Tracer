@@ -57,6 +57,13 @@ interface ReadCommitResult {
   };
 }
 
+/** A memoised commit-log walk: the commits seen so far, newest first. */
+interface CommitLogCache {
+  readonly commits: readonly CommitInfo[];
+  /** True when the walk reached the end of history (no deeper page exists). */
+  readonly complete: boolean;
+}
+
 /**
  * Reads repositories straight from a local folder (File System Access API)
  * by parsing the `.git` directory with isomorphic-git — no server, no
@@ -68,6 +75,19 @@ export class LocalGitProvider implements GitProvider {
   readonly label = 'Local folder';
 
   private readonly repos = inject(LocalRepos);
+
+  /**
+   * Commit-log walks memoised per filesystem, then per `<ref>\0<path>`.
+   * isomorphic-git's `log` can neither resume nor page — it re-walks from the
+   * tip on every call, and a path filter forces a *full*-history walk every
+   * time. That made paging quadratic on local repos: "Load all history" and
+   * the per-file co-change walk re-walked the whole repository for each page.
+   * The repo is read-only for the session, so the ordered walk is stable and
+   * safe to reuse. Keying by the fs object — a re-picked or reconnected folder
+   * gets a fresh one — keeps the cache from going stale; a WeakMap lets it die
+   * with the fs.
+   */
+  private readonly logCache = new WeakMap<FsLike, Map<string, CommitLogCache>>();
 
   /** Local repos are opened via the folder picker, never via URL input. */
   canHandle(): boolean {
@@ -181,21 +201,51 @@ export class LocalGitProvider implements GitProvider {
     const perPage = options.perPage ?? 30;
     const page = options.page ?? 1;
     try {
-      const git = await loadGit();
-      // isomorphic-git has no pagination: fetch up to the end of the
-      // requested page and slice. `force` skips commits where the file is
-      // absent instead of throwing on shallow oddities.
-      const entries = (await git.log({
-        fs,
-        dir: '/',
-        ref: options.ref ?? 'HEAD',
-        depth: options.path ? undefined : page * perPage,
-        ...(options.path ? { filepath: options.path, force: true } : {}),
-      })) as ReadCommitResult[];
-      return entries.slice((page - 1) * perPage, page * perPage).map(mapCommit);
+      const commits = await this.commitLog(fs, options.ref ?? 'HEAD', options.path, page * perPage);
+      return commits.slice((page - 1) * perPage, page * perPage);
     } catch (error) {
       throw this.mapError(error, 'No commit history found for this ref or path.');
     }
+  }
+
+  /**
+   * At least `wanted` commits reachable from `ref` (optionally only those that
+   * touched `path`), newest first, memoised per fs so repeated paging never
+   * re-walks. A path filter has no shallow form in isomorphic-git — it always
+   * walks the full history — so its result is cached complete and every later
+   * page is a free slice. An unfiltered walk grows the cached prefix on demand
+   * and never reads deeper than the request itself would have.
+   */
+  private async commitLog(
+    fs: FsLike,
+    ref: string,
+    path: string | undefined,
+    wanted: number,
+  ): Promise<readonly CommitInfo[]> {
+    let perFs = this.logCache.get(fs);
+    if (!perFs) {
+      perFs = new Map();
+      this.logCache.set(fs, perFs);
+    }
+    const key = `${ref}\u0000${path ?? ''}`;
+    const cached = perFs.get(key);
+    if (cached && (cached.complete || cached.commits.length >= wanted)) {
+      return cached.commits;
+    }
+
+    const git = await loadGit();
+    // With a path, isomorphic-git must walk the whole history to find every
+    // commit that touched it (`force` skips commits where it is absent rather
+    // than throwing); without one, the walk is capped at the requested depth.
+    const log = (await git.log({
+      fs,
+      dir: '/',
+      ref,
+      ...(path ? { filepath: path, force: true } : { depth: wanted }),
+    })) as ReadCommitResult[];
+    const commits = log.map(mapCommit);
+    perFs.set(key, { commits, complete: !!path || commits.length < wanted });
+    return commits;
   }
 
   async getCommit(slug: RepoSlug, sha: string): Promise<CommitInfo> {
