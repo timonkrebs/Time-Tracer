@@ -16,7 +16,7 @@ const ROOT_SHA = '3333333333333333333333333333333333333333';
 const MOVE_EDIT_SHA = '4444444444444444444444444444444444444444';
 const MOVE_SHA = '5555555555555555555555555555555555555555';
 const MOVE_ROOT_SHA = '6666666666666666666666666666666666666666';
-// GAP.md: rewritten by GAP_NEW, whose parent (GAP_GHOST) never touched the
+// src/gap.ts: rewritten by GAP_NEW, whose parent (GAP_GHOST) never touched the
 // file and so is absent from its history — the case where the before side must
 // still be annotated from the previous commit that did touch it (GAP_OLD).
 const GAP_NEW_SHA = '7777777777777777777777777777777777777777';
