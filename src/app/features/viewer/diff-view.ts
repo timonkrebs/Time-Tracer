@@ -11,7 +11,7 @@ import {
 } from '@angular/core';
 
 import { BlameState, DiffState } from '../../core/store/repo-store';
-import { LineRange, hunkChangeRanges } from '../../core/util/line-range';
+import { ChangeRun, LineRange, hunkChangeRuns } from '../../core/util/line-range';
 import { shortSha } from '../../core/util/relative-time';
 import { AnnotationCell, buildAnnotationCells } from './blame-annotation';
 
@@ -25,7 +25,10 @@ interface DiffRow {
   readonly marker: string;
   readonly text: string;
   readonly newLine?: number;
+  /** New-side trace range for the run starting here (added/edited block). */
   readonly traceRange?: LineRange;
+  /** Old-side range for a pure-removal run starting here (traced as a deletion). */
+  readonly traceDeletionRange?: LineRange;
   /** First old/new-side lines of the hunk; only set for hunk header rows. */
   readonly hunkOldStart?: number;
   readonly hunkNewStart?: number;
@@ -43,8 +46,23 @@ interface SplitRow {
   readonly hunkOldStart?: number;
   readonly hunkNewStart?: number;
   readonly traceRange?: LineRange;
+  /** Old-side range for a pure-removal run starting here (traced as a deletion). */
+  readonly traceDeletionRange?: LineRange;
   readonly left: SplitCell | null;
   readonly right: SplitCell | null;
+}
+
+/**
+ * The trace field a change run contributes to the first row it spans: a pure
+ * removal traces the old-side lines it deleted; any other run traces its
+ * new-side range.
+ */
+function traceFields(run: ChangeRun | undefined): {
+  traceRange?: LineRange;
+  traceDeletionRange?: LineRange;
+} {
+  if (!run) return {};
+  return run.oldRange ? { traceDeletionRange: run.oldRange } : { traceRange: run.newRange };
 }
 
 /**
@@ -418,12 +436,11 @@ interface SplitRow {
                         [class]="row.right.changed ? 'text-emerald-200' : 'text-zinc-300'"
                         >{{ cell.text }}</span
                       >
-                    } @else if (!comparingPath() && row.traceRange; as range) {
+                    } @else if (!comparingPath() && row.traceDeletionRange; as range) {
                       <!--
-                        Pure-removal run: it has no After line, but its trace range
-                        still tracks the surviving lines around the gap. Surface its
-                        Trace here on the After side, aligned in the trace slot, rather
-                        than on the Before side.
+                        Pure-removal run: it has no After line. Surface its Trace here
+                        on the After side, aligned in the trace slot, instead of on the
+                        Before side — it follows the deleted lines back through history.
                       -->
                       <span class="w-40 shrink-0 select-none" aria-hidden="true"></span>
                       <span class="w-9 shrink-0 select-none" aria-hidden="true"></span>
@@ -431,8 +448,8 @@ interface SplitRow {
                         <button
                           type="button"
                           class="rounded border border-sky-300/30 px-1.5 text-[11px] leading-4 text-sky-200/90 transition hover:bg-sky-300/10"
-                          title="Trace this changed block"
-                          (click)="trace.emit(range)"
+                          title="Trace this deleted block back through history"
+                          (click)="traceDeletion.emit(range)"
                         >
                           Trace
                         </button>
@@ -506,15 +523,26 @@ interface SplitRow {
                     >{{ row.marker }}</span
                   >
                   <span class="w-12 shrink-0 text-center select-none">
-                    @if (!comparingPath() && row.traceRange; as range) {
-                      <button
-                        type="button"
-                        class="rounded border border-sky-300/30 px-1.5 text-[11px] leading-4 text-sky-200/90 transition hover:bg-sky-300/10"
-                        title="Trace this changed block"
-                        (click)="trace.emit(range)"
-                      >
-                        Trace
-                      </button>
+                    @if (!comparingPath()) {
+                      @if (row.traceRange; as range) {
+                        <button
+                          type="button"
+                          class="rounded border border-sky-300/30 px-1.5 text-[11px] leading-4 text-sky-200/90 transition hover:bg-sky-300/10"
+                          title="Trace this changed block"
+                          (click)="trace.emit(range)"
+                        >
+                          Trace
+                        </button>
+                      } @else if (row.traceDeletionRange; as range) {
+                        <button
+                          type="button"
+                          class="rounded border border-sky-300/30 px-1.5 text-[11px] leading-4 text-sky-200/90 transition hover:bg-sky-300/10"
+                          title="Trace this deleted block back through history"
+                          (click)="traceDeletion.emit(range)"
+                        >
+                          Trace
+                        </button>
+                      }
                     }
                   </span>
                   <span
@@ -559,6 +587,8 @@ export class DiffView {
   readonly before = output<{ oldStart: number; newStart: number }>();
   /** "Trace": filter the history to this new-side line range. */
   readonly trace = output<LineRange>();
+  /** "Trace" on a deleted block: the old-side range of the removed lines. */
+  readonly traceDeletion = output<LineRange>();
   readonly blameToggle = output<void>();
   /** A clicked annotation: the commit plus the line's position at it. */
   readonly blameSelect = output<{ sha: string; line: number }>();
@@ -631,8 +661,8 @@ export class DiffView {
         hunkOldStart: hunk.oldStart,
         hunkNewStart: hunk.newStart,
       });
-      const traceRanges = hunkChangeRanges(hunk);
-      let traceIndex = 0;
+      const runs = hunkChangeRuns(hunk);
+      let runIndex = 0;
       let inChangeRun = false;
       for (const op of hunk.ops) {
         if (op.kind === 'equal') {
@@ -646,7 +676,7 @@ export class DiffView {
             text: op.text,
           });
         } else if (op.kind === 'remove') {
-          const traceRange = !inChangeRun ? traceRanges[traceIndex++] : undefined;
+          const run = !inChangeRun ? runs[runIndex++] : undefined;
           inChangeRun = true;
           rows.push({
             type: 'remove',
@@ -654,10 +684,10 @@ export class DiffView {
             newNo: '',
             marker: '−',
             text: op.text,
-            ...(traceRange ? { traceRange } : {}),
+            ...traceFields(run),
           });
         } else {
-          const traceRange = !inChangeRun ? traceRanges[traceIndex++] : undefined;
+          const run = !inChangeRun ? runs[runIndex++] : undefined;
           inChangeRun = true;
           rows.push({
             type: 'add',
@@ -666,7 +696,7 @@ export class DiffView {
             newLine: op.newLine,
             marker: '+',
             text: op.text,
-            ...(traceRange ? { traceRange } : {}),
+            ...traceFields(run),
           });
         }
       }
@@ -688,11 +718,11 @@ export class DiffView {
         left: null,
         right: null,
       });
-      const traceRanges = hunkChangeRanges(hunk);
-      let traceIndex = 0;
+      const runs = hunkChangeRuns(hunk);
+      let runIndex = 0;
       let removes: SplitCell[] = [];
       let adds: SplitCell[] = [];
-      let pendingTraceRange: LineRange | undefined;
+      let pendingRun: ChangeRun | undefined;
       const flush = (): void => {
         const count = Math.max(removes.length, adds.length);
         for (let i = 0; i < count; i++) {
@@ -700,12 +730,12 @@ export class DiffView {
             type: 'line',
             left: removes[i] ?? null,
             right: adds[i] ?? null,
-            ...(i === 0 && pendingTraceRange ? { traceRange: pendingTraceRange } : {}),
+            ...(i === 0 ? traceFields(pendingRun) : {}),
           });
         }
         removes = [];
         adds = [];
-        pendingTraceRange = undefined;
+        pendingRun = undefined;
       };
       for (const op of hunk.ops) {
         if (op.kind === 'equal') {
@@ -716,10 +746,10 @@ export class DiffView {
             right: { lineNo: op.newLine, text: op.text, changed: false },
           });
         } else if (op.kind === 'remove') {
-          pendingTraceRange ??= traceRanges[traceIndex++];
+          pendingRun ??= runs[runIndex++];
           removes.push({ lineNo: op.oldLine, text: op.text, changed: true });
         } else {
-          pendingTraceRange ??= traceRanges[traceIndex++];
+          pendingRun ??= runs[runIndex++];
           adds.push({ lineNo: op.newLine, text: op.text, changed: true });
         }
       }

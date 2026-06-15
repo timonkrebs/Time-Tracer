@@ -517,6 +517,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
                   (retry)="onDiffRetry()"
                   (before)="onHunkBefore($event)"
                   (trace)="onHunkTrace($event)"
+                  (traceDeletion)="onHunkTraceDeletion($event)"
                   (blameToggle)="toggleBlame()"
                   (blameSelect)="onBlameSelect($event)"
                   (historyToggle)="toggleHistory()"
@@ -1162,6 +1163,34 @@ export class ViewerPage {
     void this.router.navigate([], {
       relativeTo: this.route,
       queryParams: { line: formatLineRange(range) },
+      queryParamsHandling: 'merge',
+    });
+  }
+
+  /**
+   * "Trace" on a deleted block. The lines no longer exist at this commit, so
+   * anchoring here would only follow their surviving neighbours. Instead anchor
+   * on the version just before the change — the last commit that touched the
+   * file at/before the parent, which is guaranteed to be in its history — at the
+   * removed lines' own positions, and navigate there so the traced lines are
+   * shown as they were. The walk then follows the real lines back through time.
+   */
+  protected async onHunkTraceDeletion(range: LineRange): Promise<void> {
+    const diff = this.store.selectedDiff();
+    if (diff?.status !== 'ready' || !diff.baseSha || !diff.basePath) return;
+    const anchor = await this.store.lastTouch(diff.basePath, diff.baseSha);
+    const anchorSha = anchor?.sha ?? diff.baseSha;
+    if (!this.historyOpen()) this.toggleHistory();
+    void this.store.startLineTrace(diff.basePath, anchorSha, range);
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: {
+        path: diff.basePath,
+        at: anchorSha,
+        view: 'file',
+        line: formatLineRange(range),
+        base: null,
+      },
       queryParamsHandling: 'merge',
     });
   }

@@ -103,47 +103,54 @@ export function changeRegionRange(region: ChangeRegion): LineRange {
 }
 
 /**
- * Maps a new-side range onto the old side of the same diff. Each edge follows
- * the old line at the same offset within a replaced block (clamped to the
- * block), so a traced range keeps its size as it is followed back rather than
- * ballooning to a rewritten block's full old extent — a single line stays a
- * single line, an N-line selection stays about N lines. Returns null when the
- * whole range was introduced by this very diff: there is nothing older to
- * follow.
+ * Maps every surviving new-side line onto the older version by *content* rather
+ * than position: equal lines map exactly, exact same-file moves map to the
+ * line's old position, and edited blocks map by offset within the block. Lines
+ * introduced by this diff (pure additions with no moved twin) are absent from
+ * the map. This unifies move-following with the ordinary mapping so a moved
+ * line is followed wherever it went, not just when the whole range moved.
  */
-export function mapRangeToParent(
-  regions: readonly ChangeRegion[],
-  range: LineRange,
-): LineRange | null {
-  const start = Math.max(1, mapEdge(regions, range.start, 'start'));
-  const end = mapEdge(regions, range.end, 'end');
-  return start > end ? null : { start, end };
+export function newerToOlderLineMap(ops: readonly DiffOp[]): ReadonlyMap<number, number> {
+  const map = new Map<number, number>();
+  // Equal lines map exactly.
+  for (const op of ops) {
+    if (op.kind === 'equal') map.set(op.newLine, op.oldLine);
+  }
+  // Exact moves take priority: a line carried elsewhere is the same line, so
+  // follow it to its old position even if its surroundings changed.
+  for (const [newLine, oldLine] of movedLinePairs(ops)) map.set(newLine, oldLine);
+  // Edited blocks (both sides non-empty): an added line not explained by a move
+  // follows the replaced old line at the same offset (clamped to the block), so
+  // an edit keeps the line by position instead of treating it as introduced.
+  for (const region of changeRegions(ops)) {
+    if (region.oldCount === 0 || region.newCount === 0) continue;
+    for (let i = 0; i < region.newCount; i++) {
+      const newLine = region.newStart + i;
+      if (map.has(newLine)) continue;
+      map.set(newLine, region.oldStart + Math.min(i, region.oldCount - 1));
+    }
+  }
+  return map;
 }
 
 /**
- * Like {@link mapRangeToParent}, but treats exact same-file moves as line
- * continuity instead of introducing the range at the move commit. Minimal
- * line diffs represent moves as a removal plus an insertion, so the regular
- * edge mapping sees only a pure add and stops. Pairing identical add/remove
- * runs lets tracing and blame follow the line back to its old position while
- * still counting the move commit as a structural change.
+ * A new-side `range` mapped onto the older version by following the content of
+ * each line it covers (see {@link newerToOlderLineMap}) and spanning where
+ * those lines land — so moves are followed and a selection keeps its size
+ * instead of ballooning across a rewrite. Returns null when every line in the
+ * range was introduced by this diff: there is nothing older to follow.
  */
-export function mapRangeToParentIncludingMoves(
-  ops: readonly DiffOp[],
-  regions: readonly ChangeRegion[],
-  range: LineRange,
-): LineRange | null {
-  const mapped = mapRangeToParent(regions, range);
-  if (mapped) return mapped;
-
-  const moved = movedLinePairs(ops);
-  const mappedLines: number[] = [];
+export function followRange(ops: readonly DiffOp[], range: LineRange): LineRange | null {
+  const map = newerToOlderLineMap(ops);
+  let start = Infinity;
+  let end = -Infinity;
   for (let line = range.start; line <= range.end; line++) {
-    const oldLine = moved.get(line);
-    if (oldLine !== undefined) mappedLines.push(oldLine);
+    const old = map.get(line);
+    if (old === undefined) continue;
+    start = Math.min(start, old);
+    end = Math.max(end, old);
   }
-  if (mappedLines.length === 0) return null;
-  return { start: Math.min(...mappedLines), end: Math.max(...mappedLines) };
+  return start === Infinity ? null : { start, end };
 }
 
 /**
@@ -167,36 +174,6 @@ export function movedLinePairs(ops: readonly DiffOp[]): ReadonlyMap<number, numb
     }
   }
   return pairs;
-}
-
-function mapEdge(regions: readonly ChangeRegion[], line: number, edge: 'start' | 'end'): number {
-  let delta = 0;
-  for (const region of regions) {
-    if (region.newCount > 0) {
-      const last = region.newStart + region.newCount - 1;
-      if (line >= region.newStart && line <= last) {
-        // The edge sits on a block of new-side lines.
-        if (region.oldCount === 0) {
-          // Pure insertion — nothing older here. `start` maps to the gap and
-          // `end` one short of it, so a wholly-introduced range yields null.
-          return edge === 'start' ? region.oldStart : region.oldStart - 1;
-        }
-        // Follow the old line at the same offset within the replaced block
-        // (clamped to it). Each edge tracks its own position, so a traced
-        // range keeps its size across a rewrite — one line stays one line,
-        // N lines stay ~N — instead of ballooning to the block's full old
-        // extent, which for a near-whole-file rewrite selected everything.
-        const offset = Math.min(line - region.newStart, region.oldCount - 1);
-        return region.oldStart + offset;
-      }
-      if (last >= line) break; // first region beyond the edge — nothing else shifts it
-      delta += region.oldCount - region.newCount;
-    } else {
-      if (region.newStart > line) break;
-      delta += region.oldCount;
-    }
-  }
-  return line + delta;
 }
 
 interface LineRun {
@@ -249,26 +226,43 @@ function findRemovedRun(
 }
 
 /**
- * The changed core of a hunk in new-side coordinates: every added line
- * plus, for runs of pure removals, the surviving lines around the gap so
- * the deleted block itself stays inside the tracked range. Context lines
- * are not included. For a removal at the very end of the file the range
- * deliberately reaches one line past it — that is where the gap lies.
+ * One contiguous change run in a hunk, with the new-side trace range and — for
+ * a pure removal — the old-side span of the deleted lines.
  */
-export function hunkChangeRanges(hunk: DiffHunk): LineRange[] {
-  const ranges: LineRange[] = [];
+export interface ChangeRun {
+  /**
+   * New-side trace range: the added lines, or — for a pure removal — the
+   * surviving lines bracketing the gap. For a removal at the very end of the
+   * file it reaches one line past it, where the gap lies.
+   */
+  readonly newRange: LineRange;
+  /**
+   * Old-side span of the run's removed lines, set only when the run *only*
+   * removes. Lets a deletion be traced by the lines it removed rather than by
+   * their surviving neighbours.
+   */
+  readonly oldRange: LineRange | null;
+}
+
+/** Splits a hunk into its change runs (see {@link ChangeRun}), in file order. */
+export function hunkChangeRuns(hunk: DiffHunk): ChangeRun[] {
+  const runs: ChangeRun[] = [];
   let nextNew = hunk.newCount > 0 ? hunk.newStart : hunk.newStart + 1;
   let inRun = false;
   let runHasAdd = false;
   let runGap = 0;
   let min = Infinity;
   let max = -Infinity;
+  let oldMin = Infinity;
+  let oldMax = -Infinity;
 
   const closeRun = (): void => {
     if (!inRun) return;
-    ranges.push(
-      runHasAdd ? { start: min, end: max } : { start: Math.max(1, runGap - 1), end: runGap },
-    );
+    const newRange = runHasAdd
+      ? { start: min, end: max }
+      : { start: Math.max(1, runGap - 1), end: runGap };
+    const oldRange = !runHasAdd && oldMin !== Infinity ? { start: oldMin, end: oldMax } : null;
+    runs.push({ newRange, oldRange });
     inRun = false;
   };
 
@@ -284,16 +278,32 @@ export function hunkChangeRanges(hunk: DiffHunk): LineRange[] {
       runGap = nextNew;
       min = Infinity;
       max = -Infinity;
+      oldMin = Infinity;
+      oldMax = -Infinity;
     }
     if (op.kind === 'add') {
       runHasAdd = true;
       min = Math.min(min, op.newLine);
       max = Math.max(max, op.newLine);
       nextNew = op.newLine + 1;
+    } else {
+      oldMin = Math.min(oldMin, op.oldLine);
+      oldMax = Math.max(oldMax, op.oldLine);
     }
   }
   closeRun();
-  return ranges;
+  return runs;
+}
+
+/**
+ * The changed core of a hunk in new-side coordinates: every added line
+ * plus, for runs of pure removals, the surviving lines around the gap so
+ * the deleted block itself stays inside the tracked range. Context lines
+ * are not included. For a removal at the very end of the file the range
+ * deliberately reaches one line past it — that is where the gap lies.
+ */
+export function hunkChangeRanges(hunk: DiffHunk): LineRange[] {
+  return hunkChangeRuns(hunk).map((run) => run.newRange);
 }
 
 export function hunkChangedRange(hunk: DiffHunk): LineRange | null {
