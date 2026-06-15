@@ -1,0 +1,5 @@
+# SPA fallback for Netlify: client-side routes like /r/:owner/:repo only exist
+# in the Angular router, so a hard reload or shared deep link must still be
+# served the app shell (HTTP 200) instead of the host's 404 page. Real files
+# (JS, CSS, favicon, sw.js, …) are served directly and never hit this rule.
+/*    /index.html   200
