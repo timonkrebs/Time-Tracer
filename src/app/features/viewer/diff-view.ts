@@ -260,37 +260,43 @@ interface SplitRow {
             <span class="font-mono">{{ abbrev(s.commit.sha) }}</span>
           </span>
         </div>
-        <div #scroller class="slim-scrollbar min-h-0 flex-1 overflow-auto">
-          <div class="relative font-mono text-[13px] leading-6">
-            @for (row of splitRows(); track $index) {
-              @if (row.type === 'hunk') {
-                <div class="flex items-center bg-sky-500/10 text-sky-300/80">
-                  <span class="px-4 whitespace-pre">{{ row.header }}</span>
-                  @if (canStepBefore()) {
-                    <button
-                      type="button"
-                      class="ml-2 shrink-0 rounded border border-sky-300/30 px-1.5 text-[11px] leading-4 text-sky-200/90 transition hover:bg-sky-300/10"
-                      title="Annotate the version before this change, at this hunk"
-                      (click)="
-                        before.emit({
-                          oldStart: row.hunkOldStart || 1,
-                          newStart: row.hunkNewStart || 1,
-                        })
-                      "
-                    >
-                      ◂ Before
-                    </button>
-                  }
-                </div>
-              } @else {
-                <div
-                  class="flex"
-                  [class.trace-highlight-row]="
-                    row.type === 'line' && row.right && lineHighlighted(row.right.lineNo)
-                  "
-                >
+        <div class="flex min-h-0 flex-1">
+          <!--
+            Before (old) side. Its own scroller so long lines scroll sideways;
+            its scroll is mirrored to the after side by onPaneScroll. The
+            vertical scrollbar is hidden (only the right pane shows one) to keep
+            the divider clean, while the horizontal scrollbar stays.
+          -->
+          <div
+            #leftPane
+            (scroll)="onPaneScroll('left')"
+            class="slim-scrollbar hide-vertical-scrollbar w-1/2 min-w-0 overflow-auto border-r border-zinc-800/80"
+          >
+            <div class="relative min-w-max font-mono text-[13px] leading-6">
+              @for (row of splitRows(); track $index) {
+                @if (row.type === 'hunk') {
+                  <div class="flex h-6 items-center bg-sky-500/10 text-sky-300/80">
+                    <span class="px-4 whitespace-pre">{{ row.header }}</span>
+                    @if (canStepBefore()) {
+                      <button
+                        type="button"
+                        class="ml-2 shrink-0 rounded border border-sky-300/30 px-1.5 text-[11px] leading-4 text-sky-200/90 transition hover:bg-sky-300/10"
+                        title="Annotate the version before this change, at this hunk"
+                        (click)="
+                          before.emit({
+                            oldStart: row.hunkOldStart || 1,
+                            newStart: row.hunkNewStart || 1,
+                          })
+                        "
+                      >
+                        ◂ Before
+                      </button>
+                    }
+                  </div>
+                } @else {
                   <div
-                    class="flex w-1/2 min-w-0 border-r border-zinc-800/80"
+                    class="flex h-6"
+                    [class.trace-highlight-row]="row.right && lineHighlighted(row.right.lineNo)"
                     [class.bg-rose-500/10]="row.left?.changed"
                     [class.bg-zinc-900/30]="!row.left"
                   >
@@ -340,14 +346,30 @@ interface SplitRow {
                         }
                       </span>
                       <span
-                        class="min-w-0 flex-1 overflow-hidden pr-4 pl-3 whitespace-pre [tab-size:4]"
+                        class="pr-4 pl-3 whitespace-pre [tab-size:4]"
                         [class]="row.left.changed ? 'text-rose-200' : 'text-zinc-300'"
                         >{{ cell.text }}</span
                       >
                     }
                   </div>
+                }
+              }
+            </div>
+          </div>
+          <!-- After (new) side: the only pane that shows the vertical scrollbar. -->
+          <div
+            #rightPane
+            (scroll)="onPaneScroll('right')"
+            class="slim-scrollbar w-1/2 min-w-0 overflow-auto"
+          >
+            <div class="relative min-w-max font-mono text-[13px] leading-6">
+              @for (row of splitRows(); track $index) {
+                @if (row.type === 'hunk') {
+                  <div class="h-6 bg-sky-500/10"></div>
+                } @else {
                   <div
-                    class="flex w-1/2 min-w-0"
+                    class="flex h-6"
+                    [class.trace-highlight-row]="row.right && lineHighlighted(row.right.lineNo)"
                     [class.bg-emerald-500/10]="row.right?.changed"
                     [class.bg-zinc-900/30]="!row.right"
                   >
@@ -406,15 +428,15 @@ interface SplitRow {
                         }
                       </span>
                       <span
-                        class="min-w-0 flex-1 overflow-hidden pr-4 pl-3 whitespace-pre [tab-size:4]"
+                        class="pr-4 pl-3 whitespace-pre [tab-size:4]"
                         [class]="row.right.changed ? 'text-emerald-200' : 'text-zinc-300'"
                         >{{ cell.text }}</span
                       >
                     }
                   </div>
-                </div>
+                }
               }
-            }
+            </div>
           </div>
         </div>
       } @else {
@@ -539,7 +561,12 @@ export class DiffView {
   readonly comparisonClear = output<void>();
 
   private readonly scroller = viewChild<ElementRef<HTMLElement>>('scroller');
+  /** The two split-view panes; present only while the side-by-side view renders. */
+  private readonly leftPane = viewChild<ElementRef<HTMLElement>>('leftPane');
+  private readonly rightPane = viewChild<ElementRef<HTMLElement>>('rightPane');
   private lastScrollKey: string | null = null;
+  /** Guards the split panes' scroll mirroring against feedback loops. */
+  private syncingScroll = false;
 
   protected readonly skeletonWidths = [70, 45, 88, 60, 35, 78, 52];
 
@@ -783,17 +810,51 @@ export class DiffView {
   constructor() {
     afterRenderEffect(() => {
       const index = this.highlightRowIndex();
-      const el = this.scroller()?.nativeElement;
+      const els = this.scrollEls();
       const key = this.diffKey();
-      if (!el || !key) return;
+      if (els.length === 0 || !key) return;
       if (index !== null) {
-        el.scrollTop = Math.max(0, index * LINE_HEIGHT_PX - el.clientHeight / 3);
+        const top = Math.max(0, index * LINE_HEIGHT_PX - els[0].clientHeight / 3);
+        for (const el of els) el.scrollTop = top;
         this.lastScrollKey = key;
       } else if (this.lastScrollKey !== key) {
-        el.scrollTop = 0;
+        for (const el of els) {
+          el.scrollTop = 0;
+          el.scrollLeft = 0;
+        }
         this.lastScrollKey = key;
       }
     });
+  }
+
+  /** The scroll container(s) for the current view: one unified, two in split mode. */
+  private scrollEls(): HTMLElement[] {
+    if (this.splitMode()) {
+      return [this.leftPane()?.nativeElement, this.rightPane()?.nativeElement].filter(
+        (el): el is HTMLElement => !!el,
+      );
+    }
+    const el = this.scroller()?.nativeElement;
+    return el ? [el] : [];
+  }
+
+  /**
+   * Keeps the split view's two panes scrolled together: a scroll on either side
+   * mirrors both axes to the other, so the before/after lines stay aligned and
+   * a sideways scroll on one side moves the other in step. The guard skips the
+   * scroll event our own mirroring triggers, avoiding a feedback loop.
+   */
+  protected onPaneScroll(source: 'left' | 'right'): void {
+    if (this.syncingScroll) return;
+    const left = this.leftPane()?.nativeElement;
+    const right = this.rightPane()?.nativeElement;
+    if (!left || !right) return;
+    const from = source === 'left' ? left : right;
+    const to = source === 'left' ? right : left;
+    this.syncingScroll = true;
+    to.scrollTop = from.scrollTop;
+    to.scrollLeft = from.scrollLeft;
+    requestAnimationFrame(() => (this.syncingScroll = false));
   }
 
   protected abbrev(sha: string): string {

@@ -43,6 +43,14 @@ body {
   background: transparent;
 }
 
+/* The side-by-side changes view keeps both panes scrolled in sync, so only the
+   right pane needs a vertical scrollbar — the left pane hides its own to keep
+   the divider clean while still scrolling (its horizontal scrollbar stays).
+   Firefox can't hide a single axis, so it shows a thin one there; harmless. */
+.hide-vertical-scrollbar::-webkit-scrollbar:vertical {
+  width: 0;
+}
+
 .blame-tooltip {
   position: relative;
 }
