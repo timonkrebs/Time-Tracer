@@ -1419,6 +1419,31 @@ describe('RepoStore', () => {
 
       expect(store.folderOwnership()).toBeNull();
     });
+
+    it('folds the folder chart from cached blame, with no scan and no requests', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c1')]);
+
+      // Nothing blamed yet: the chart cannot be shown for free.
+      expect(store.folderOwnershipFromCache('')).toBeNull();
+
+      // Blaming one of the two root files is not enough on its own.
+      await store.loadBlame('src/deep/main.ts', null);
+      expect(store.folderOwnershipFromCache('')).toBeNull();
+
+      // Once every file the scan would cover is blamed, the summary is ready —
+      // built purely from cache, marked so the panel knows it wasn't scanned.
+      await store.loadBlame('README.md', null);
+      const cached = store.folderOwnershipFromCache('');
+      expect(cached?.status).toBe('ready');
+      expect(cached?.fromCache).toBe(true);
+      expect(cached?.filesScanned).toBe(2);
+      expect(cached?.summary.authors).toEqual([
+        expect.objectContaining({ name: 'Ada', lines: 2, share: 1 }),
+      ]);
+
+      // It read the blame cache only — no extra commit/file scan was kicked off.
+      expect(store.folderOwnership()).toBeNull();
+    });
   });
 
   describe('co-change (computeCoChange)', () => {

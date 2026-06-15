@@ -15,6 +15,7 @@ import { LocalRepos } from '../../core/git/local/local-repos';
 import {
   CO_CHANGE_COMMIT_CAP,
   FOLDER_OWNERSHIP_CAP,
+  FolderOwnershipState,
   HunkOriginCandidate,
   LineTraceHit,
   RenameCandidate,
@@ -549,7 +550,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
                   [fileSummary]="store.selectedOwnership()"
                   [blameUnavailable]="fileBlameUnavailable()"
                   [folderPath]="selectedFolder()"
-                  [folder]="store.folderOwnership()"
+                  [folder]="folderOwnershipView()"
                   [folderCap]="folderCap"
                   [folderFileCount]="folderFileCount()"
                   (closed)="toggleOwners()"
@@ -671,6 +672,20 @@ export class ViewerPage {
     const path = this.store.selectedPath() ?? '';
     const slash = path.lastIndexOf('/');
     return slash >= 0 ? path.slice(0, slash) : '';
+  });
+
+  /**
+   * The folder ownership the panel shows: an explicit scan result for the
+   * selected folder when one is running or ready, otherwise whatever can be
+   * folded from cached blame for free. So the "Folder · …" chart replaces the
+   * "Scan this folder" prompt whenever the data is already there — networked
+   * repositories included, without spending a single request.
+   */
+  protected readonly folderOwnershipView = computed<FolderOwnershipState | null>(() => {
+    const folder = this.selectedFolder();
+    const scan = this.store.folderOwnership();
+    if (scan && scan.path === folder) return scan;
+    return this.store.folderOwnershipFromCache(folder);
   });
 
   /** Reason the file's authorship can't be shown (binary/too-large/error), or null. */

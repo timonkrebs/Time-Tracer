@@ -1391,6 +1391,15 @@ describe('ViewerPage · local folder ownership', () => {
     return harness.routeNativeElement?.textContent ?? '';
   }
 
+  function clickButton(includes: string): void {
+    const buttons = Array.from(
+      harness.routeNativeElement!.querySelectorAll<HTMLButtonElement>('button'),
+    );
+    const button = buttons.find((b) => (b.textContent ?? '').includes(includes));
+    if (!button) throw new Error(`No button containing "${includes}" found`);
+    button.click();
+  }
+
   beforeEach(async () => {
     localStorage.clear();
     // The Owners panel is remembered open, so opening a file lands straight on
@@ -1446,5 +1455,26 @@ describe('ViewerPage · local folder ownership', () => {
     });
     // The opt-in prompt is gone because the chart is already shown.
     expect(await textOnScreen()).not.toContain('Scan this folder');
+  });
+
+  it('keeps the chart from cache after Clear, without bringing back the prompt', async () => {
+    await harness.navigateByUrl('/local/demo?path=readme.md');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('1 file scanned');
+    });
+
+    // Clearing the scan must not reveal the opt-in button again: the blame is
+    // cached, so the chart stays — now folded straight from cache.
+    clickButton('Clear');
+    const text = await textOnScreen();
+    expect(text).toContain('1 file scanned');
+    expect(text).toContain('Ada');
+    expect(text).not.toContain('Scan this folder');
+    // The cache-folded chart has nothing to clear, so the action is gone too.
+    expect(
+      Array.from(harness.routeNativeElement!.querySelectorAll('button')).some((b) =>
+        (b.textContent ?? '').includes('Clear'),
+      ),
+    ).toBe(false);
   });
 });

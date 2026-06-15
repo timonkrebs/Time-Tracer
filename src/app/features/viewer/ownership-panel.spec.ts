@@ -92,6 +92,48 @@ describe('OwnershipPanel', () => {
     expect(cleared).toBe(1);
   });
 
+  it('shows a cache-folded folder chart with no clear action', async () => {
+    const folder: FolderOwnershipState = {
+      status: 'ready',
+      path: 'src/app',
+      summary: FILE_SUMMARY,
+      filesTotal: 2,
+      filesScanned: 2,
+      matchedTotal: 2,
+      capped: false,
+      files: ['src/app/a.ts', 'src/app/b.ts'],
+      fromCache: true,
+    };
+    fixture.componentRef.setInput('folder', folder);
+    await fixture.whenStable();
+
+    // The chart is shown straight away — neither the opt-in prompt nor a Clear
+    // (there is nothing to clear: it is data already on hand).
+    expect(text()).toContain('2 files scanned');
+    expect(button('Scan this folder')).toBeFalsy();
+    expect(button('Clear')).toBeFalsy();
+  });
+
+  it('still offers an uncapped scan on a capped cache-folded chart', async () => {
+    const folder: FolderOwnershipState = {
+      status: 'ready',
+      path: 'src/app',
+      summary: FILE_SUMMARY,
+      filesTotal: 2,
+      filesScanned: 2,
+      matchedTotal: 5,
+      capped: true,
+      files: ['src/app/a.ts', 'src/app/b.ts'],
+      fromCache: true,
+    };
+    fixture.componentRef.setInput('folder', folder);
+    await fixture.whenStable();
+
+    expect(button('Clear')).toBeFalsy();
+    button('Scan all 5 files')!.click();
+    expect(scannedAll).toBe(1);
+  });
+
   it('tooltips the scanned files and offers an uncapped scan when capped', async () => {
     const folder: FolderOwnershipState = {
       status: 'ready',

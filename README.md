@@ -69,8 +69,10 @@ renames — see the feature list and roadmap below for what's done and what's ne
   this?") — for free from the blame already computed. An opt-in folder scan blames the files under
   the folder (subfolders included) — largest first and capped, with the scanned files listed on
   hover and a one-click option to load them all — and aggregates them, streaming as each is added.
-  For **local repositories** the whole history is on disk, so the scan costs no requests and the
-  "Folder · …" chart fills in automatically — no "Scan this folder" click needed.
+  Whenever the blame the chart needs is **already in cache** — the folder's files were browsed, or a
+  scan ran earlier — the "Folder · …" chart shows straight away with no "Scan this folder" click, for
+  hosted repositories too (it costs no requests, it is just data already on hand). For **local
+  repositories** the whole history is on disk, so the scan is free and runs automatically.
 - **Insights — a metrics view** (the chart toggle in the header), from one walk of recent
   commits — capped by default, or **"Load all commits"** to walk the whole history — in the spirit
   of Tornhill's _Your Code as a Crime Scene_. **Hotspots** and **Coupling** are always a tab-switch
