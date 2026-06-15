@@ -243,11 +243,18 @@ import { CopyButton } from './copy-button';
                           <span class="block truncate font-mono text-[11px] text-zinc-200">{{
                             candidate.path
                           }}</span>
-                          <span class="mt-0.5 flex items-center gap-1.5 text-[10px]">
-                            <span class="text-indigo-300"
+                          <span class="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px]">
+                            <span
+                              class="text-indigo-300"
+                              title="How much of the traced block matches at this line"
                               >{{ percent(candidate.score) }} match</span
                             >
                             <span class="text-zinc-500">line {{ candidate.line }}</span>
+                            <span
+                              class="text-zinc-400"
+                              title="How much of this whole file matches the traced file — higher means a likelier original source"
+                              >{{ percent(candidate.fileSimilarity) }} of file</span
+                            >
                             @if (candidate.deleted) {
                               <span class="rounded-full border border-zinc-700 px-1.5 text-zinc-500"
                                 >deleted</span

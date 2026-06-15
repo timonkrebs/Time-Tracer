@@ -1167,6 +1167,7 @@ describe('ViewerPage (integration)', () => {
       expect(text).toContain('NOTES.md');
       expect(text).toContain('100% match');
       expect(text).toContain('line 2');
+      expect(text).toContain('of file'); // whole-file similarity, for "where from"
       expect(text).toContain('deleted');
     });
 
@@ -1262,6 +1263,15 @@ describe('ViewerPage (integration)', () => {
       expect(text).toContain('export const thrust = 0;'); // predecessor, on the before side
       expect(text).toContain('export const thrust = 1;'); // the current file, after
     });
+
+    // The before side is a different file, so the per-hunk "Trace" and
+    // "◂ Before" steps — which walk the selected file's own timeline — are
+    // hidden while comparing.
+    const comparingButtons = Array.from(
+      harness.routeNativeElement!.querySelectorAll<HTMLButtonElement>('button'),
+    );
+    expect(comparingButtons.some((b) => b.textContent?.trim() === 'Trace')).toBe(false);
+    expect(comparingButtons.some((b) => (b.textContent ?? '').includes('◂ Before'))).toBe(false);
 
     // Clearing the comparison returns to the commit's own changes (added).
     harness

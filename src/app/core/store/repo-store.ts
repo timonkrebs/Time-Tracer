@@ -20,7 +20,7 @@ import {
   computeCoChange,
   relatedFiles,
 } from '../util/co-change';
-import { FileDiff, computeFileDiff, diffLines, splitLines } from '../util/diff';
+import { FileDiff, computeFileDiff, diffLines, lineSimilarity, splitLines } from '../util/diff';
 import { FileMetric, Hotspot, computeFileMetric, computeHotspots } from '../util/hotspots';
 import {
   LineRange,
@@ -169,6 +169,12 @@ export interface HunkOriginCandidate {
   readonly line: number;
   /** 0..1 — how much of the traced block matches there. */
   readonly score: number;
+  /**
+   * 0..1 — how much of this whole file matches the traced file (shared lines
+   * over the larger line count). Tells a coincidental block hit in an
+   * unrelated file from a file the traced one was actually split out of.
+   */
+  readonly fileSimilarity: number;
   /** True when the introducing commit deleted this file. */
   readonly deleted: boolean;
   /** The searched repo state: the introducing commit's first parent. */
@@ -1504,10 +1510,15 @@ export class RepoStore {
         paths = all.slice(0, ORIGIN_SNAPSHOT_CAP);
       }
 
+      const tracedText = blockState.file.text;
       const candidates: HunkOriginCandidate[] = [];
       let scanned = 0;
       const publish = (status: 'searching' | 'ready'): void => {
-        const top = [...candidates].sort((a, b) => b.score - a.score).slice(0, ORIGIN_RESULT_CAP);
+        // Block match first; among equally-good hits, the file most similar to
+        // the traced one is the likelier source, so it surfaces on top.
+        const top = [...candidates]
+          .sort((a, b) => b.score - a.score || b.fileSimilarity - a.fileSimilarity)
+          .slice(0, ORIGIN_RESULT_CAP);
         this._traceOrigins.set({
           status,
           scope,
@@ -1529,6 +1540,7 @@ export class RepoStore {
               path,
               line: match.line,
               score: match.score,
+              fileSimilarity: lineSimilarity(state.file.text, tracedText),
               deleted: deleted.has(path),
               parentSha,
             });

@@ -1068,9 +1068,49 @@ describe('RepoStore', () => {
 
       const state = store.traceOrigins();
       expect(state?.status).toBe('ready');
+      // src/old.ts is 4 lines, the traced file 3, sharing the 2 block lines →
+      // whole-file similarity 2/4 = 0.5, alongside the exact (1.0) block match.
       expect(state?.candidates).toEqual([
-        { path: 'src/old.ts', line: 2, score: 1, deleted: true, parentSha: 'c1' },
+        {
+          path: 'src/old.ts',
+          line: 2,
+          score: 1,
+          fileSimilarity: 0.5,
+          deleted: true,
+          parentSha: 'c1',
+        },
       ]);
+    });
+
+    it('ranks a more file-similar source above an equally-matched one', async () => {
+      await traceIntroducedBlock();
+      provider.commitFilesResult = () =>
+        Promise.resolve([
+          { path: 'README.md', status: 'modified' },
+          { path: 'src/near.ts', status: 'removed' },
+          { path: 'src/far.ts', status: 'removed' },
+        ]);
+      // Both hold the exact block (score 1), but near.ts is otherwise the
+      // traced file's twin while far.ts is padded with unrelated lines, so the
+      // whole-file similarity is what tells them apart and orders them.
+      provider.fileAtRefResult = (path, ref) => {
+        if (path === 'src/far.ts') {
+          return text(
+            path,
+            `blob-${ref}`,
+            'x1\nx2\nx3\nalpha block line\nbeta block line\nx4\nx5\n',
+          );
+        }
+        return text(path, `blob-${ref}`, 'A\nalpha block line\nbeta block line\n');
+      };
+
+      await store.searchTraceOrigins('commit');
+
+      const candidates = store.traceOrigins()?.candidates ?? [];
+      expect(candidates.map((c) => c.path)).toEqual(['src/near.ts', 'src/far.ts']);
+      expect(candidates.map((c) => c.score)).toEqual([1, 1]);
+      expect(candidates[0].fileSimilarity).toBe(1);
+      expect(candidates[1].fileSimilarity).toBeLessThan(1);
     });
 
     it('widens to the whole snapshot on demand', async () => {
