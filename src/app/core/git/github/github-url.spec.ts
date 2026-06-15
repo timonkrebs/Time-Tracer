@@ -58,6 +58,15 @@ describe('parseGithubUrl', () => {
     });
   });
 
+  it('does not throw on malformed percent-encoded path segments', () => {
+    expect(parseGithubUrl('https://github.com/a/b/blob/main/docs/%E0%A4%A.md')).toEqual({
+      owner: 'a',
+      repo: 'b',
+      ref: 'main',
+      path: 'docs/%E0%A4%A.md',
+    });
+  });
+
   describe('GitHub Enterprise host', () => {
     const host = 'https://github.example.com';
 
