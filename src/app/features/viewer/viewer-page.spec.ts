@@ -1167,6 +1167,7 @@ describe('ViewerPage (integration)', () => {
       expect(text).toContain('NOTES.md');
       expect(text).toContain('100% match');
       expect(text).toContain('line 2');
+      expect(text).toContain('of file'); // whole-file similarity, for "where from"
       expect(text).toContain('deleted');
     });
 
