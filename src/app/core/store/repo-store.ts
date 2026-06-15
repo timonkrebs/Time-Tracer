@@ -1150,6 +1150,26 @@ export class RepoStore {
     }
 
     publish('computing');
+
+    // Blaming each file first needs that file's history. Providers that read a
+    // full local database can precompute every path's history in one walk —
+    // far cheaper than the per-file history requests this loop would otherwise
+    // fire (one whole-history walk per file). Done under the 'computing' state
+    // so the panel shows progress meanwhile. Best-effort: networked providers
+    // don't implement it, and a failure just falls back to per-file loading.
+    const slug = this._slug();
+    if (slug) {
+      const provider = this.registry.byId(slug.provider);
+      if (provider.primeHistories) {
+        try {
+          await provider.primeHistories(slug, this.ref() ?? 'HEAD');
+        } catch {
+          // Ignore — blame will load each file's history the slower way.
+        }
+        if (!live()) return;
+      }
+    }
+
     for (const entry of files) {
       await this.loadBlame(entry.path, null);
       if (!live()) return;

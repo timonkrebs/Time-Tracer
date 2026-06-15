@@ -80,6 +80,16 @@ export interface GitProvider {
   getCommit(slug: RepoSlug, sha: string): Promise<CommitInfo>;
 
   /**
+   * Optional bulk optimisation: precompute every path's commit history in one
+   * pass, so a following burst of per-file {@link listCommits} calls is served
+   * from cache. Implemented by providers backed by a full local object database
+   * (the local folder reader), where asking per file would re-walk the whole
+   * history each time. Networked providers omit it — they page over an API and
+   * have nothing to precompute — so callers must treat it as best-effort.
+   */
+  primeHistories?(slug: RepoSlug, ref: string): Promise<void>;
+
+  /**
    * Files touched by a commit, including provider-side rename detection
    * (`previousPath`). Powers the rename-candidate search where a file's
    * history ends.
