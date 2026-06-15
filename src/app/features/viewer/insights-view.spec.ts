@@ -4,6 +4,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { CoChangeState } from '../../core/store/repo-store';
 import { computeCoChange } from '../../core/util/co-change';
 import { computeHotspots } from '../../core/util/hotspots';
+import { EMPTY_TEAM_GRAPH, computeTeamGraph } from '../../core/util/team-graph';
 import { InsightsView } from './insights-view';
 
 const COMMITS = [
@@ -25,6 +26,7 @@ const OVERVIEW: CoChangeState = {
   scanned: 3,
   result: computeCoChange(COMMITS),
   hotspots: HOTSPOTS,
+  teamGraph: EMPTY_TEAM_GRAPH,
 };
 // A hotspot whose file is absent from the current tree → size 0. squarify
 // drops non-positive weights, so without the clamp it would list but not tile.
@@ -41,6 +43,7 @@ const ZERO_SIZED: CoChangeState = {
     new Map(), // gone.ts isn't in the tree → size 0
     { now: Date.parse('2026-06-14T00:00:00Z') },
   ),
+  teamGraph: EMPTY_TEAM_GRAPH,
 };
 // A single file's full-history coupling — driven through the `focus` input.
 const FOCUSED: CoChangeState = {
@@ -50,6 +53,7 @@ const FOCUSED: CoChangeState = {
   target: 400,
   result: computeCoChange(COMMITS, { minSupport: 1 }),
   hotspots: [],
+  teamGraph: EMPTY_TEAM_GRAPH,
 };
 const COLLIDING: CoChangeState = {
   status: 'ready',
@@ -60,6 +64,7 @@ const COLLIDING: CoChangeState = {
     { sha: 'd2', files: ['src/a/index.ts', 'src/b/index.ts'] },
   ]),
   hotspots: [],
+  teamGraph: EMPTY_TEAM_GRAPH,
 };
 // A 4-file clique → forms a cluster (≥ 3 files) for the graph.
 const CLUSTERED: CoChangeState = {
@@ -71,6 +76,23 @@ const CLUSTERED: CoChangeState = {
     { sha: 'k2', files: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts'] },
   ]),
   hotspots: [],
+  teamGraph: EMPTY_TEAM_GRAPH,
+};
+// Ada & Bo share auth.ts/session.ts (a connected pair); Cy only ever touches
+// db.ts alone — a silo. Drives the Team tab.
+const TEAM: CoChangeState = {
+  status: 'ready',
+  scanned: 5,
+  target: 75,
+  result: computeCoChange([]),
+  hotspots: [],
+  teamGraph: computeTeamGraph([
+    { authorName: 'Ada', files: ['src/auth.ts', 'src/session.ts'] },
+    { authorName: 'Bo', files: ['src/auth.ts', 'src/session.ts'] },
+    { authorName: 'Ada', files: ['src/auth.ts'] },
+    { authorName: 'Cy', files: ['src/db.ts'] },
+    { authorName: 'Cy', files: ['src/db.ts'] },
+  ]),
 };
 
 describe('InsightsView', () => {
@@ -152,6 +174,7 @@ describe('InsightsView', () => {
       target: 50,
       result: computeCoChange([]),
       hotspots: [],
+      teamGraph: EMPTY_TEAM_GRAPH,
     });
     expect(text()).toContain('10/50');
 
@@ -161,6 +184,7 @@ describe('InsightsView', () => {
       target: 75,
       result: computeCoChange([]),
       hotspots: [],
+      teamGraph: EMPTY_TEAM_GRAPH,
       message: 'No commit history found.',
     });
     expect(text()).toContain('No commit history found.');
@@ -276,5 +300,53 @@ describe('InsightsView', () => {
     button('Hotspots')!.click();
     await fixture.whenStable();
     expect(text()).toContain('hot.ts');
+  });
+
+  it('maps the team as a social graph, ranks connectors and lists silos', async () => {
+    await setState(TEAM);
+    button('Team')!.click();
+    await fixture.whenStable();
+
+    // The graph is drawn as an SVG node-link diagram (a disc per developer).
+    expect(fixture.nativeElement.querySelectorAll('svg circle').length).toBe(3);
+    const t = text();
+    expect(t).toContain('3 developers');
+    expect(t).toContain('1 ties');
+    // Ada and Bo collaborate; Cy works alone.
+    expect(t).toContain('Most connected');
+    expect(t).toContain('Working in isolation');
+    expect(t).toContain('Cy');
+  });
+
+  it('selects a developer to reveal their collaborators, and clears again', async () => {
+    await setState(TEAM);
+    button('Team')!.click();
+    await fixture.whenStable();
+
+    const node = Array.from(fixture.nativeElement.querySelectorAll('g') as SVGGElement[]).find(
+      (g) => (g.querySelector('title')?.textContent ?? '').includes('Ada'),
+    );
+    node!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await fixture.whenStable();
+
+    // The collaborator panel lists Bo with the shared-file count…
+    expect(text()).toContain('Collaborators');
+    expect(text()).toContain('2 shared');
+    expect(text()).not.toContain('Most connected');
+
+    button('Clear')!.click();
+    await fixture.whenStable();
+    expect(text()).toContain('Most connected');
+    expect(text()).not.toContain('Collaborators');
+  });
+
+  it('prompts to analyze on the Team tab when only a file filter is active', async () => {
+    await setFocus(FOCUSED); // a focus but no repo-wide overview
+    button('Team')!.click();
+    await fixture.whenStable();
+
+    expect(text()).toContain('Analyze the history to map the team.');
+    button('Analyze recent history')!.click();
+    expect(analyzed).toBe(1);
   });
 });

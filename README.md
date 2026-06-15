@@ -75,8 +75,8 @@ renames — see the feature list and roadmap below for what's done and what's ne
   repositories** the whole history is on disk, so the scan is free and runs automatically.
 - **Insights — a metrics view** (the chart toggle in the header), from one walk of recent
   commits — capped by default, or **"Load all commits"** to walk the whole history — in the spirit
-  of Tornhill's _Your Code as a Crime Scene_. **Hotspots** and **Coupling** are always a tab-switch
-  apart:
+  of Tornhill's _Your Code as a Crime Scene_. **Hotspots**, **Coupling** and **Team** are always a
+  tab-switch apart:
   - **Hotspots** — files ranked by **recency-weighted churn** (`core/util/hotspots.ts`), shown as
     a **treemap** (rectangle = size/LOC, colour = heat) _and_ a ranked list; click a file to open
     it.
@@ -89,6 +89,14 @@ renames — see the feature list and roadmap below for what's done and what's ne
     see only the connections to and from it; **Clear filter** drops it again while the repo-wide
     overview stays put. The same data powers an **"Often changes with"** list on the open file in
     the History panel.
+  - **Team collaboration** — a **developer social graph** (`core/util/team-graph.ts`): the
+    people-shaped twin of change coupling. Two developers are tied when they **edit the same
+    files**, the tie's strength being their file-set Jaccard overlap, drawn as a node-link graph
+    (disc = commits, colour = the connected "team") over the same commit walk. **Click a developer**
+    to light up their collaborators and read them ranked by shared files; a **"Most connected"**
+    list surfaces the people who bridge the work and a **"Working in isolation"** list the silos —
+    developers whose files nobody else touches. Reveals cross-team collaboration and silos from git
+    alone, no review API required.
 
   Mega-commits are filtered out as churn noise; the walk streams as it goes.
 
@@ -291,6 +299,7 @@ npm run build      # production build into dist/
     long histories stay responsive, and add Gitea / Forgejo / Codeberg behind the `GitProvider`
     interface.
 22. **Repository Insights** — a metrics view over the history. ✅ **Change coupling**
-    (`core/util/co-change.ts`) and a **hotspot treemap + list** (`core/util/hotspots.ts`,
-    `core/util/treemap.ts`); next: a contributor leaderboard and a bus-factor/knowledge map (same
-    commit walk), and a hierarchically zoomable treemap.
+    (`core/util/co-change.ts`), a **hotspot treemap + list** (`core/util/hotspots.ts`,
+    `core/util/treemap.ts`) and a **team collaboration / social graph** (`core/util/team-graph.ts`)
+    — who works with whom, by shared file authorship — all from the same commit walk; next: a
+    contributor leaderboard and a bus-factor/knowledge map, and a hierarchically zoomable treemap.

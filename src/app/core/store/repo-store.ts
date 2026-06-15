@@ -22,6 +22,7 @@ import {
 } from '../util/co-change';
 import { FileDiff, computeFileDiff, diffLines, lineSimilarity, splitLines } from '../util/diff';
 import { FileMetric, Hotspot, computeFileMetric, computeHotspots } from '../util/hotspots';
+import { EMPTY_TEAM_GRAPH, TeamGraph, computeTeamGraph } from '../util/team-graph';
 import {
   LineRange,
   changeRegions,
@@ -244,6 +245,11 @@ export interface CoChangeState {
   readonly result: CoChangeResult;
   /** Files ranked by recency-weighted churn (repo-wide only; empty for a focus). */
   readonly hotspots: readonly Hotspot[];
+  /**
+   * Developer collaboration graph from the same walk — who works with whom, by
+   * shared file authorship (repo-wide only; the empty graph for a focus).
+   */
+  readonly teamGraph: TeamGraph;
   readonly message?: string;
 }
 
@@ -1334,8 +1340,10 @@ export class RepoStore {
         scanned: collected.length,
         target: options.cap,
         result: computeCoChange(collected, { minSupport: options.minSupport }),
-        // Hotspots are a repo-wide metric; a single file's walk doesn't have them.
+        // Hotspots and the team graph are repo-wide metrics; a single file's
+        // walk doesn't have them.
         hotspots: options.focus ? [] : computeHotspots(collected, sizes),
+        teamGraph: options.focus ? EMPTY_TEAM_GRAPH : computeTeamGraph(collected),
         message,
       });
 
@@ -1376,6 +1384,7 @@ export class RepoStore {
         target: options.cap,
         result: computeCoChange(collected, { minSupport: options.minSupport }),
         hotspots: options.focus ? [] : computeHotspots(collected, sizes),
+        teamGraph: options.focus ? EMPTY_TEAM_GRAPH : computeTeamGraph(collected),
         message: toRepoProviderError(error).message,
       });
     }

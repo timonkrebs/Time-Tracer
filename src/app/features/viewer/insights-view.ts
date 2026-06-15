@@ -13,6 +13,13 @@ import { CoChangeCluster, clusterCoChange, relatedFiles } from '../../core/util/
 import { Hotspot, heatLevel } from '../../core/util/hotspots';
 import { disambiguateLabels } from '../../core/util/path-label';
 import { relativeTime } from '../../core/util/relative-time';
+import {
+  Collaborator,
+  Developer,
+  EMPTY_TEAM_GRAPH,
+  TeamGraph,
+  collaboratorsOf,
+} from '../../core/util/team-graph';
 import { TreemapTile, squarify } from '../../core/util/treemap';
 
 const MAX_PAIRS = 60;
@@ -41,6 +48,31 @@ const CLUSTER_ROTATION = (20 * Math.PI) / 180;
 /** Cold → hot fills, indexed by heat level. */
 const HEAT_FILLS = ['#3f3f46', '#854d0e', '#b45309', '#ea580c', '#ef4444'];
 
+/** Most active developers drawn in the team graph (the rest stay in the data). */
+const MAX_DEVELOPERS = 40;
+/** Strongest collaboration ties drawn, to keep the graph from hairballing. */
+const MAX_TEAM_EDGES = 140;
+/** Collaborators listed for the selected developer. */
+const MAX_COLLABORATORS = 60;
+/** "Most connected" developers shown when nothing is selected. */
+const MAX_CONNECTORS = 8;
+/** Team-graph coordinate space (16:9, scaled to fill its box). */
+const TEAM_W = 1600;
+const TEAM_H = 900;
+/** Categorical node fills, indexed by connected component (the "teams"). */
+const TEAM_COLORS = [
+  '#818cf8',
+  '#34d399',
+  '#fbbf24',
+  '#f472b6',
+  '#60a5fa',
+  '#a78bfa',
+  '#fb923c',
+  '#22d3ee',
+];
+/** Fill for a developer who shares no files with anyone (a silo). */
+const SILO_FILL = '#52525b';
+
 interface GraphNode {
   readonly path: string;
   readonly label: string;
@@ -60,6 +92,39 @@ interface ClusterGraph {
   readonly edges: readonly GraphEdge[];
 }
 
+/** One developer placed in the team graph. */
+interface TeamNode {
+  readonly name: string;
+  /** Short display label (the full name is in the node's tooltip). */
+  readonly label: string;
+  readonly x: number;
+  readonly y: number;
+  /** Disc radius, scaled by commit count. */
+  readonly r: number;
+  /** Label anchor point and text alignment, fanned radially off the disc. */
+  readonly lx: number;
+  readonly ly: number;
+  readonly anchor: 'start' | 'middle' | 'end';
+  readonly fill: string;
+  readonly commits: number;
+  readonly files: number;
+  readonly collaborators: number;
+}
+interface TeamEdge {
+  readonly a: string;
+  readonly b: string;
+  readonly x1: number;
+  readonly y1: number;
+  readonly x2: number;
+  readonly y2: number;
+  readonly width: number;
+  readonly strength: number;
+}
+interface TeamLayout {
+  readonly nodes: readonly TeamNode[];
+  readonly edges: readonly TeamEdge[];
+}
+
 /**
  * Repository Insights — a metrics view over recent history, from one capped (or
  * full, on demand) commit walk.
@@ -67,6 +132,8 @@ interface ClusterGraph {
  * **Hotspots**: files ranked by recency-weighted churn, as a treemap + list.
  * **Coupling**: files that change together, as the top clusters (node-link
  * graphs) + the pair list, and filterable to one file's full-history coupling.
+ * **Team**: a developer social graph — who works with whom, inferred from
+ * shared file authorship, surfacing collaborators, connectors and silos.
  */
 @Component({
   selector: 'app-insights-view',
@@ -174,6 +241,18 @@ interface ClusterGraph {
             (click)="tab.set('coupling')"
           >
             Coupling
+          </button>
+          <button
+            type="button"
+            class="border-b-2 pb-1 font-medium transition"
+            [class]="
+              tab() === 'team'
+                ? 'border-indigo-400 text-zinc-100'
+                : 'border-transparent text-zinc-500 hover:text-zinc-300'
+            "
+            (click)="tab.set('team')"
+          >
+            Team
           </button>
           <span class="flex-1"></span>
           @if (state(); as s) {
@@ -284,7 +363,7 @@ interface ClusterGraph {
               </button>
             </div>
           }
-        } @else {
+        } @else if (tab() === 'coupling') {
           <!-- Coupling tab -->
           @if (focus(); as f) {
             <div class="mb-3 flex items-center gap-2">
@@ -482,6 +561,213 @@ interface ClusterGraph {
               Pick a file in the tree to filter, or analyze the history.
             </p>
           }
+        } @else {
+          <!-- Team tab -->
+          @if (state(); as s) {
+            @if (s.status === 'error') {
+              <p class="text-sm text-rose-400">{{ s.message }}</p>
+            } @else if (s.message) {
+              <p class="text-sm text-zinc-500">{{ s.message }}</p>
+            } @else if (graph().developers.length) {
+              <p class="mb-2 text-xs text-zinc-500">
+                Who works with whom — developers are linked when they edit the same files. Click one
+                to trace their collaborators; isolated dots work in their own corner.
+              </p>
+              <div
+                class="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-zinc-600"
+              >
+                <span class="tabular-nums">{{ graph().developers.length }} developers</span>
+                <span>·</span>
+                <span class="tabular-nums">{{ graph().collaborations.length }} ties</span>
+                @if (graph().silos.length) {
+                  <span>·</span>
+                  <span class="tabular-nums">{{ graph().silos.length }} working solo</span>
+                }
+                @if (moreDevelopers() > 0) {
+                  <span class="text-zinc-700">· showing the {{ maxDevelopers }} most active</span>
+                }
+              </div>
+
+              <svg
+                class="aspect-[16/9] w-full rounded border border-zinc-800 bg-zinc-900/30"
+                [attr.viewBox]="'0 0 ' + teamW + ' ' + teamH"
+                preserveAspectRatio="xMidYMid meet"
+                role="img"
+              >
+                @for (edge of teamLayout().edges; track $index) {
+                  <line
+                    [attr.x1]="edge.x1"
+                    [attr.y1]="edge.y1"
+                    [attr.x2]="edge.x2"
+                    [attr.y2]="edge.y2"
+                    stroke="#6366f1"
+                    [attr.stroke-opacity]="edgeOpacity(edge)"
+                    [attr.stroke-width]="edge.width"
+                  />
+                }
+                @for (node of teamLayout().nodes; track node.name) {
+                  <g
+                    class="cursor-pointer"
+                    [attr.opacity]="nodeOpacity(node)"
+                    (click)="toggleDeveloper(node.name)"
+                  >
+                    <title>{{ nodeTitle(node) }}</title>
+                    <circle
+                      [attr.cx]="node.x"
+                      [attr.cy]="node.y"
+                      [attr.r]="node.r"
+                      [attr.fill]="node.fill"
+                      [attr.stroke]="selected() === node.name ? '#fafafa' : '#18181b'"
+                      [attr.stroke-width]="selected() === node.name ? 4 : 2"
+                    />
+                    <text
+                      [attr.x]="node.lx"
+                      [attr.y]="node.ly"
+                      [attr.text-anchor]="node.anchor"
+                      font-size="20"
+                      fill="#d4d4d8"
+                      class="pointer-events-none font-mono"
+                    >
+                      {{ node.label }}
+                    </text>
+                  </g>
+                }
+              </svg>
+
+              @if (selectedDeveloper(); as dev) {
+                <div class="mt-3 rounded border border-zinc-800 bg-zinc-900/40 p-3">
+                  <div class="flex items-center gap-2">
+                    <span
+                      class="size-2.5 shrink-0 rounded-full"
+                      [style.background]="fillFor(dev.name)"
+                    ></span>
+                    <span
+                      class="min-w-0 flex-1 truncate text-sm font-medium text-zinc-100"
+                      [title]="dev.name"
+                      >{{ dev.name }}</span
+                    >
+                    <span class="shrink-0 text-[11px] text-zinc-500 tabular-nums">
+                      {{ dev.commits }} commits · {{ dev.files }} files
+                    </span>
+                    <button
+                      type="button"
+                      class="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100"
+                      (click)="clearDeveloper()"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                  @if (selectedCollaborators().length) {
+                    <p
+                      class="mt-3 mb-1 text-[11px] font-medium tracking-wide text-zinc-500 uppercase"
+                    >
+                      Collaborators
+                    </p>
+                    <ul class="space-y-1">
+                      @for (mate of selectedCollaborators(); track mate.name) {
+                        <li
+                          class="flex items-center gap-2 rounded px-2 py-1 text-sm hover:bg-white/[0.03]"
+                        >
+                          <span
+                            class="size-2 shrink-0 rounded-full"
+                            [style.background]="fillFor(mate.name)"
+                          ></span>
+                          <button
+                            type="button"
+                            class="min-w-0 flex-1 truncate text-left text-xs text-zinc-200 underline-offset-2 hover:text-indigo-300 hover:underline"
+                            [title]="mate.name"
+                            (click)="toggleDeveloper(mate.name)"
+                          >
+                            {{ mate.name }}
+                          </button>
+                          <span class="shrink-0 text-[11px] text-zinc-500 tabular-nums">
+                            {{ mate.sharedFiles }} shared · {{ pct(mate.strength) }}%
+                          </span>
+                        </li>
+                      }
+                    </ul>
+                  } @else {
+                    <p class="mt-2 text-xs text-zinc-500">
+                      Works alone in the analysed window — no files shared with anyone else.
+                    </p>
+                  }
+                </div>
+              } @else {
+                @if (connectors().length) {
+                  <p
+                    class="mt-3 mb-1 text-[11px] font-medium tracking-wide text-zinc-500 uppercase"
+                  >
+                    Most connected
+                  </p>
+                  <ul class="space-y-0.5">
+                    @for (dev of connectors(); track dev.name) {
+                      <li>
+                        <button
+                          type="button"
+                          class="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm transition hover:bg-white/[0.03]"
+                          [title]="dev.name"
+                          (click)="toggleDeveloper(dev.name)"
+                        >
+                          <span
+                            class="size-2 shrink-0 rounded-full"
+                            [style.background]="fillFor(dev.name)"
+                          ></span>
+                          <span class="min-w-0 flex-1 truncate text-xs text-zinc-200">{{
+                            dev.name
+                          }}</span>
+                          <span class="shrink-0 text-[11px] text-zinc-500 tabular-nums">
+                            {{ dev.collaborators }}
+                            {{ dev.collaborators === 1 ? 'collaborator' : 'collaborators' }}
+                          </span>
+                        </button>
+                      </li>
+                    }
+                  </ul>
+                }
+                @if (graph().silos.length) {
+                  <p
+                    class="mt-3 mb-1 text-[11px] font-medium tracking-wide text-zinc-500 uppercase"
+                  >
+                    Working in isolation
+                  </p>
+                  <div class="flex flex-wrap gap-1.5">
+                    @for (name of graph().silos; track name) {
+                      <button
+                        type="button"
+                        class="max-w-[12rem] truncate rounded-full border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100"
+                        [title]="name"
+                        (click)="toggleDeveloper(name)"
+                      >
+                        {{ name }}
+                      </button>
+                    }
+                  </div>
+                }
+              }
+            } @else if (s.status === 'ready') {
+              <p class="text-sm text-zinc-500">No authored commits in the analysed history.</p>
+            } @else {
+              <p class="text-sm text-zinc-500">Mapping the team…</p>
+            }
+          } @else {
+            <p class="mb-3 text-sm text-zinc-500">Analyze the history to map the team.</p>
+            <div class="flex flex-wrap gap-2">
+              <button
+                type="button"
+                class="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-400"
+                (click)="analyze.emit()"
+              >
+                Analyze recent history
+              </button>
+              <button
+                type="button"
+                class="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100"
+                (click)="loadAll.emit()"
+              >
+                Load all commits
+              </button>
+            </div>
+          }
         }
       } @else {
         <div class="mx-auto max-w-md py-10 text-center">
@@ -535,11 +821,16 @@ export class InsightsView {
   protected readonly treemapH = TREEMAP_H;
   protected readonly clusterW = CLUSTER_W;
   protected readonly clusterH = CLUSTER_H;
-  protected readonly tab = signal<'hotspots' | 'coupling'>('hotspots');
+  protected readonly teamW = TEAM_W;
+  protected readonly teamH = TEAM_H;
+  protected readonly maxDevelopers = MAX_DEVELOPERS;
+  protected readonly tab = signal<'hotspots' | 'coupling' | 'team'>('hotspots');
   protected readonly floor = CLUSTER_SIZE_FLOOR;
   protected readonly ceil = CLUSTER_SIZE_CEIL;
   protected readonly minClusterSize = signal(DEFAULT_MIN_CLUSTER_FILES);
   protected readonly maxClusterSize = signal(DEFAULT_MAX_CLUSTER_FILES);
+  /** The developer the team graph is focused on, or null. */
+  private readonly selectedDev = signal<string | null>(null);
 
   /** The selected band as track percentages, for the slider's filled segment. */
   protected readonly rangePercent = computed(() => {
@@ -596,6 +887,59 @@ export class InsightsView {
     return disambiguateLabels(paths);
   });
 
+  /** The developer collaboration graph from the overview walk. */
+  protected readonly graph = computed<TeamGraph>(() => this.state()?.teamGraph ?? EMPTY_TEAM_GRAPH);
+  /** Developers beyond the render cap (shown only as a count). */
+  protected readonly moreDevelopers = computed(() =>
+    Math.max(0, this.graph().developers.length - MAX_DEVELOPERS),
+  );
+
+  /**
+   * The selected developer, re-validated against the current graph so a stale
+   * selection (after a re-analyze that dropped them) clears itself.
+   */
+  protected readonly selectedDeveloper = computed<Developer | null>(() => {
+    const name = this.selectedDev();
+    return name ? (this.graph().developers.find((d) => d.name === name) ?? null) : null;
+  });
+  protected readonly selected = computed(() => this.selectedDeveloper()?.name ?? null);
+
+  protected readonly selectedCollaborators = computed<Collaborator[]>(() => {
+    const name = this.selected();
+    return name ? collaboratorsOf(this.graph(), name, MAX_COLLABORATORS) : [];
+  });
+
+  /** Developers with the most collaborators — the people who bridge the work. */
+  protected readonly connectors = computed<Developer[]>(() =>
+    [...this.graph().developers]
+      .filter((d) => d.collaborators > 0)
+      .sort(
+        (a, b) =>
+          b.collaborators - a.collaborators ||
+          b.commits - a.commits ||
+          a.name.localeCompare(b.name),
+      )
+      .slice(0, MAX_CONNECTORS),
+  );
+
+  protected readonly teamLayout = computed<TeamLayout>(() => this.layoutTeam(this.graph()));
+
+  /** Fill per rendered developer, for the swatches in the lists. */
+  private readonly fillByName = computed<ReadonlyMap<string, string>>(() => {
+    const map = new Map<string, string>();
+    for (const node of this.teamLayout().nodes) map.set(node.name, node.fill);
+    return map;
+  });
+
+  /** The selected developer plus all their collaborators — the lit-up subgraph. */
+  private readonly highlighted = computed<ReadonlySet<string>>(() => {
+    const name = this.selected();
+    if (!name) return new Set();
+    const set = new Set<string>([name]);
+    for (const mate of collaboratorsOf(this.graph(), name)) set.add(mate.name);
+    return set;
+  });
+
   constructor() {
     // Applying a file filter is a coupling action — show that tab.
     effect(() => {
@@ -629,6 +973,115 @@ export class InsightsView {
     return { files: n, nodes, edges };
   }
 
+  /**
+   * Lays the developers out on a ring, ordered so members of the same connected
+   * component (the same "team") sit contiguously — keeping their ties short
+   * chords — with silos falling to the end. Disc size scales with commit count
+   * and colour marks the component; only the strongest ties are drawn.
+   */
+  private layoutTeam(graph: TeamGraph): TeamLayout {
+    const rendered = graph.developers.slice(0, MAX_DEVELOPERS);
+    if (rendered.length === 0) return { nodes: [], edges: [] };
+
+    const componentOf = new Map<string, number>();
+    graph.components.forEach((members, index) => {
+      for (const name of members) componentOf.set(name, index);
+    });
+
+    const order = [...rendered].sort(
+      (a, b) =>
+        (componentOf.get(a.name) ?? 0) - (componentOf.get(b.name) ?? 0) ||
+        b.collaborators - a.collaborators ||
+        b.commits - a.commits ||
+        a.name.localeCompare(b.name),
+    );
+
+    const cx = TEAM_W / 2;
+    const cy = TEAM_H / 2;
+    const ringRadius = Math.min(TEAM_W, TEAM_H) / 2 - 170;
+    const maxCommits = Math.max(...order.map((d) => d.commits), 1);
+    const n = order.length;
+    const pos = new Map<string, { x: number; y: number }>();
+
+    const nodes: TeamNode[] = order.map((dev, i) => {
+      const single = n === 1;
+      const angle = (2 * Math.PI * i) / n - Math.PI / 2;
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      const x = single ? cx : cx + ringRadius * cos;
+      const y = single ? cy : cy + ringRadius * sin;
+      pos.set(dev.name, { x, y });
+      const r = 14 + 30 * Math.sqrt(dev.commits / maxCommits);
+      const labelDist = r + 14;
+      const component = componentOf.get(dev.name) ?? 0;
+      return {
+        name: dev.name,
+        label: shortName(dev.name),
+        x,
+        y,
+        r,
+        lx: single ? cx : x + labelDist * cos,
+        ly: single ? cy + r + 22 : y + labelDist * sin + 6,
+        anchor: single ? 'middle' : cos > 0.2 ? 'start' : cos < -0.2 ? 'end' : 'middle',
+        fill: dev.collaborators === 0 ? SILO_FILL : TEAM_COLORS[component % TEAM_COLORS.length],
+        commits: dev.commits,
+        files: dev.files,
+        collaborators: dev.collaborators,
+      };
+    });
+
+    const edges: TeamEdge[] = [];
+    for (const edge of graph.collaborations) {
+      const a = pos.get(edge.a);
+      const b = pos.get(edge.b);
+      if (!a || !b) continue; // an endpoint sits beyond the render cap
+      edges.push({
+        a: edge.a,
+        b: edge.b,
+        x1: a.x,
+        y1: a.y,
+        x2: b.x,
+        y2: b.y,
+        width: 1 + 6 * edge.strength,
+        strength: edge.strength,
+      });
+      if (edges.length >= MAX_TEAM_EDGES) break;
+    }
+    return { nodes, edges };
+  }
+
+  /** Dim every node outside the selected developer's neighbourhood. */
+  protected nodeOpacity(node: TeamNode): number {
+    if (!this.selected()) return 1;
+    return this.highlighted().has(node.name) ? 1 : 0.2;
+  }
+
+  /** A selection lights up its own ties; otherwise opacity tracks strength. */
+  protected edgeOpacity(edge: TeamEdge): number {
+    const name = this.selected();
+    if (name) return edge.a === name || edge.b === name ? 0.85 : 0.06;
+    return 0.18 + 0.5 * edge.strength;
+  }
+
+  protected nodeTitle(node: TeamNode): string {
+    const mates =
+      node.collaborators === 1 ? '1 collaborator' : `${node.collaborators} collaborators`;
+    return `${node.name} — ${node.commits} commits, ${node.files} files, ${mates}`;
+  }
+
+  protected fillFor(name: string): string {
+    return this.fillByName().get(name) ?? SILO_FILL;
+  }
+
+  /** Selects a developer, or clears the selection when they are clicked again. */
+  protected toggleDeveloper(name: string): void {
+    this.selectedDev.update((current) => (current === name ? null : name));
+  }
+
+  protected clearDeveloper(): void {
+    this.selectedDev.set(null);
+  }
+
   /** The two handles can't cross: each clamps against the other. */
   protected onMinClusterSize(event: Event): void {
     const value = Number((event.target as HTMLInputElement).value);
@@ -659,4 +1112,16 @@ export class InsightsView {
   protected when(iso: string): string {
     return relativeTime(iso);
   }
+}
+
+/**
+ * A compact node label for a developer: the local part of an email or the
+ * first name, capped so it doesn't crowd the graph (the full name is in the
+ * node's tooltip and the lists).
+ */
+function shortName(name: string): string {
+  const at = name.indexOf('@');
+  const base = (at > 0 ? name.slice(0, at) : name).trim();
+  const first = base.split(/\s+/)[0] || base;
+  return first.length > 14 ? first.slice(0, 13) + '…' : first;
 }
