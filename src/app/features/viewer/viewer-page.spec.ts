@@ -2,9 +2,13 @@ import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter, withComponentInputBinding } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
+import git from 'isomorphic-git';
 
 import { GIT_PROVIDERS } from '../../core/git/git-provider';
 import { GithubProvider } from '../../core/git/github/github-provider';
+import { LocalGitProvider } from '../../core/git/local/local-provider';
+import { LocalRepos } from '../../core/git/local/local-repos';
+import { createMemFs } from '../../core/git/local/mem-fs';
 import { ViewerPage } from './viewer-page';
 
 const NEW_SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
@@ -812,6 +816,22 @@ describe('ViewerPage (integration)', () => {
     expect(localStorage.getItem('time-tracer.owners-open')).toBe('0');
   });
 
+  it('keeps the folder scan opt-in for a networked provider', async () => {
+    await harness.navigateByUrl('/r/acme/rocket?path=README.md');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('# Rocket');
+    });
+
+    clickButton('Owners');
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('Ownership');
+      // GitHub reads over a paged API, so the request-heavy folder chart stays
+      // behind the button rather than scanning automatically.
+      expect(text).toContain('Scan this folder');
+    });
+  });
+
   it('drives the panels and blame from the keyboard', async () => {
     await harness.navigateByUrl('/r/acme/rocket?path=README.md');
     await vi.waitFor(async () => {
@@ -1359,5 +1379,72 @@ describe('ViewerPage (integration)', () => {
       expect(text).toContain('export const thrust = 1;');
       expect(text).not.toContain('does not exist at');
     });
+  });
+});
+
+describe('ViewerPage · local folder ownership', () => {
+  let harness: RouterTestingHarness;
+
+  async function textOnScreen(): Promise<string> {
+    await harness.fixture.whenStable();
+    harness.detectChanges();
+    return harness.routeNativeElement?.textContent ?? '';
+  }
+
+  beforeEach(async () => {
+    localStorage.clear();
+    // The Owners panel is remembered open, so opening a file lands straight on
+    // the folder section the auto-scan fills in.
+    localStorage.setItem('time-tracer.owners-open', '1');
+
+    const fs = createMemFs();
+    await git.init({ fs, dir: '/', defaultBranch: 'main' });
+    await fs.promises.writeFile('/readme.md', 'hello world\n');
+    await git.add({ fs, dir: '/', filepath: 'readme.md' });
+    await git.commit({
+      fs,
+      dir: '/',
+      message: 'init',
+      author: {
+        name: 'Ada',
+        email: 'ada@example.com',
+        timestamp: 1_700_000_000,
+        timezoneOffset: 0,
+      },
+    });
+
+    TestBed.configureTestingModule({
+      providers: [
+        provideZonelessChangeDetection(),
+        provideRouter(
+          [
+            {
+              path: 'local/:repo',
+              component: ViewerPage,
+              data: { provider: 'local', owner: 'local' },
+            },
+          ],
+          withComponentInputBinding(),
+        ),
+        { provide: GIT_PROVIDERS, useExisting: LocalGitProvider, multi: true },
+      ],
+    });
+    TestBed.inject(LocalRepos).register('demo', fs);
+    harness = await RouterTestingHarness.create();
+  });
+
+  it('auto-displays the folder chart when the repo is read from local data', async () => {
+    await harness.navigateByUrl('/local/demo?path=readme.md');
+
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('Folder · repository root');
+      // The chart fills in with no "Scan this folder" click: the one file is
+      // scanned and attributed to its author.
+      expect(text).toContain('1 file scanned');
+      expect(text).toContain('Ada');
+    });
+    // The opt-in prompt is gone because the chart is already shown.
+    expect(await textOnScreen()).not.toContain('Scan this folder');
   });
 });

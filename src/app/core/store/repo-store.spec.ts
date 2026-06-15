@@ -171,6 +171,17 @@ describe('RepoStore', () => {
     expect(provider.treeRefs).toEqual(['v2']);
   });
 
+  it('reports local data availability from the provider capability', async () => {
+    // No repository loaded yet: there is nothing to read locally.
+    expect(store.hasLocalData()).toBe(false);
+
+    await store.loadRepo(slug);
+
+    // The fake provider implements primeHistories — the local-database marker
+    // that makes bulk passes (the folder ownership scan) free of network calls.
+    expect(store.hasLocalData()).toBe(true);
+  });
+
   it('does not reload an already-loaded target', async () => {
     await store.loadRepo(slug);
     await store.loadRepo({ ...slug, owner: 'ACME' });

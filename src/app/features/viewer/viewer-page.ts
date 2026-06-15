@@ -918,12 +918,24 @@ export class ViewerPage {
     });
 
     // A folder ownership result belongs to one folder; drop it (cancelling any
-    // scan) once the selection moves to a different folder.
+    // scan) once the selection moves to a different folder. For repositories
+    // read entirely from local data — where the scan hits no network, so the
+    // "request-heavy" reason to keep it opt-in falls away — eagerly compute it
+    // for the selected file's folder, so the "Folder · …" chart appears without
+    // a manual "Scan this folder".
     effect(() => {
       const folder = this.selectedFolder();
+      const autoScan =
+        this.store.hasLocalData() &&
+        this.ownersOpen() &&
+        this.store.phase() === 'ready' &&
+        this.store.selectedPath() !== null;
       untracked(() => {
         const result = this.store.folderOwnership();
         if (result && result.path !== folder) this.store.clearFolderOwnership();
+        if (autoScan && this.store.folderOwnership()?.path !== folder) {
+          void this.store.computeFolderOwnership(folder);
+        }
       });
     });
 

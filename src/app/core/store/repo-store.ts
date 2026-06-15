@@ -364,6 +364,19 @@ export class RepoStore {
   /** Ref shown in the viewer: the requested one, or the default branch. */
   readonly ref = computed(() => this._requestedRef() ?? this._metadata()?.defaultBranch ?? null);
 
+  /**
+   * True when the active provider reads the whole repository from a local
+   * object database (the folder / zip reader) rather than a paged remote API.
+   * Bulk passes like the folder-ownership scan then cost no network requests,
+   * so callers can run them eagerly instead of behind an opt-in. Detected via
+   * the optional {@link GitProvider.primeHistories} capability, which only such
+   * providers implement.
+   */
+  readonly hasLocalData = computed(() => {
+    const slug = this._slug();
+    return slug != null && this.registry.byId(slug.provider).primeHistories != null;
+  });
+
   readonly tree = computed(() => buildTree(this._entries()));
 
   readonly fileCount = computed(() => this._entries().filter((e) => e.kind === 'file').length);
