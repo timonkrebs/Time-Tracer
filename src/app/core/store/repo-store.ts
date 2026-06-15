@@ -813,6 +813,19 @@ export class RepoStore {
 
       const olderState = await this.ensureFile(path, older.sha);
       if (seq !== this.loadSeq) return;
+      if (olderState.status === 'error' && olderState.kind === 'not-found') {
+        // The file is absent at `older` — it was deleted there and re-added
+        // since (`older` is in the path's history because that deletion touched
+        // it). So `newer` (re)introduced everything still pending; attribute it
+        // and stop, exactly like reaching the file's creation, instead of
+        // failing the whole blame with a "does not exist" error.
+        for (let j = 0; j < owners.length; j++) {
+          if (owners[j] === null) owners[j] = { commit: newer, line: images[j] + 1 };
+        }
+        processed++;
+        publish('ready', false);
+        return;
+      }
       if (olderState.status !== 'ready') {
         fail(
           'error',
@@ -1458,6 +1471,15 @@ export class RepoStore {
 
       const olderFile = await this.ensureFile(path, older.sha);
       if (!live()) return;
+      if (olderFile.status === 'error' && olderFile.kind === 'not-found') {
+        // The file is absent at `older` (deleted there and re-added since), so
+        // `newer` (re)introduced the tracked lines — the trail ends with it,
+        // just as at the file's creation, rather than erroring out.
+        recordHit(newer, r);
+        scanned++;
+        finish({ sha: newer.sha, range: r });
+        return;
+      }
       if (olderFile.status !== 'ready') {
         publish({
           status: 'error',
