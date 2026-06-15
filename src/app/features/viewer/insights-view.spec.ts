@@ -303,11 +303,29 @@ describe('InsightsView', () => {
     expect(fixture.nativeElement.querySelector('svg line')).not.toBeNull();
     expect(fixture.nativeElement.querySelectorAll('svg circle').length).toBeGreaterThanOrEqual(3);
 
-    // Each edge is labelled with its co-change weight (support = 2 here).
+    // Each edge is labelled with the coupling strength (these always change
+    // together → 100%).
     const labels = Array.from(
       fixture.nativeElement.querySelectorAll('svg text') as SVGTextElement[],
     ).map((t) => t.textContent?.trim());
-    expect(labels).toContain('2');
+    expect(labels).toContain('100%');
+  });
+
+  it('shows a live folder-depth example that tracks the slider', async () => {
+    await setState(MODULES); // files under src/auth and src/ui
+    button('Coupling')!.click();
+    await fixture.whenStable();
+    button('Modules')!.click();
+    await fixture.whenStable();
+
+    // Depth 2 groups two levels deep, e.g. src/auth.
+    expect(text()).toContain('e.g.');
+    expect(text()).toContain('src/auth');
+    // Depth 1 groups one level deep, so the example collapses to just "src".
+    drag('Module depth', 1);
+    await fixture.whenStable();
+    expect(text()).toContain('e.g. src');
+    expect(text()).not.toContain('src/auth');
   });
 
   it('keeps both tabs available once anything is analysed', async () => {

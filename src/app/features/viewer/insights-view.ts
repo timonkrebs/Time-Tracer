@@ -60,9 +60,10 @@ interface GraphEdge {
   /** Edge midpoint — where the weight label sits. */
   readonly mx: number;
   readonly my: number;
-  /** Stroke width (scaled from the coupling degree). */
+  /** Stroke width and opacity, both scaled from the coupling degree. */
   readonly width: number;
-  /** Co-change count (the edge weight) and Jaccard degree (for the tooltip). */
+  readonly opacity: number;
+  /** Co-change count (raw) and Jaccard degree (the labelled coupling strength). */
   readonly support: number;
   readonly degree: number;
 }
@@ -137,14 +138,16 @@ interface ClusterGraph {
         <svg [attr.viewBox]="'0 0 ' + clusterW + ' ' + clusterH" class="w-full" role="img">
           @for (edge of graph.edges; track $index) {
             <g>
-              <title>{{ edge.support }} co-changes · {{ pct(edge.degree) }}%</title>
+              <title>
+                change together {{ pct(edge.degree) }}% of the time ({{ edge.support }} commits)
+              </title>
               <line
                 [attr.x1]="edge.x1"
                 [attr.y1]="edge.y1"
                 [attr.x2]="edge.x2"
                 [attr.y2]="edge.y2"
-                stroke="#6366f1"
-                stroke-opacity="0.35"
+                stroke="#818cf8"
+                [attr.stroke-opacity]="edge.opacity"
                 [attr.stroke-width]="edge.width"
               />
               <text
@@ -159,7 +162,7 @@ interface ClusterGraph {
                 paint-order="stroke"
                 class="pointer-events-none font-mono tabular-nums"
               >
-                {{ edge.support }}
+                {{ pct(edge.degree) }}%
               </text>
             </g>
           }
@@ -450,8 +453,11 @@ interface ClusterGraph {
                 </span>
                 <span class="flex-1"></span>
                 @if (granularity() === 'modules') {
-                  <label class="flex items-center gap-1.5">
-                    <span class="text-zinc-600">depth</span>
+                  <label
+                    class="flex items-center gap-1.5"
+                    title="How many folder levels deep to group files into modules"
+                  >
+                    <span class="text-zinc-600">folder depth</span>
                     <input
                       type="range"
                       min="1"
@@ -462,7 +468,13 @@ interface ClusterGraph {
                       class="h-1 w-20 cursor-pointer accent-indigo-400"
                       aria-label="Module depth"
                     />
-                    <span class="w-3 tabular-nums text-zinc-400">{{ moduleDepth() }}</span>
+                    <span class="tabular-nums text-zinc-400">{{ moduleDepth() }}</span>
+                    @if (moduleExample()) {
+                      <span class="text-zinc-600">·</span>
+                      <span class="max-w-40 truncate font-mono text-zinc-400"
+                        >e.g. {{ moduleExample() }}</span
+                      >
+                    }
                   </label>
                 } @else {
                   <span class="text-zinc-600">files</span>
@@ -506,8 +518,10 @@ interface ClusterGraph {
               </div>
               @if (granularity() === 'modules') {
                 <p class="mb-2 text-xs text-zinc-500">
-                  Modules that change together — cross-boundary coupling is the architectural-decay
-                  smell; within-module churn is expected.
+                  Folders that change together — each edge is how often they change in the same
+                  commit. Cross-boundary coupling is the architectural-decay smell; within-folder
+                  churn collapses away. Use <span class="text-zinc-400">folder depth</span> to set
+                  how finely folders are grouped.
                 </p>
                 @if (moduleClusterGraphs().length) {
                   <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -559,7 +573,8 @@ interface ClusterGraph {
                 }
               } @else {
                 <p class="mb-2 text-xs text-zinc-500">
-                  Most-coupled clusters — click a file to filter by it.
+                  Most-coupled clusters — each edge is how often the two files change in the same
+                  commit. Click a file to filter by it.
                 </p>
                 @if (clusters().length) {
                   <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -714,6 +729,18 @@ export class InsightsView {
   protected readonly moduleMore = computed(() =>
     Math.max(0, this.moduleResult().pairs.length - MAX_PAIRS),
   );
+  /** The busiest module at the current depth — a live "what depth does" example. */
+  protected readonly moduleExample = computed(() => {
+    let best: string | null = null;
+    let bestCount = -1;
+    for (const [module, count] of this.moduleResult().changes) {
+      if (count > bestCount) {
+        bestCount = count;
+        best = module;
+      }
+    }
+    return best === null ? '' : this.moduleLabel(best);
+  });
   protected readonly focusRelated = computed(() => {
     const f = this.focus();
     return f?.focus ? relatedFiles(f.result, f.focus, MAX_RELATED) : [];
@@ -805,7 +832,10 @@ export class InsightsView {
         y2: b.y,
         mx: (a.x + b.x) / 2,
         my: (a.y + b.y) / 2,
-        width: 1 + edge.degree * 4,
+        // Both width and opacity track the coupling strength, so a strong edge
+        // reads as strong even before you read its label.
+        width: 1.5 + edge.degree * 5,
+        opacity: 0.25 + edge.degree * 0.55,
         support: edge.support,
         degree: edge.degree,
       };
