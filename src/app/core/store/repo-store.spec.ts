@@ -116,6 +116,11 @@ class FakeProvider implements GitProvider {
   getCommitFiles(_slug: RepoSlug, sha: string): Promise<CommitFileChange[]> {
     return this.commitFilesResult(sha);
   }
+  primeHistoriesCalls: string[] = [];
+  primeHistories(_slug: RepoSlug, ref: string): Promise<void> {
+    this.primeHistoriesCalls.push(ref);
+    return Promise.resolve();
+  }
   webLinks(): RepoWebLinks {
     return { repoUrl: 'https://github.com/acme/rocket' };
   }
@@ -1378,6 +1383,16 @@ describe('RepoStore', () => {
       expect(state?.status).toBe('ready');
       expect(state?.filesTotal).toBe(1); // only the nested src/deep/main.ts
       expect(state?.summary.attributedLines).toBe(1);
+    });
+
+    it('primes every path history once before blaming the files', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c1')]);
+
+      await store.computeFolderOwnership('');
+
+      // One bulk precompute for the active ref, instead of a per-file walk storm.
+      expect(provider.primeHistoriesCalls).toEqual(['main']);
+      expect(store.folderOwnership()?.status).toBe('ready');
     });
 
     it('cancels an in-flight scan when cleared', async () => {

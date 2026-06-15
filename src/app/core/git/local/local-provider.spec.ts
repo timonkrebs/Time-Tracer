@@ -123,6 +123,45 @@ describe('LocalGitProvider', () => {
     logSpy.mockRestore();
   });
 
+  it('primeHistories precomputes every path history in one pass (nested dirs)', async () => {
+    // Add a nested file across two commits to exercise subtree-diff recursion.
+    await fs.promises.writeFile('/src/lib/util.ts', 'export const a = 1;\n');
+    await git.add({ fs, dir: '/', filepath: 'src/lib/util.ts' });
+    const c4 = await git.commit({ fs, dir: '/', message: 'c4: add nested util', author });
+    await fs.promises.writeFile('/src/lib/util.ts', 'export const a = 2;\n');
+    await git.add({ fs, dir: '/', filepath: 'src/lib/util.ts' });
+    const c5 = await git.commit({ fs, dir: '/', message: 'c5: edit nested util', author });
+
+    await provider.primeHistories(slug, 'main');
+
+    // After priming, every path is served from cache — no per-file log walks.
+    const logSpy = vi.spyOn(git, 'log');
+    const nested = await provider.listCommits(slug, { ref: 'main', path: 'src/lib/util.ts' });
+    const hello = await provider.listCommits(slug, { ref: 'main', path: 'hello.txt' });
+    const greeting = await provider.listCommits(slug, { ref: 'main', path: 'greeting.txt' });
+    const missing = await provider.listCommits(slug, { ref: 'main', path: 'does/not/exist.ts' });
+
+    expect(nested.map((c) => c.sha)).toEqual([c5, c4]);
+    expect(hello.map((c) => c.sha)).toEqual([c3, c2, c1]);
+    expect(greeting.map((c) => c.sha)).toEqual([c3]);
+    expect(missing).toEqual([]);
+    expect(logSpy).not.toHaveBeenCalled();
+    logSpy.mockRestore();
+  });
+
+  it('primeHistories matches per-file git.log and is idempotent', async () => {
+    const direct = await provider.listCommits(slug, { ref: 'main', path: 'hello.txt' });
+
+    await provider.primeHistories(slug, 'main');
+    const firstPass = vi.spyOn(git, 'log');
+    await provider.primeHistories(slug, 'main'); // cached — must not walk again
+    expect(firstPass).not.toHaveBeenCalled();
+    firstPass.mockRestore();
+
+    const primed = await provider.listCommits(slug, { ref: 'main', path: 'hello.txt' });
+    expect(primed.map((c) => c.sha)).toEqual(direct.map((c) => c.sha));
+  });
+
   it('resolves single commits with parents and ISO dates', async () => {
     const commit = await provider.getCommit(slug, c2);
     expect(commit.parentShas).toEqual([c1]);
