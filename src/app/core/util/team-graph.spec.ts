@@ -96,6 +96,34 @@ describe('computeTeamGraph', () => {
     expect(graph.components).toEqual([]);
     expect(graph.silos).toEqual([]);
   });
+
+  it('keys developers by email — merging names and splitting a shared name', () => {
+    const graph = computeTeamGraph([
+      // One person, two display names, same email (different case) → one node.
+      { authorName: 'Tim', authorEmail: 'tim@x.io', files: ['a.ts'] },
+      { authorName: 'Timon', authorEmail: 'Tim@X.io', files: ['b.ts'] },
+      // Two different people sharing a display name but distinct emails → two nodes.
+      { authorName: 'Sam', authorEmail: 'sam1@x.io', files: ['a.ts'] },
+      { authorName: 'Sam', authorEmail: 'sam2@x.io', files: ['b.ts'] },
+    ]);
+
+    // Tim/Timon fold into a single identity, their files merged.
+    const tim = graph.developers.find((d) => d.id === 'tim@x.io');
+    expect(tim).toMatchObject({ commits: 2, files: 2 });
+    // The two Sams stay distinct identities despite the shared display name.
+    const sams = graph.developers.filter((d) => d.name === 'Sam').map((d) => d.id);
+    expect(sams.sort()).toEqual(['sam1@x.io', 'sam2@x.io']);
+  });
+
+  it('falls back to the name when an author has no email', () => {
+    const graph = computeTeamGraph([
+      { authorName: 'Ada', authorEmail: null, files: ['a.ts'] },
+      { authorName: 'Ada', files: ['b.ts'] },
+    ]);
+    expect(graph.developers).toEqual([
+      { id: 'Ada', name: 'Ada', commits: 2, files: 2, collaborators: 0 },
+    ]);
+  });
 });
 
 describe('collaboratorsOf', () => {
@@ -106,8 +134,8 @@ describe('collaboratorsOf', () => {
       { authorName: 'Cy', files: ['c'] }, // shares 1 with Ada
     ]);
     expect(collaboratorsOf(graph, 'Ada')).toEqual([
-      { name: 'Bo', sharedFiles: 2, strength: 2 / 3 },
-      { name: 'Cy', sharedFiles: 1, strength: 1 / 3 },
+      { id: 'Bo', name: 'Bo', sharedFiles: 2, strength: 2 / 3 },
+      { id: 'Cy', name: 'Cy', sharedFiles: 1, strength: 1 / 3 },
     ]);
   });
 

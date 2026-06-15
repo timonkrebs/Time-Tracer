@@ -94,6 +94,9 @@ interface ClusterGraph {
 
 /** One developer placed in the team graph. */
 interface TeamNode {
+  /** Stable identity — the selection/edge key. */
+  readonly id: string;
+  /** Display name (also the node's tooltip). */
   readonly name: string;
   /** Short display label (the full name is in the node's tooltip). */
   readonly label: string;
@@ -605,11 +608,11 @@ interface TeamLayout {
                     [attr.stroke-width]="edge.width"
                   />
                 }
-                @for (node of teamLayout().nodes; track node.name) {
+                @for (node of teamLayout().nodes; track node.id) {
                   <g
                     class="cursor-pointer"
                     [attr.opacity]="nodeOpacity(node)"
-                    (click)="toggleDeveloper(node.name)"
+                    (click)="toggleDeveloper(node.id)"
                   >
                     <title>{{ nodeTitle(node) }}</title>
                     <circle
@@ -617,8 +620,8 @@ interface TeamLayout {
                       [attr.cy]="node.y"
                       [attr.r]="node.r"
                       [attr.fill]="node.fill"
-                      [attr.stroke]="selected() === node.name ? '#fafafa' : '#18181b'"
-                      [attr.stroke-width]="selected() === node.name ? 4 : 2"
+                      [attr.stroke]="selected() === node.id ? '#fafafa' : '#18181b'"
+                      [attr.stroke-width]="selected() === node.id ? 4 : 2"
                     />
                     <text
                       [attr.x]="node.lx"
@@ -639,7 +642,7 @@ interface TeamLayout {
                   <div class="flex items-center gap-2">
                     <span
                       class="size-2.5 shrink-0 rounded-full"
-                      [style.background]="fillFor(dev.name)"
+                      [style.background]="fillFor(dev.id)"
                     ></span>
                     <span
                       class="min-w-0 flex-1 truncate text-sm font-medium text-zinc-100"
@@ -664,19 +667,19 @@ interface TeamLayout {
                       Collaborators
                     </p>
                     <ul class="space-y-1">
-                      @for (mate of selectedCollaborators(); track mate.name) {
+                      @for (mate of selectedCollaborators(); track mate.id) {
                         <li
                           class="flex items-center gap-2 rounded px-2 py-1 text-sm hover:bg-white/[0.03]"
                         >
                           <span
                             class="size-2 shrink-0 rounded-full"
-                            [style.background]="fillFor(mate.name)"
+                            [style.background]="fillFor(mate.id)"
                           ></span>
                           <button
                             type="button"
                             class="min-w-0 flex-1 truncate text-left text-xs text-zinc-200 underline-offset-2 hover:text-indigo-300 hover:underline"
                             [title]="mate.name"
-                            (click)="toggleDeveloper(mate.name)"
+                            (click)="toggleDeveloper(mate.id)"
                           >
                             {{ mate.name }}
                           </button>
@@ -700,17 +703,17 @@ interface TeamLayout {
                     Most connected
                   </p>
                   <ul class="space-y-0.5">
-                    @for (dev of connectors(); track dev.name) {
+                    @for (dev of connectors(); track dev.id) {
                       <li>
                         <button
                           type="button"
                           class="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm transition hover:bg-white/[0.03]"
                           [title]="dev.name"
-                          (click)="toggleDeveloper(dev.name)"
+                          (click)="toggleDeveloper(dev.id)"
                         >
                           <span
                             class="size-2 shrink-0 rounded-full"
-                            [style.background]="fillFor(dev.name)"
+                            [style.background]="fillFor(dev.id)"
                           ></span>
                           <span class="min-w-0 flex-1 truncate text-xs text-zinc-200">{{
                             dev.name
@@ -731,14 +734,14 @@ interface TeamLayout {
                     Working in isolation
                   </p>
                   <div class="flex flex-wrap gap-1.5">
-                    @for (name of graph().silos; track name) {
+                    @for (id of graph().silos; track id) {
                       <button
                         type="button"
                         class="max-w-[12rem] truncate rounded-full border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100"
-                        [title]="name"
-                        (click)="toggleDeveloper(name)"
+                        [title]="displayName(id)"
+                        (click)="toggleDeveloper(id)"
                       >
-                        {{ name }}
+                        {{ displayName(id) }}
                       </button>
                     }
                   </div>
@@ -899,14 +902,15 @@ export class InsightsView {
    * selection (after a re-analyze that dropped them) clears itself.
    */
   protected readonly selectedDeveloper = computed<Developer | null>(() => {
-    const name = this.selectedDev();
-    return name ? (this.graph().developers.find((d) => d.name === name) ?? null) : null;
+    const id = this.selectedDev();
+    return id ? (this.graph().developers.find((d) => d.id === id) ?? null) : null;
   });
-  protected readonly selected = computed(() => this.selectedDeveloper()?.name ?? null);
+  /** Identity of the selected developer, or null. */
+  protected readonly selected = computed(() => this.selectedDeveloper()?.id ?? null);
 
   protected readonly selectedCollaborators = computed<Collaborator[]>(() => {
-    const name = this.selected();
-    return name ? collaboratorsOf(this.graph(), name, MAX_COLLABORATORS) : [];
+    const id = this.selected();
+    return id ? collaboratorsOf(this.graph(), id, MAX_COLLABORATORS) : [];
   });
 
   /** Developers with the most collaborators — the people who bridge the work. */
@@ -922,21 +926,32 @@ export class InsightsView {
       .slice(0, MAX_CONNECTORS),
   );
 
-  protected readonly teamLayout = computed<TeamLayout>(() => this.layoutTeam(this.graph()));
+  /** Display name per developer identity — for the silo chips and lookups. */
+  private readonly nameById = computed<ReadonlyMap<string, string>>(
+    () => new Map(this.graph().developers.map((d) => [d.id, d.name])),
+  );
 
-  /** Fill per rendered developer, for the swatches in the lists. */
-  private readonly fillByName = computed<ReadonlyMap<string, string>>(() => {
+  // The layout is selection-aware: it always draws the selected developer and
+  // their collaborators (even past the caps), so clicking anyone — including a
+  // silo or a less-central developer outside the top slice — lights up a real
+  // neighbourhood instead of dimming the graph to nothing.
+  protected readonly teamLayout = computed<TeamLayout>(() =>
+    this.layoutTeam(this.graph(), this.selected()),
+  );
+
+  /** Fill per rendered developer identity, for the swatches in the lists. */
+  private readonly fillById = computed<ReadonlyMap<string, string>>(() => {
     const map = new Map<string, string>();
-    for (const node of this.teamLayout().nodes) map.set(node.name, node.fill);
+    for (const node of this.teamLayout().nodes) map.set(node.id, node.fill);
     return map;
   });
 
   /** The selected developer plus all their collaborators — the lit-up subgraph. */
   private readonly highlighted = computed<ReadonlySet<string>>(() => {
-    const name = this.selected();
-    if (!name) return new Set();
-    const set = new Set<string>([name]);
-    for (const mate of collaboratorsOf(this.graph(), name)) set.add(mate.name);
+    const id = this.selected();
+    if (!id) return new Set();
+    const set = new Set<string>([id]);
+    for (const mate of collaboratorsOf(this.graph(), id)) set.add(mate.id);
     return set;
   });
 
@@ -977,23 +992,37 @@ export class InsightsView {
    * Lays the developers out on a ring, ordered so members of the same connected
    * component (the same "team") sit contiguously — keeping their ties short
    * chords — with silos falling to the end. Disc size scales with commit count
-   * and colour marks the component; only the strongest ties are drawn.
+   * and colour marks the component.
+   *
+   * Selection-aware: the rendered set is the most-active slice plus, when a
+   * developer is selected, that developer and their collaborators — so drilling
+   * into anyone (a silo, or someone past the cap) shows a real neighbourhood
+   * rather than dimming the graph to nothing. The selected developer's own ties
+   * are drawn even past the global edge cap.
    */
-  private layoutTeam(graph: TeamGraph): TeamLayout {
-    const rendered = graph.developers.slice(0, MAX_DEVELOPERS);
-    if (rendered.length === 0) return { nodes: [], edges: [] };
+  private layoutTeam(graph: TeamGraph, selectedId: string | null): TeamLayout {
+    if (graph.developers.length === 0) return { nodes: [], edges: [] };
+
+    const renderedIds = new Set(graph.developers.slice(0, MAX_DEVELOPERS).map((d) => d.id));
+    if (selectedId) {
+      renderedIds.add(selectedId);
+      for (const mate of collaboratorsOf(graph, selectedId, MAX_DEVELOPERS))
+        renderedIds.add(mate.id);
+    }
+    const rendered = graph.developers.filter((d) => renderedIds.has(d.id));
 
     const componentOf = new Map<string, number>();
     graph.components.forEach((members, index) => {
-      for (const name of members) componentOf.set(name, index);
+      for (const id of members) componentOf.set(id, index);
     });
 
     const order = [...rendered].sort(
       (a, b) =>
-        (componentOf.get(a.name) ?? 0) - (componentOf.get(b.name) ?? 0) ||
+        (componentOf.get(a.id) ?? 0) - (componentOf.get(b.id) ?? 0) ||
         b.collaborators - a.collaborators ||
         b.commits - a.commits ||
-        a.name.localeCompare(b.name),
+        a.name.localeCompare(b.name) ||
+        a.id.localeCompare(b.id),
     );
 
     const cx = TEAM_W / 2;
@@ -1010,11 +1039,12 @@ export class InsightsView {
       const sin = Math.sin(angle);
       const x = single ? cx : cx + ringRadius * cos;
       const y = single ? cy : cy + ringRadius * sin;
-      pos.set(dev.name, { x, y });
+      pos.set(dev.id, { x, y });
       const r = 14 + 30 * Math.sqrt(dev.commits / maxCommits);
       const labelDist = r + 14;
-      const component = componentOf.get(dev.name) ?? 0;
+      const component = componentOf.get(dev.id) ?? 0;
       return {
+        id: dev.id,
         name: dev.name,
         label: shortName(dev.name),
         x,
@@ -1030,12 +1060,15 @@ export class InsightsView {
       };
     });
 
-    const edges: TeamEdge[] = [];
+    // Draw the selected developer's ties first so they survive the cap, then
+    // fill the rest with the strongest remaining edges between rendered nodes.
+    const incident: TeamEdge[] = [];
+    const rest: TeamEdge[] = [];
     for (const edge of graph.collaborations) {
       const a = pos.get(edge.a);
       const b = pos.get(edge.b);
-      if (!a || !b) continue; // an endpoint sits beyond the render cap
-      edges.push({
+      if (!a || !b) continue; // an endpoint sits beyond the rendered set
+      const line: TeamEdge = {
         a: edge.a,
         b: edge.b,
         x1: a.x,
@@ -1044,8 +1077,14 @@ export class InsightsView {
         y2: b.y,
         width: 1 + 6 * edge.strength,
         strength: edge.strength,
-      });
+      };
+      if (selectedId && (edge.a === selectedId || edge.b === selectedId)) incident.push(line);
+      else rest.push(line);
+    }
+    const edges = incident;
+    for (const line of rest) {
       if (edges.length >= MAX_TEAM_EDGES) break;
+      edges.push(line);
     }
     return { nodes, edges };
   }
@@ -1053,13 +1092,13 @@ export class InsightsView {
   /** Dim every node outside the selected developer's neighbourhood. */
   protected nodeOpacity(node: TeamNode): number {
     if (!this.selected()) return 1;
-    return this.highlighted().has(node.name) ? 1 : 0.2;
+    return this.highlighted().has(node.id) ? 1 : 0.2;
   }
 
   /** A selection lights up its own ties; otherwise opacity tracks strength. */
   protected edgeOpacity(edge: TeamEdge): number {
-    const name = this.selected();
-    if (name) return edge.a === name || edge.b === name ? 0.85 : 0.06;
+    const id = this.selected();
+    if (id) return edge.a === id || edge.b === id ? 0.85 : 0.06;
     return 0.18 + 0.5 * edge.strength;
   }
 
@@ -1069,13 +1108,18 @@ export class InsightsView {
     return `${node.name} — ${node.commits} commits, ${node.files} files, ${mates}`;
   }
 
-  protected fillFor(name: string): string {
-    return this.fillByName().get(name) ?? SILO_FILL;
+  protected fillFor(id: string): string {
+    return this.fillById().get(id) ?? SILO_FILL;
+  }
+
+  /** The display name for a developer identity — for the silo chips. */
+  protected displayName(id: string): string {
+    return this.nameById().get(id) ?? id;
   }
 
   /** Selects a developer, or clears the selection when they are clicked again. */
-  protected toggleDeveloper(name: string): void {
-    this.selectedDev.update((current) => (current === name ? null : name));
+  protected toggleDeveloper(id: string): void {
+    this.selectedDev.update((current) => (current === id ? null : id));
   }
 
   protected clearDeveloper(): void {

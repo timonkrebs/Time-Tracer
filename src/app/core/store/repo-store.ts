@@ -1331,8 +1331,13 @@ export class RepoStore {
       if (entry.kind === 'file') sizes.set(entry.path, entry.size ?? 0);
     }
 
-    // Each commit keeps its date/author (for churn scoring) and changed files.
-    const collected: (CommitFiles & { authoredAt: string; authorName: string })[] = [];
+    // Each commit keeps its date/author (for churn scoring and the team graph)
+    // and changed files.
+    const collected: (CommitFiles & {
+      authoredAt: string;
+      authorName: string;
+      authorEmail: string | null;
+    })[] = [];
     const publish = (status: CoChangeState['status'], message?: string): void =>
       sink.set({
         status,
@@ -1367,6 +1372,7 @@ export class RepoStore {
             sha: commit.sha,
             authoredAt: commit.authoredAt,
             authorName: commit.authorName,
+            authorEmail: commit.authorEmail,
             files,
           });
           if (collected.length % 5 === 0) publish('computing');

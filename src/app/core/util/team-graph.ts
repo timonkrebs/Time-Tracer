@@ -9,6 +9,12 @@
  * change-coupling analysis (`co-change.ts`): where co-change asks "what changes
  * together", this asks "who changes the same things".
  *
+ * Developers are keyed by a stable **identity** — the author's email when known,
+ * else their name — so two people who happen to share a display name stay
+ * distinct, and one person who commits under several names (but one email) stays
+ * a single node. The most frequent name seen for an identity is its display
+ * label.
+ *
  * Pure and deterministic, so it stays decoupled from the store and easy to
  * test; the store feeds it the very commits it already walked for co-change.
  */
@@ -16,11 +22,16 @@
 /** A commit reduced to its author and the files it changed. */
 export interface AuthoredCommit {
   readonly authorName: string;
+  /** Author email — the stable identity when present. */
+  readonly authorEmail?: string | null;
   readonly files: readonly string[];
 }
 
 /** One developer — a node in the social graph. */
 export interface Developer {
+  /** Stable identity: the author's (lower-cased) email when known, else name. */
+  readonly id: string;
+  /** Display name — the most frequent name seen for this identity. */
   readonly name: string;
   /** Commits authored across the analysed window. */
   readonly commits: number;
@@ -30,7 +41,10 @@ export interface Developer {
   readonly collaborators: number;
 }
 
-/** A collaboration tie between two developers who edit shared files — an edge. */
+/**
+ * A collaboration tie between two developers who edit shared files — an edge.
+ * `a`/`b` are developer identities (see {@link Developer.id}).
+ */
 export interface Collaboration {
   readonly a: string;
   readonly b: string;
@@ -46,12 +60,13 @@ export interface TeamGraph {
   /** Collaboration ties, strongest first. */
   readonly collaborations: readonly Collaboration[];
   /**
-   * Connected groups of developers joined (directly or transitively) by shared
-   * files — the "teams" the work splits into. Largest first; a lone developer
-   * forms a group of one. More than one group means the work is siloed.
+   * Connected groups of developer identities joined (directly or transitively)
+   * by shared files — the "teams" the work splits into. Largest first; a lone
+   * developer forms a group of one. More than one group means the work is
+   * siloed.
    */
   readonly components: readonly (readonly string[])[];
-  /** Developers who share no files with anyone — working in isolation. */
+  /** Identities of developers who share no files with anyone — working in isolation. */
   readonly silos: readonly string[];
 }
 
@@ -79,13 +94,39 @@ interface PairAccum {
   shared: number;
 }
 
+/** The stable identity and a display name for a commit's author, or null. */
+function identityOf(commit: AuthoredCommit): { id: string; name: string } | null {
+  const email = commit.authorEmail?.trim().toLowerCase() ?? '';
+  const name = commit.authorName?.trim() ?? '';
+  const id = email || name;
+  if (!id) return null;
+  // Prefer the human name as the label; fall back to the email's local part.
+  const display = name || (email ? email.slice(0, email.indexOf('@')) || email : id);
+  return { id, name: display };
+}
+
+/** The most-voted name for an identity, ties broken alphabetically. */
+function pickName(votes: Map<string, number> | undefined): string {
+  let best = '';
+  let bestCount = -1;
+  if (votes) {
+    for (const [name, count] of votes) {
+      if (count > bestCount || (count === bestCount && name.localeCompare(best) < 0)) {
+        best = name;
+        bestCount = count;
+      }
+    }
+  }
+  return best;
+}
+
 /**
  * Builds the {@link TeamGraph} from a stream of authored commits: tallies each
- * author's commits and the set of files they touched, then ties two developers
- * by how many files they have both edited (Jaccard strength). Like the
- * co-change analysis, commits touching more than `maxCommitFiles` files
- * (sweeping refactors, merges, formatter runs) are dropped, so they don't
- * couple the whole team through one mechanical change.
+ * author's commits and the set of files they touched (keyed by identity), then
+ * ties two developers by how many files they have both edited (Jaccard
+ * strength). Like the co-change analysis, commits touching more than
+ * `maxCommitFiles` files (sweeping refactors, merges, formatter runs) are
+ * dropped, so they don't couple the whole team through one mechanical change.
  */
 export function computeTeamGraph(
   commits: Iterable<AuthoredCommit>,
@@ -97,25 +138,31 @@ export function computeTeamGraph(
   const commitCount = new Map<string, number>();
   const filesByAuthor = new Map<string, Set<string>>();
   const authorsByFile = new Map<string, Set<string>>();
+  /** Name → count per identity, to resolve a display name for split identities. */
+  const nameVotes = new Map<string, Map<string, number>>();
 
   for (const commit of commits) {
-    const author = commit.authorName?.trim();
+    const identity = identityOf(commit);
     const files = [...new Set(commit.files)];
-    if (!author || files.length === 0 || files.length > maxCommitFiles) continue;
-    commitCount.set(author, (commitCount.get(author) ?? 0) + 1);
-    let owned = filesByAuthor.get(author);
-    if (!owned) filesByAuthor.set(author, (owned = new Set()));
+    if (!identity || files.length === 0 || files.length > maxCommitFiles) continue;
+    const { id, name } = identity;
+    commitCount.set(id, (commitCount.get(id) ?? 0) + 1);
+    let votes = nameVotes.get(id);
+    if (!votes) nameVotes.set(id, (votes = new Map()));
+    votes.set(name, (votes.get(name) ?? 0) + 1);
+    let owned = filesByAuthor.get(id);
+    if (!owned) filesByAuthor.set(id, (owned = new Set()));
     for (const file of files) {
       owned.add(file);
       let authors = authorsByFile.get(file);
       if (!authors) authorsByFile.set(file, (authors = new Set()));
-      authors.add(author);
+      authors.add(id);
     }
   }
 
-  // Count shared files per unordered author pair, from each file's author set.
-  // Keyed by "a\nb" (a git author name never contains a newline); a/b are kept
-  // on the value so the key is never split.
+  // Count shared files per unordered identity pair, from each file's author set.
+  // Keyed by "a\nb" (an identity never contains a newline); a/b are kept on the
+  // value so the key is never split.
   const pairs = new Map<string, PairAccum>();
   for (const authors of authorsByFile.values()) {
     if (authors.size < 2) continue;
@@ -148,54 +195,68 @@ export function computeTeamGraph(
   );
 
   const developers: Developer[] = [...commitCount.entries()]
-    .map(([name, commits]) => ({
-      name,
+    .map(([id, commits]) => ({
+      id,
+      name: pickName(nameVotes.get(id)),
       commits,
-      files: filesByAuthor.get(name)?.size ?? 0,
-      collaborators: degree.get(name) ?? 0,
+      files: filesByAuthor.get(id)?.size ?? 0,
+      collaborators: degree.get(id) ?? 0,
     }))
-    .sort((a, b) => b.commits - a.commits || b.files - a.files || a.name.localeCompare(b.name));
+    .sort(
+      (a, b) =>
+        b.commits - a.commits ||
+        b.files - a.files ||
+        a.name.localeCompare(b.name) ||
+        a.id.localeCompare(b.id),
+    );
 
   const components = connectedComponents(
-    developers.map((d) => d.name),
+    developers.map((d) => d.id),
     collaborations,
   );
-  const silos = developers.filter((d) => (degree.get(d.name) ?? 0) === 0).map((d) => d.name);
+  const silos = developers.filter((d) => (degree.get(d.id) ?? 0) === 0).map((d) => d.id);
 
   return { developers, collaborations, components, silos };
 }
 
 /** One collaborator of a queried developer. */
 export interface Collaborator {
+  readonly id: string;
   readonly name: string;
   readonly sharedFiles: number;
   readonly strength: number;
 }
 
-/** A developer's collaborators, most shared files first. */
+/** A developer's collaborators (by identity), most shared files first. */
 export function collaboratorsOf(
   graph: TeamGraph,
-  name: string,
+  id: string,
   limit = Number.POSITIVE_INFINITY,
 ): Collaborator[] {
+  const nameById = new Map(graph.developers.map((d) => [d.id, d.name]));
   const result: Collaborator[] = [];
   for (const edge of graph.collaborations) {
-    const other = edge.a === name ? edge.b : edge.b === name ? edge.a : null;
+    const other = edge.a === id ? edge.b : edge.b === id ? edge.a : null;
     if (other === null) continue;
-    result.push({ name: other, sharedFiles: edge.sharedFiles, strength: edge.strength });
+    result.push({
+      id: other,
+      name: nameById.get(other) ?? other,
+      sharedFiles: edge.sharedFiles,
+      strength: edge.strength,
+    });
   }
   result.sort(
     (x, y) =>
-      y.sharedFiles - x.sharedFiles || y.strength - x.strength || x.name.localeCompare(y.name),
+      y.sharedFiles - x.sharedFiles ||
+      y.strength - x.strength ||
+      x.name.localeCompare(y.name) ||
+      x.id.localeCompare(y.id),
   );
   return Number.isFinite(limit) ? result.slice(0, limit) : result;
 }
 
 /** Connected components over the collaboration edges, via union-find. */
-function connectedComponents(
-  names: readonly string[],
-  edges: readonly Collaboration[],
-): string[][] {
+function connectedComponents(ids: readonly string[], edges: readonly Collaboration[]): string[][] {
   const parent = new Map<string, string>();
   const find = (x: string): string => {
     let root = x;
@@ -208,18 +269,18 @@ function connectedComponents(
     }
     return root;
   };
-  for (const name of names) parent.set(name, name);
+  for (const id of ids) parent.set(id, id);
   for (const edge of edges) {
     if (!parent.has(edge.a) || !parent.has(edge.b)) continue;
     parent.set(find(edge.a), find(edge.b));
   }
 
   const groups = new Map<string, string[]>();
-  for (const name of names) {
-    const root = find(name);
+  for (const id of ids) {
+    const root = find(id);
     let group = groups.get(root);
     if (!group) groups.set(root, (group = []));
-    group.push(name);
+    group.push(id);
   }
   return [...groups.values()]
     .map((group) => group.sort())
