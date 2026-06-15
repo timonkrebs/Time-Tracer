@@ -706,10 +706,46 @@ export class ViewerPage {
     return this.urlRange();
   });
 
-  protected readonly leftBlame = computed(() => {
+  /**
+   * Which version to blame for the diff's "before" (left) side. Prefer the
+   * previous entry in the file's own history — the most recent commit that
+   * actually touched it before the viewed one. The raw parent (`baseSha`) is
+   * almost never in that history (it usually never touched the file), so
+   * blaming it directly finds no anchor and the gutter stays empty; the
+   * previous touch shares the parent's content — nothing changed the file
+   * between them — and is in history, so its blame correctly annotates the
+   * old-side lines, deleted ones included.
+   *
+   * The shortcut only holds for a single-parent commit whose old side is this
+   * same path. For a merge, the previous history entry may sit on a different
+   * parent than `baseSha` (the first parent), so its content need not match
+   * the before side; a compare-against-predecessor diff has an unrelated old
+   * side. In both cases fall back to the raw `basePath`/`baseSha`: usually not
+   * in history (so blame stays unavailable) but exact when it is, and never
+   * misattributed.
+   */
+  protected readonly beforeBlameAnchor = computed<{ path: string; sha: string } | null>(() => {
     const diff = this.store.selectedDiff();
     if (diff?.status !== 'ready' || !diff.baseSha || !diff.basePath) return null;
-    return this.store.blameFor(diff.basePath, diff.baseSha);
+    const fallback = { path: diff.basePath, sha: diff.baseSha };
+    const at = this.store.viewAt();
+    if (
+      diff.commit.parentShas.length !== 1 ||
+      !at ||
+      diff.basePath !== this.store.selectedPath() ||
+      this.store.historyPath() !== diff.basePath
+    ) {
+      return fallback;
+    }
+    const history = this.store.history();
+    const idx = history.findIndex((c) => c.sha === at);
+    const previous = idx === -1 ? null : (history[idx + 1] ?? null);
+    return previous ? { path: diff.basePath, sha: previous.sha } : fallback;
+  });
+
+  protected readonly leftBlame = computed(() => {
+    const anchor = this.beforeBlameAnchor();
+    return anchor ? this.store.blameFor(anchor.path, anchor.sha) : null;
   });
 
   protected readonly rightBlame = computed(() => {
@@ -849,14 +885,15 @@ export class ViewerPage {
       // attributed to "older" (beyond the loaded pages) can finally be traced
       // to the commit that introduced them, so re-run blame.
       void this.store.history();
-      const basePath = diff && selectedDiff?.status === 'ready' ? selectedDiff.basePath : null;
-      const baseSha = diff && selectedDiff?.status === 'ready' ? selectedDiff.baseSha : null;
       const headPath = diff && selectedDiff?.status === 'ready' ? selectedDiff.headPath : path;
+      // The split changes view also annotates the version before, anchored on
+      // the previous commit that touched the file (the parent itself is rarely
+      // in the file's history).
+      const before = diff ? this.beforeBlameAnchor() : null;
       untracked(() => {
         if (phase !== 'ready' || !blame || !path) return;
         if (headPath) void this.store.loadBlame(headPath, at);
-        // The split changes view also annotates the version before.
-        if (diff && basePath && baseSha) void this.store.loadBlame(basePath, baseSha);
+        if (before) void this.store.loadBlame(before.path, before.sha);
       });
     });
 

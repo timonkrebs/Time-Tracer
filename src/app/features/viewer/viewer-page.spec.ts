@@ -16,6 +16,12 @@ const ROOT_SHA = '3333333333333333333333333333333333333333';
 const MOVE_EDIT_SHA = '4444444444444444444444444444444444444444';
 const MOVE_SHA = '5555555555555555555555555555555555555555';
 const MOVE_ROOT_SHA = '6666666666666666666666666666666666666666';
+// src/gap.ts: rewritten by GAP_NEW, whose parent (GAP_GHOST) never touched the
+// file and so is absent from its history — the case where the before side must
+// still be annotated from the previous commit that did touch it (GAP_OLD).
+const GAP_NEW_SHA = '7777777777777777777777777777777777777777';
+const GAP_OLD_SHA = '8888888888888888888888888888888888888888';
+const GAP_GHOST_SHA = '9999999999999999999999999999999999999999';
 
 const NEW_COMMIT = {
   sha: NEW_SHA,
@@ -107,6 +113,27 @@ const MOVE_ROOT_COMMIT = {
   parents: [],
 };
 
+const GAP_NEW_COMMIT = {
+  sha: GAP_NEW_SHA,
+  html_url: `https://github.com/acme/rocket/commit/${GAP_NEW_SHA}`,
+  commit: {
+    message: 'refactor: rewrite gap',
+    author: { name: 'Ada', email: 'ada@example.com', date: '2026-09-09T00:00:00Z' },
+  },
+  // The parent is a commit that did not touch gap.ts, so it is absent below.
+  parents: [{ sha: GAP_GHOST_SHA }],
+};
+
+const GAP_OLD_COMMIT = {
+  sha: GAP_OLD_SHA,
+  html_url: `https://github.com/acme/rocket/commit/${GAP_OLD_SHA}`,
+  commit: {
+    message: 'feat: add gap',
+    author: { name: 'Grace', email: 'grace@example.com', date: '2026-02-02T00:00:00Z' },
+  },
+  parents: [],
+};
+
 // PAGED.md: a full page of history (30 commits) plus one older root commit, to
 // exercise pagination ("Load all") and blame re-attribution as older commits
 // arrive. Version at commit i has lines L0…L(30-i); each newer commit appends
@@ -194,6 +221,7 @@ describe('ViewerPage (integration)', () => {
         return ref === OLD_SHA ? [OLD_COMMIT] : [RENAME_COMMIT, OLD_COMMIT];
       if (path === 'src/multi.ts') return [RUN_COMMIT, MIDDLE_COMMIT, ROOT_COMMIT];
       if (path === 'src/move.ts') return [MOVE_EDIT_COMMIT, MOVE_COMMIT, MOVE_ROOT_COMMIT];
+      if (path === 'src/gap.ts') return [GAP_NEW_COMMIT, GAP_OLD_COMMIT];
       if (path === 'NOTES.md') return [OLD_COMMIT];
       if (path === 'PAGED.md') {
         const page = Number(url.searchParams.get('page') ?? '1');
@@ -290,6 +318,26 @@ describe('ViewerPage (integration)', () => {
         encoding: 'base64',
       };
     },
+    '/repos/acme/rocket/contents/src/gap.ts': (url: URL) => {
+      const ref = url.searchParams.get('ref');
+      // GAP_NEW rewrote the file; GAP_GHOST (its parent) kept GAP_OLD's content
+      // since nothing touched gap.ts in between.
+      const text =
+        ref === GAP_NEW_SHA
+          ? 'fresh1\nfresh2\n'
+          : ref === GAP_GHOST_SHA || ref === GAP_OLD_SHA
+            ? 'stale1\nstale2\n'
+            : null;
+      if (text === null) return undefined;
+      return {
+        type: 'file',
+        path: 'src/gap.ts',
+        sha: `blob-gap-${ref}`,
+        size: text.length,
+        content: btoa(text),
+        encoding: 'base64',
+      };
+    },
     // The README change also deleted NOTES.md — the traced lines' source.
     [`/repos/acme/rocket/commits/${NEW_SHA}`]: {
       ...NEW_COMMIT,
@@ -305,6 +353,11 @@ describe('ViewerPage (integration)', () => {
     [`/repos/acme/rocket/commits/${MOVE_EDIT_SHA}`]: MOVE_EDIT_COMMIT,
     [`/repos/acme/rocket/commits/${MOVE_SHA}`]: MOVE_COMMIT,
     [`/repos/acme/rocket/commits/${MOVE_ROOT_SHA}`]: MOVE_ROOT_COMMIT,
+    [`/repos/acme/rocket/commits/${GAP_NEW_SHA}`]: {
+      ...GAP_NEW_COMMIT,
+      files: [{ filename: 'src/gap.ts', status: 'modified' }],
+    },
+    [`/repos/acme/rocket/commits/${GAP_OLD_SHA}`]: GAP_OLD_COMMIT,
     '/repos/acme/rocket/contents/NOTES.md': (url: URL) => {
       if (url.searchParams.get('ref') !== OLD_SHA) return undefined;
       return {
@@ -855,6 +908,37 @@ describe('ViewerPage (integration)', () => {
       expect(router.url).toContain('blame=0');
       expect(await textOnScreen()).toContain('@@ -1,1 +1,3 @@');
     });
+  });
+
+  it('annotates the before side when the parent is absent from the file history', async () => {
+    // gap.ts was rewritten by GAP_NEW, whose parent (GAP_GHOST) never touched
+    // the file and so is not in its history. The before side must still be
+    // annotated — anchored on the previous commit that did touch it (GAP_OLD) —
+    // so its (deleted) old lines stay navigable.
+    await harness.navigateByUrl(`/r/acme/rocket?path=src/gap.ts&at=${GAP_NEW_SHA}&view=diff`);
+
+    await vi.waitFor(async () => {
+      expect(router.url).not.toContain('blame=0');
+      await textOnScreen();
+      const diff = harness.routeNativeElement!.querySelector('app-diff-view');
+      expect(diff).not.toBeNull();
+      const diffText = diff!.textContent ?? '';
+      expect(diffText).toContain('Before');
+      expect(diffText).toContain('After');
+      // The whole file was rewritten, so the old lines survive only on the
+      // before side. Grace's annotation appears there despite the parent commit
+      // being absent from gap.ts's history; the new lines are Ada's.
+      expect(diffText).toContain('02.02.2026 Grace');
+      expect(diffText).toContain('09.09.2026 Ada');
+    });
+
+    // The before-side annotation is a real, navigable blame button.
+    const before = Array.from(
+      harness
+        .routeNativeElement!.querySelector('app-diff-view')!
+        .querySelectorAll<HTMLButtonElement>('button'),
+    ).find((b) => (b.textContent ?? '').includes('02.02.2026 Grace'));
+    expect(before).toBeTruthy();
   });
 
   it('reopens the history panel from the changes view at a historic commit', async () => {

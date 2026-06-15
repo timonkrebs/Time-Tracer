@@ -31,6 +31,13 @@ const TREEMAP_H = 900;
 /** Per-cluster graph coordinate space. */
 const CLUSTER_W = 240;
 const CLUSTER_H = 220;
+/**
+ * Rotate the ring of nodes ~20° off the cardinal axes. Labels are centered
+ * above each node, so they collide most when nodes share a baseline (e.g. two
+ * level on a horizontal axis); the tilt staggers their heights while the text
+ * itself stays horizontal and readable.
+ */
+const CLUSTER_ROTATION = (20 * Math.PI) / 180;
 /** Cold → hot fills, indexed by heat level. */
 const HEAT_FILLS = ['#3f3f46', '#854d0e', '#b45309', '#ea580c', '#ef4444'];
 
@@ -603,7 +610,7 @@ export class InsightsView {
     const n = cluster.files.length;
     const pos = new Map<string, { x: number; y: number }>();
     cluster.files.forEach((path, i) => {
-      const angle = (2 * Math.PI * i) / n - Math.PI / 2;
+      const angle = (2 * Math.PI * i) / n - Math.PI / 2 + CLUSTER_ROTATION;
       pos.set(path, {
         x: n === 1 ? cx : cx + radius * Math.cos(angle),
         y: n === 1 ? cy : cy + radius * Math.sin(angle),
