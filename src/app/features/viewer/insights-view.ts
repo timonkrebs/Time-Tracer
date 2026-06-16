@@ -726,7 +726,7 @@ interface TeamLayout {
                             {{ mate.name }}
                           </button>
                           <span class="shrink-0 text-[11px] text-zinc-500 tabular-nums">
-                            {{ mate.sharedFiles }} shared · {{ tiePct(mate) }}% overlap
+                            {{ mate.sharedFiles }} shared · {{ tieLabel(mate) }} overlap
                           </span>
                         </li>
                       }
@@ -1189,11 +1189,16 @@ export class InsightsView {
     return this.nameById().get(id) ?? id;
   }
 
-  /** A collaborator's tie strength as a %, blended at the active slider weight. */
-  protected tiePct(mate: Collaborator): number {
-    return Math.round(
-      blendStrength(mate.strength, mate.temporalStrength, this.temporalWeight()) * 100,
-    );
+  /**
+   * A collaborator's tie strength as a label, blended at the active slider
+   * weight: `13%`, or `<1%` for a real-but-tiny tie (so a shared-file
+   * collaboration never reads as a flat `0%`), or `0%` only when truly nil.
+   */
+  protected tieLabel(mate: Collaborator): string {
+    const strength = blendStrength(mate.strength, mate.temporalStrength, this.temporalWeight());
+    const pct = Math.round(strength * 100);
+    if (pct > 0) return `${pct}%`;
+    return strength > 0 ? '<1%' : '0%';
   }
 
   /** Selects a developer, or clears the selection when they are clicked again. */
