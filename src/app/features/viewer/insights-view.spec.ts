@@ -636,6 +636,8 @@ describe('InsightsView', () => {
       expect(text()).toContain('Kaplan–Meier');
       expect(text()).toContain('Code half-life');
       expect(text()).toContain('surviving code by author');
+      // The fixture's history is < 10 years, so 10-year survival is not extrapolated.
+      expect(text()).toContain('unobserved');
       // Birth-year cohorts and authors of the live code show up in the legends.
       expect(text()).toContain('2020');
       expect(text()).toContain('Ada');

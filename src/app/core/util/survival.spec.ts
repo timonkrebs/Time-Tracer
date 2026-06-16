@@ -28,6 +28,7 @@ describe('kaplanMeier', () => {
     expect(curve.totalLines).toBe(5);
     expect(curve.deaths).toBe(3);
     expect(curve.censored).toBe(2);
+    expect(curve.maxObservedAgeDays).toBe(6); // the oldest line (a censored survivor) is 6 days old
 
     // S steps only at death ages; censored lines just leave the risk set.
     //   age 2: 1/5 die → 0.8 · age 3: 1/4 → 0.6 · age 5: 1/2 → 0.3

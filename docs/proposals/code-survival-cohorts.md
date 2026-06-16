@@ -104,7 +104,8 @@ const moved = movedLinePairs(ops); // an in-file block move: remove+add of the s
 const movedOld = new Set(moved.values());
 const newTags: Tag[] = [];
 for (const op of ops) {
-  if (op.kind === 'equal') newTags.push(oldTags[op.oldLine - 1]); // survives, keep tag
+  if (op.kind === 'equal')
+    newTags.push(oldTags[op.oldLine - 1]); // survives, keep tag
   else if (op.kind === 'remove') {
     if (movedOld.has(op.oldLine)) continue; // moved, not dead
     death(oldTags[op.oldLine - 1]); // a line dies (its tag is dropped — it is not in newTags)
@@ -228,17 +229,21 @@ Following the established `hotspots.ts` / `co-change.ts` / `CoChangeState` patte
 
 ## Implementation notes — review resolutions
 
-Points raised in review of the original sketch, and how the shipped walk handles each:
+Points raised in two rounds of automated review, and how the shipped walk handles each:
 
-| Concern                            | Resolution                                                                                                                    |
-| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Capped Tier-1 snapshot truncation  | Dropped the capped tier — **one full-history walk** drives every chart, so no pre-window line is mis-bucketed.                |
-| Merge/branch ordering              | Walk the **first-parent chain** (fallback to date order only when a provider omits parents); each step re-diffs real content. |
-| Removed line left in the live array| Tags are **rebuilt** from the diff ops, so a removed line is recorded dead **and** absent from the next snapshot.             |
-| In-place moves reset age           | Reuse `movedLinePairs` (as blame does): a moved block carries its tag — no death, no rebirth.                                 |
-| Deleted files                      | No fetch for a removal (and a not-found blob is treated as empty), so the all-removes diff kills every remaining tag.         |
-| Half-life when median not observed | `halfLifeDays` is **nullable**; the UI renders "not reached".                                                                 |
-| Censoring date                     | Survivors are censored at the **tip commit's time**, not wall-clock now.                                                      |
+| Concern                             | Resolution                                                                                                                        |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Capped Tier-1 snapshot truncation   | Dropped the capped tier — **one full-history walk** drives every chart, so no pre-window line is mis-bucketed.                    |
+| Merge/branch ordering               | Walk the **first-parent chain**; parents are **resolved on demand** (`resolveCommit`) when a provider omits them (Azure DevOps).  |
+| Removed line left in the live array | Tags are **rebuilt** from the diff ops, so a removed line is recorded dead **and** absent from the next snapshot.                 |
+| In-place moves reset age            | Reuse `movedLinePairs` (as blame does): a moved block carries its tag — no death, no rebirth.                                     |
+| Deleted files                       | No fetch for a removal (and a not-found blob is treated as empty), so the all-removes diff kills every remaining tag.             |
+| Half-life when median not observed  | `halfLifeDays` is **nullable**; the UI renders "not reached".                                                                     |
+| Censoring date                      | Survivors are censored at the **tip commit's time**, not wall-clock now.                                                          |
+| Blob fetch error ≠ deletion         | Only an expected `not-found` maps to empty; rate-limit/network errors **re-throw** so the walk fails loudly, not corruptly.       |
+| `getCommitFiles` failure swallowed  | No longer caught — a provider failure mid-walk **surfaces as an error** (with the partial report) instead of a stale "ready".     |
+| Copied files inherit age            | A `copied` change is **new births** at the copy commit; only a rename carries the source's tags (and removes the source).         |
+| 10-year survival extrapolated       | `maxObservedAgeDays` gates it — a history shorter than 10 yr shows **"unobserved"** rather than a flattering extrapolated number. |
 
 ## Open questions / future work
 

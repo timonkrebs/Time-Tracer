@@ -63,6 +63,12 @@ export interface SurvivalCurve {
   /** Lines still alive at the tip (right-censored). */
   readonly censored: number;
   /**
+   * The greatest age (days) any line was observed for — the oldest line's age.
+   * The curve has no support beyond this, so `S(t)` for larger `t` is
+   * extrapolation, not observation (a young repo can't speak to 10-year survival).
+   */
+  readonly maxObservedAgeDays: number;
+  /**
    * The **code half-life**: the smallest age (days) at which `S(t)` first falls
    * to ½ — the median line lifetime. Null when the curve never reaches ½ within
    * the observed history (a very stable, or very young, repository).
@@ -90,9 +96,11 @@ export function kaplanMeier(lifetimes: Iterable<LineLifetime>, now = Date.now())
   const observations: { age: number; death: boolean }[] = [];
   let deaths = 0;
   let censored = 0;
+  let maxObservedAgeDays = 0;
   for (const line of lifetimes) {
     const end = line.diedAt ?? now;
     const age = Math.max(0, (end - line.bornAt) / DAY_MS);
+    if (age > maxObservedAgeDays) maxObservedAgeDays = age;
     if (line.diedAt !== null) deaths++;
     else censored++;
     observations.push({ age, death: line.diedAt !== null });
@@ -100,7 +108,16 @@ export function kaplanMeier(lifetimes: Iterable<LineLifetime>, now = Date.now())
 
   const total = observations.length;
   const points: SurvivalPoint[] = [{ ageDays: 0, survival: 1, atRisk: total, deaths: 0 }];
-  if (total === 0) return { points, totalLines: 0, deaths: 0, censored: 0, halfLifeDays: null };
+  if (total === 0) {
+    return {
+      points,
+      totalLines: 0,
+      deaths: 0,
+      censored: 0,
+      maxObservedAgeDays: 0,
+      halfLifeDays: null,
+    };
+  }
 
   observations.sort((a, b) => a.age - b.age);
   let survival = 1;
@@ -124,7 +141,7 @@ export function kaplanMeier(lifetimes: Iterable<LineLifetime>, now = Date.now())
     atRisk -= died + left; // both deaths and censored leave the risk set
   }
 
-  return { points, totalLines: total, deaths, censored, halfLifeDays };
+  return { points, totalLines: total, deaths, censored, maxObservedAgeDays, halfLifeDays };
 }
 
 /** Survival `S(t)` read off the step function at an arbitrary age (days). */

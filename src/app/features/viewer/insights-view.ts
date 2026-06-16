@@ -1361,12 +1361,15 @@ interface Quadrant {
         } @else {
           <!-- Age tab: code survival & cohorts (Git of Theseus) -->
           @if (survival(); as sv) {
-            @if (sv.status === 'error' && !report()?.trackedLines) {
-              <p class="text-sm text-rose-400">{{ sv.message }}</p>
-            } @else if (report()?.trackedLines) {
+            @if (sv.status === 'error') {
+              <p class="mb-2 text-sm text-rose-400">{{ sv.message }}</p>
+            }
+            @if (report()?.trackedLines) {
               <p class="mb-2 text-xs text-zinc-500">
                 @if (sv.status === 'reading' || sv.status === 'computing') {
                   Walking the full history… {{ sv.scanned }}/{{ sv.total }} commits.
+                } @else if (sv.status === 'error') {
+                  Partial result — {{ report()!.aliveLines }} lines alive before the walk stopped.
                 } @else {
                   How long code lives — {{ report()!.aliveLines }} lines alive across
                   {{ sv.total }} commits.
@@ -1447,7 +1450,13 @@ interface Quadrant {
                   </span>
                   <span>
                     Alive at 10 yr:
-                    <span class="font-medium text-indigo-300">{{ pct(c.tenYearSurvival) }}%</span>
+                    @if (c.tenYearSurvival !== null) {
+                      <span class="font-medium text-indigo-300">{{ pct(c.tenYearSurvival) }}%</span>
+                    } @else {
+                      <span class="text-zinc-500" title="The history is shorter than 10 years">
+                        unobserved
+                      </span>
+                    }
                   </span>
                   <span class="text-zinc-600">
                     dashed = benchmark ≈ {{ benchmark.halfLifeYears }} yr ·
@@ -1523,7 +1532,7 @@ interface Quadrant {
               }
             } @else if (sv.status === 'reading' || sv.status === 'computing') {
               <p class="text-sm text-zinc-500">{{ sv.message ?? 'Walking the full history…' }}</p>
-            } @else {
+            } @else if (sv.status !== 'error') {
               <p class="text-sm text-zinc-500">{{ sv.message ?? 'No tracked lines found.' }}</p>
             }
           } @else {
@@ -1888,6 +1897,10 @@ export class InsightsView {
       10 * DAYS_PER_YEAR,
     );
     const maxYears = Math.max(1, Math.ceil(maxDays / DAYS_PER_YEAR));
+    // The curve has no support past the oldest observed line; the axis still runs
+    // to 10y so the benchmark stays visible for comparison, but we never draw or
+    // read the repo's own curve beyond what it actually observed.
+    const observedYears = curve.maxObservedAgeDays / DAYS_PER_YEAR;
     const px = (years: number): number => l + (years / maxYears) * (w - l - r);
     const py = (s: number): number => t + (1 - s) * (h - t - b);
 
@@ -1896,7 +1909,7 @@ export class InsightsView {
     for (const point of curve.points) {
       path += ` H ${px(point.ageDays / DAYS_PER_YEAR).toFixed(1)} V ${py(point.survival).toFixed(1)}`;
     }
-    path += ` H ${px(maxYears).toFixed(1)}`;
+    path += ` H ${px(Math.min(maxYears, observedYears)).toFixed(1)}`; // stop at observed support
 
     const bench = CODE_HALF_LIFE_BENCHMARK.points
       .filter((point) => point.years <= maxYears)
@@ -1923,7 +1936,9 @@ export class InsightsView {
       rightX: px(maxYears),
       halfLifeX: halfLifeYears !== null ? px(halfLifeYears) : null,
       halfLifeYears,
-      tenYearSurvival: survivalAt(curve, 10 * DAYS_PER_YEAR),
+      // Only report 10-year survival when the history actually reaches that far —
+      // otherwise it's extrapolation that flatters a young repo.
+      tenYearSurvival: observedYears >= 10 ? survivalAt(curve, 10 * DAYS_PER_YEAR) : null,
       xticks,
       yticks,
     };

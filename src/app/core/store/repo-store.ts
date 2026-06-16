@@ -1580,9 +1580,9 @@ export class RepoStore {
 
       // Walk the **first-parent chain** (a clean linear sequence of tree states),
       // so side-branch commits fold into the merge that brings them to the
-      // mainline instead of being applied to the snapshot out of order and
-      // double-counted. Fall back to date order when a provider omits parent
-      // links in its commit list (e.g. Azure DevOps).
+      // mainline instead of being applied to the snapshot out of order. Some
+      // providers omit parents in their commit lists (e.g. Azure DevOps); resolve
+      // them on demand so the chain stays real rather than collapsing to a guess.
       const bySha = new Map(commits.map((commit) => [commit.sha, commit]));
       const chain: CommitInfo[] = [];
       const seen = new Set<string>();
@@ -1590,13 +1590,15 @@ export class RepoStore {
       while (cursor && !seen.has(cursor.sha)) {
         seen.add(cursor.sha);
         chain.push(cursor);
-        const parent: string | undefined = cursor.parentShas[0];
+        let parents: readonly string[] = cursor.parentShas;
+        if (parents.length === 0) {
+          parents = (await this.resolveCommit(slug, cursor.sha)).parentShas;
+          if (!live()) return;
+        }
+        const parent: string | undefined = parents[0];
         cursor = parent ? bySha.get(parent) : undefined;
       }
-      const walk =
-        chain.length > 1 || commits.length <= 1
-          ? chain.reverse() // oldest → newest along the mainline
-          : [...commits].sort((a, b) => Date.parse(a.authoredAt) - Date.parse(b.authoredAt));
+      const walk = chain.reverse(); // oldest → newest along the mainline
       total = walk.length;
       const tipTime = Date.parse(commits[0].authoredAt);
       if (!Number.isNaN(tipTime)) now = tipTime;
@@ -1609,17 +1611,21 @@ export class RepoStore {
           continue; // an undated commit can't be placed in time; the snapshot re-syncs later
         }
         const tag: Tag = { bornAt, author: commit.authorName };
-        let changes: readonly CommitFileChange[] = [];
-        try {
-          changes = await provider.getCommitFiles(slug, commit.sha);
-        } catch {
-          changes = []; // a commit whose file list we can't read just contributes nothing
-        }
+        // A provider failure here (rate limit, network) must surface as an error,
+        // not be swallowed into an empty change set that silently corrupts the
+        // report — let it throw to the outer handler.
+        const changes = await provider.getCommitFiles(slug, commit.sha);
         if (!live()) return;
 
         for (const change of changes) {
+          // Only a **rename** carries the source file's tracked snapshot (and
+          // removes the source). A **copy** adds new physical lines at this
+          // commit, so it must not inherit the original's age/author.
+          const isCopy = /copy|copied/i.test(change.status);
           const movedFrom =
-            change.previousPath && change.previousPath !== change.path ? change.previousPath : null;
+            !isCopy && change.previousPath && change.previousPath !== change.path
+              ? change.previousPath
+              : null;
           const source = movedFrom ?? change.path;
           const previous = files.get(source);
           const oldLines = previous?.lines ?? [];
@@ -1657,7 +1663,7 @@ export class RepoStore {
             }
           }
 
-          if (movedFrom && change.status !== 'copied') files.delete(movedFrom);
+          if (movedFrom) files.delete(movedFrom); // a rename empties the old path
           if (newLines.length === 0) files.delete(change.path);
           else files.set(change.path, { lines: newLines, tags: newTags });
         }
@@ -1687,10 +1693,12 @@ export class RepoStore {
 
   /**
    * The text lines of a changed file just after a commit, for the survival walk:
-   * `[]` when the file was removed (or is absent at that commit), or `null` when
-   * it is binary / too large / unreadable and should stop being tracked. Fetches
+   * `[]` when the file was removed (or is genuinely absent at that commit), or
+   * `null` when it is binary / too large and should stop being tracked. Fetches
    * the blob directly (bypassing the UI file cache) so a full-history walk does
-   * not flood it.
+   * not flood it. **Only** an expected `not-found` maps to empty — any other
+   * provider failure (rate limit, network) is re-thrown so the walk fails loudly
+   * instead of recording the file's lines as falsely deleted.
    */
   private async survivalNewLines(change: CommitFileChange, sha: string): Promise<string[] | null> {
     if (/remov|delet/i.test(change.status)) return [];
@@ -1698,11 +1706,10 @@ export class RepoStore {
     if (!slug) return null;
     try {
       const file = await this.registry.byId(slug.provider).getFileAtRef(slug, change.path, sha);
-      return file.kind === 'text' ? splitLines(file.text) : null;
+      return file.kind === 'text' ? splitLines(file.text) : null; // null = binary / too large
     } catch (error) {
-      // Absent at this commit (deleted, or not yet on this path) → empty; any
-      // other failure (binary guard, network) → stop tracking the file.
-      return toRepoProviderError(error).kind === 'not-found' ? [] : null;
+      if (toRepoProviderError(error).kind === 'not-found') return []; // expected absence
+      throw error; // rate limit / network / unknown → surface, don't corrupt the report
     }
   }
 
