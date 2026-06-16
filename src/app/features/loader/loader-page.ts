@@ -59,8 +59,8 @@ type CustomFlavor = (typeof CUSTOM_FLAVORS)[number]['id'];
           <h1 class="text-3xl font-semibold tracking-tight text-zinc-50">Time Tracer</h1>
           <p class="mt-2 max-w-md text-sm leading-6 text-zinc-400">
             Explore any public GitHub, GitLab, Bitbucket or Azure DevOps repository — a self-hosted
-            instance, or a local folder — and travel back through its history change by change,
-            right in your browser.
+            instance{{ localClause }} — and travel back through its history change by change, right
+            in your browser.
           </p>
         </div>
 
@@ -437,7 +437,7 @@ type CustomFlavor = (typeof CUSTOM_FLAVORS)[number]['id'];
 
         <p class="mt-10 text-center text-xs leading-5 text-zinc-600">
           Client-only — data comes straight from the GitHub/GitLab/Bitbucket/Azure DevOps APIs (or
-          your self-hosted instance) or your own disk. No server: repository content and access
+          your self-hosted instance){{ ownDiskClause }}. No server: repository content and access
           tokens never go anywhere else.
         </p>
       </div>
@@ -456,6 +456,11 @@ export class LoaderPage {
   protected readonly error = signal<string | null>(null);
   protected readonly busy = signal(false);
   protected readonly canOpenLocal = supportsLocalRepos();
+  // Local-folder support needs the File System Access API; where it is missing
+  // (e.g. Firefox, Safari) the folder button is hidden, so the copy that
+  // advertises opening from disk is dropped too rather than promising it.
+  protected readonly localClause = this.canOpenLocal ? ', or a local folder' : '';
+  protected readonly ownDiskClause = this.canOpenLocal ? ' or your own disk' : '';
   protected readonly tokensOpen = signal(false);
   protected readonly hasAnyToken = computed(
     () =>
