@@ -354,4 +354,32 @@ describe('InsightsView', () => {
     button('Analyze recent history')!.click();
     expect(analyzed).toBe(1);
   });
+
+  it('exposes a temporal-weight slider that updates its readout', async () => {
+    await setState(TEAM);
+    button('Team')!.click();
+    await fixture.whenStable();
+
+    // Defaults to a balanced blend, shown as a percentage.
+    expect(text()).toContain('50%');
+
+    drag('Temporal weighting', 100);
+    await fixture.whenStable();
+    expect(text()).toContain('100%');
+  });
+
+  it('keeps ties visible even when the slider fades them out', async () => {
+    await setState(TEAM);
+    button('Team')!.click();
+    await fixture.whenStable();
+    // The Ada–Bo tie is drawn at the default blend…
+    expect(fixture.nativeElement.querySelector('svg line')).not.toBeNull();
+
+    // …and TEAM has no commit dates, so fully weighted toward recent the tie is
+    // faded to 0% — but it is de-emphasised, not removed.
+    drag('Temporal weighting', 100);
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelector('svg line')).not.toBeNull();
+    expect(fixture.nativeElement.querySelectorAll('svg circle').length).toBe(2);
+  });
 });

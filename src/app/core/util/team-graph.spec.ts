@@ -1,4 +1,7 @@
-import { AuthoredCommit, collaboratorsOf, computeTeamGraph } from './team-graph';
+import { AuthoredCommit, blendStrength, collaboratorsOf, computeTeamGraph } from './team-graph';
+
+/** ISO timestamp for day N of 2026, for legible temporal fixtures. */
+const day = (n: number): string => new Date(Date.UTC(2026, 0, 1 + n)).toISOString();
 
 const COMMITS: AuthoredCommit[] = [
   { authorName: 'Ada', files: ['auth.ts', 'session.ts'] },
@@ -23,8 +26,11 @@ describe('computeTeamGraph', () => {
     const graph = computeTeamGraph(COMMITS);
 
     // Ada and Bo both touched auth.ts and session.ts (2 shared); their union of
-    // files is also {auth, session} → strength 1. Cy shares nothing.
-    expect(graph.collaborations).toEqual([{ a: 'Ada', b: 'Bo', sharedFiles: 2, strength: 1 }]);
+    // files is also {auth, session} → strength 1. Cy shares nothing. With no
+    // dates on these commits the temporal strength is 0.
+    expect(graph.collaborations).toEqual([
+      { a: 'Ada', b: 'Bo', sharedFiles: 2, strength: 1, temporalStrength: 0 },
+    ]);
   });
 
   it('reports a partial-overlap strength below 1', () => {
@@ -70,7 +76,9 @@ describe('computeTeamGraph', () => {
     );
     // Ada's sweep is ignored, so Ada has no files and ties to no one.
     expect(graph.developers.map((d) => d.name).sort()).toEqual(['Bo', 'Cy']);
-    expect(graph.collaborations).toEqual([{ a: 'Bo', b: 'Cy', sharedFiles: 2, strength: 1 }]);
+    expect(graph.collaborations).toEqual([
+      { a: 'Bo', b: 'Cy', sharedFiles: 2, strength: 1, temporalStrength: 0 },
+    ]);
   });
 
   it('honours a higher minimum shared-files threshold', () => {
@@ -124,6 +132,84 @@ describe('computeTeamGraph', () => {
       { id: 'Ada', name: 'Ada', commits: 2, files: 2, collaborators: 0 },
     ]);
   });
+
+  it('weights a recent tight handoff above a recent loose one (proximity)', () => {
+    const graph = computeTeamGraph(
+      [
+        // Ada & Bo edit f1 at the same moment, at the tip.
+        { authorName: 'Ada', authorEmail: 'ada@x', authoredAt: day(400), files: ['f1.ts'] },
+        { authorName: 'Bo', authorEmail: 'bo@x', authoredAt: day(400), files: ['f1.ts'] },
+        // Ada & Cy edit f2 a month apart, but the later edit is also at the tip.
+        { authorName: 'Ada', authorEmail: 'ada@x', authoredAt: day(370), files: ['f2.ts'] },
+        { authorName: 'Cy', authorEmail: 'cy@x', authoredAt: day(400), files: ['f2.ts'] },
+      ],
+      { proximityHalfLifeDays: 30 },
+    );
+    const adaBo = graph.collaborations.find((e) => e.a === 'ada@x' && e.b === 'bo@x')!;
+    const adaCy = graph.collaborations.find((e) => e.a === 'ada@x' && e.b === 'cy@x')!;
+    // Both land at the tip (age 0), so only the gap separates them.
+    expect(adaBo.temporalStrength).toBeGreaterThan(adaCy.temporalStrength);
+    expect(adaBo.temporalStrength).toBeLessThanOrEqual(adaBo.strength);
+  });
+
+  it('fades a tie as its handoff ages, even when the edits were simultaneous', () => {
+    const graph = computeTeamGraph([
+      // An old, same-moment handoff…
+      { authorName: 'Ada', authorEmail: 'ada@x', authoredAt: day(0), files: ['old.ts'] },
+      { authorName: 'Bo', authorEmail: 'bo@x', authoredAt: day(0), files: ['old.ts'] },
+      // …and a current one at the tip (defines "now" for the age decay).
+      { authorName: 'Cy', authorEmail: 'cy@x', authoredAt: day(400), files: ['new.ts'] },
+      { authorName: 'Di', authorEmail: 'di@x', authoredAt: day(400), files: ['new.ts'] },
+    ]);
+    const adaBo = graph.collaborations.find((e) => e.a === 'ada@x' && e.b === 'bo@x')!;
+    const cyDi = graph.collaborations.find((e) => e.a === 'cy@x' && e.b === 'di@x')!;
+    // Identical all-time strength and gap (0), but the ~400-day-old tie fades.
+    expect(adaBo.strength).toBeCloseTo(cyDi.strength, 10);
+    expect(cyDi.temporalStrength).toBeGreaterThan(0.9);
+    expect(adaBo.temporalStrength).toBeLessThan(0.1);
+  });
+
+  it('measures age from the newest commit even when it was skipped as a sweep', () => {
+    const sweep = Array.from({ length: 30 }, (_, i) => `f${i}.ts`);
+    const graph = computeTeamGraph(
+      [
+        // A tight handoff…
+        { authorName: 'Ada', authorEmail: 'ada@x', authoredAt: day(0), files: ['a.ts'] },
+        { authorName: 'Bo', authorEmail: 'bo@x', authoredAt: day(1), files: ['a.ts'] },
+        // …then a far newer formatter sweep: dropped from ties, but it is "now".
+        { authorName: 'Sweep', authorEmail: 'sweep@x', authoredAt: day(400), files: sweep },
+      ],
+      { maxCommitFiles: 25, recencyHalfLifeDays: 90 },
+    );
+    expect(graph.developers.some((d) => d.id === 'sweep@x')).toBe(false); // sweep skipped
+    const adaBo = graph.collaborations.find((e) => e.a === 'ada@x' && e.b === 'bo@x')!;
+    // Age is taken from the day-400 sweep, so the day-0 handoff reads as stale.
+    expect(adaBo.temporalStrength).toBeLessThan(0.1);
+  });
+
+  it('finds the best handoff among many edits without a quadratic blow-up', () => {
+    const graph = computeTeamGraph(
+      [
+        { authorName: 'A', authorEmail: 'a@x', authoredAt: day(0), files: ['f.ts'] },
+        { authorName: 'A', authorEmail: 'a@x', authoredAt: day(100), files: ['f.ts'] },
+        { authorName: 'A', authorEmail: 'a@x', authoredAt: day(200), files: ['f.ts'] },
+        { authorName: 'B', authorEmail: 'b@x', authoredAt: day(5), files: ['f.ts'] },
+        { authorName: 'B', authorEmail: 'b@x', authoredAt: day(201), files: ['f.ts'] },
+      ],
+      { proximityHalfLifeDays: 30, recencyHalfLifeDays: 90 },
+    );
+    const ab = graph.collaborations.find((e) => e.a === 'a@x' && e.b === 'b@x')!;
+    // Best pair is A@200 ↔ B@201: gap 1 day, age 0 (latest = 201). union = 1.
+    expect(ab.temporalStrength).toBeCloseTo(2 ** (-1 / 30), 4);
+  });
+});
+
+describe('blendStrength', () => {
+  it('interpolates from all-time at weight 0 to temporal at weight 1', () => {
+    expect(blendStrength(0.8, 0.2, 0)).toBeCloseTo(0.8);
+    expect(blendStrength(0.8, 0.2, 1)).toBeCloseTo(0.2);
+    expect(blendStrength(0.8, 0.2, 0.5)).toBeCloseTo(0.5);
+  });
 });
 
 describe('collaboratorsOf', () => {
@@ -134,8 +220,8 @@ describe('collaboratorsOf', () => {
       { authorName: 'Cy', files: ['c'] }, // shares 1 with Ada
     ]);
     expect(collaboratorsOf(graph, 'Ada')).toEqual([
-      { id: 'Bo', name: 'Bo', sharedFiles: 2, strength: 2 / 3 },
-      { id: 'Cy', name: 'Cy', sharedFiles: 1, strength: 1 / 3 },
+      { id: 'Bo', name: 'Bo', sharedFiles: 2, strength: 2 / 3, temporalStrength: 0 },
+      { id: 'Cy', name: 'Cy', sharedFiles: 1, strength: 1 / 3, temporalStrength: 0 },
     ]);
   });
 
@@ -144,5 +230,19 @@ describe('collaboratorsOf', () => {
     expect(collaboratorsOf(graph, 'Ada', 0)).toEqual([]);
     expect(collaboratorsOf(graph, 'Cy')).toEqual([]); // a silo
     expect(collaboratorsOf(graph, 'nobody')).toEqual([]);
+  });
+
+  it('reorders equal-shared collaborators by the temporal weight', () => {
+    // Hub shares one file with each of Amy (stale) and Zoe (recent handoff).
+    const graph = computeTeamGraph([
+      { authorName: 'Hub', authorEmail: 'hub@x', authoredAt: day(0), files: ['a.ts'] },
+      { authorName: 'Hub', authorEmail: 'hub@x', authoredAt: day(0), files: ['b.ts'] },
+      { authorName: 'Amy', authorEmail: 'amy@x', authoredAt: day(400), files: ['a.ts'] },
+      { authorName: 'Zoe', authorEmail: 'zoe@x', authoredAt: day(1), files: ['b.ts'] },
+    ]);
+    // All-time, the tie is a draw (1 shared file each) so name order wins → Amy.
+    expect(collaboratorsOf(graph, 'hub@x', Infinity, 0).map((c) => c.name)).toEqual(['Amy', 'Zoe']);
+    // Weighted toward recency, Zoe's day-apart handoff outranks Amy's stale tie.
+    expect(collaboratorsOf(graph, 'hub@x', Infinity, 1).map((c) => c.name)).toEqual(['Zoe', 'Amy']);
   });
 });

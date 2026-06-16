@@ -10,14 +10,17 @@ import {
 
 import { CoChangeState } from '../../core/store/repo-store';
 import { CoChangeCluster, clusterCoChange, relatedFiles } from '../../core/util/co-change';
+import { ForceEdge, Point, forceLayout } from '../../core/util/force-layout';
 import { Hotspot, heatLevel } from '../../core/util/hotspots';
 import { disambiguateLabels } from '../../core/util/path-label';
 import { relativeTime } from '../../core/util/relative-time';
 import {
+  Collaboration,
   Collaborator,
   Developer,
   EMPTY_TEAM_GRAPH,
   TeamGraph,
+  blendStrength,
   collaboratorsOf,
 } from '../../core/util/team-graph';
 import { TreemapTile, squarify } from '../../core/util/treemap';
@@ -59,6 +62,8 @@ const MAX_CONNECTORS = 8;
 /** Team-graph coordinate space (16:9, scaled to fill its box). */
 const TEAM_W = 1600;
 const TEAM_H = 900;
+/** Padding (viewBox units) kept around the fitted graph for discs + labels. */
+const TEAM_MARGIN = 150;
 /** Categorical node fills, indexed by connected component (the "teams"). */
 const TEAM_COLORS = [
   '#818cf8',
@@ -72,6 +77,10 @@ const TEAM_COLORS = [
 ];
 /** Fill for a developer who shares no files with anyone (a silo). */
 const SILO_FILL = '#52525b';
+/** Default blend toward the temporal (recent-collaboration) tie strength. */
+const DEFAULT_TEMPORAL_WEIGHT = 0.5;
+/** Edge pull (< 1) for the team layout — loosens tight clusters so labels stay legible. */
+const TEAM_ATTRACTION = 0.3;
 
 interface GraphNode {
   readonly path: string;
@@ -591,6 +600,30 @@ interface TeamLayout {
                 }
               </div>
 
+              @if (graph().collaborations.length) {
+                <div
+                  class="mb-3 flex items-center gap-2 text-[11px] text-zinc-500"
+                  title="Weight ties toward co-edits that happened close together in time — handoffs and recent pairing — instead of any shared file ever."
+                >
+                  <span class="shrink-0">Timing</span>
+                  <span class="shrink-0 text-zinc-600">all-time</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    [value]="temporalWeightPct()"
+                    (input)="onTemporalWeight($event)"
+                    class="h-1 min-w-0 flex-1 cursor-pointer accent-indigo-400"
+                    aria-label="Temporal weighting"
+                  />
+                  <span class="shrink-0 text-zinc-600">recent</span>
+                  <span class="w-8 shrink-0 text-right tabular-nums text-zinc-400">
+                    {{ temporalWeightPct() }}%
+                  </span>
+                </div>
+              }
+
               @if (teamLayout().nodes.length) {
                 <svg
                   class="aspect-[16/9] w-full rounded border border-zinc-800 bg-zinc-900/30"
@@ -693,7 +726,7 @@ interface TeamLayout {
                             {{ mate.name }}
                           </button>
                           <span class="shrink-0 text-[11px] text-zinc-500 tabular-nums">
-                            {{ mate.sharedFiles }} shared · {{ pct(mate.strength) }}%
+                            {{ mate.sharedFiles }} shared · {{ tieLabel(mate) }} overlap
                           </span>
                         </li>
                       }
@@ -841,6 +874,9 @@ export class InsightsView {
   protected readonly maxClusterSize = signal(DEFAULT_MAX_CLUSTER_FILES);
   /** The developer the team graph is focused on, or null. */
   private readonly selectedDev = signal<string | null>(null);
+  /** Slider 0..1: blend ties from all-time (0) toward recent collaboration (1). */
+  protected readonly temporalWeight = signal(DEFAULT_TEMPORAL_WEIGHT);
+  protected readonly temporalWeightPct = computed(() => Math.round(this.temporalWeight() * 100));
 
   /** The selected band as track percentages, for the slider's filled segment. */
   protected readonly rangePercent = computed(() => {
@@ -921,7 +957,7 @@ export class InsightsView {
 
   protected readonly selectedCollaborators = computed<Collaborator[]>(() => {
     const id = this.selected();
-    return id ? collaboratorsOf(this.graph(), id, MAX_COLLABORATORS) : [];
+    return id ? collaboratorsOf(this.graph(), id, MAX_COLLABORATORS, this.temporalWeight()) : [];
   });
 
   /** Developers with the most collaborators — the people who bridge the work. */
@@ -945,9 +981,10 @@ export class InsightsView {
   // The layout is selection-aware: it always draws the selected developer and
   // their collaborators (even past the caps), so clicking anyone — including a
   // silo or a less-central developer outside the top slice — lights up a real
-  // neighbourhood instead of dimming the graph to nothing.
+  // neighbourhood instead of dimming the graph to nothing. It also depends on
+  // the temporal weight, so dragging the slider re-shapes the graph live.
   protected readonly teamLayout = computed<TeamLayout>(() =>
-    this.layoutTeam(this.graph(), this.selected()),
+    this.layoutTeam(this.graph(), this.selected(), this.temporalWeight()),
   );
 
   /** Fill per rendered developer identity, for the swatches in the lists. */
@@ -1000,11 +1037,12 @@ export class InsightsView {
   }
 
   /**
-   * Lays the **linked** developers out on a ring — people who share no files
-   * with anyone are left out (they are listed beneath the graph instead of
-   * floating as unconnected dots) — ordered so members of the same connected
-   * component (the same "team") sit contiguously, keeping their ties short
-   * chords. Disc size scales with commit count and colour marks the component.
+   * Positions the **linked** developers with a force-directed simulation —
+   * people who share no files are left out (listed beneath the graph instead of
+   * floating as unconnected dots). Collaborators attract and everyone repels,
+   * so teams clump together and whoever bridges them settles between, then the
+   * result is scaled to fit the box. Disc size scales with commit count and
+   * colour marks the connected component.
    *
    * Selection-aware: the rendered set is the most-active slice plus, when a
    * developer is selected, that developer and their collaborators — so drilling
@@ -1012,7 +1050,7 @@ export class InsightsView {
    * dimming the graph to nothing. The selected developer's own ties are drawn
    * even past the global edge cap.
    */
-  private layoutTeam(graph: TeamGraph, selectedId: string | null): TeamLayout {
+  private layoutTeam(graph: TeamGraph, selectedId: string | null, weight: number): TeamLayout {
     // Only people with collaboration links belong in the graph; the rest are
     // listed beneath it, so they never appear as unconnected dots.
     const linked = graph.developers.filter((d) => d.collaborators > 0);
@@ -1021,11 +1059,12 @@ export class InsightsView {
     const renderedIds = new Set(linked.slice(0, MAX_DEVELOPERS).map((d) => d.id));
     if (selectedId) {
       // Force the selection in only when it has links (a silo is never drawn);
-      // its collaborators are linked by definition.
+      // its collaborators are linked by definition. Pass the slider weight so
+      // the rendered neighbourhood matches the collaborator panel's order.
       if (graph.developers.find((d) => d.id === selectedId)?.collaborators) {
         renderedIds.add(selectedId);
       }
-      for (const mate of collaboratorsOf(graph, selectedId, MAX_DEVELOPERS))
+      for (const mate of collaboratorsOf(graph, selectedId, MAX_DEVELOPERS, weight))
         renderedIds.add(mate.id);
     }
     const rendered = graph.developers.filter((d) => renderedIds.has(d.id));
@@ -1044,34 +1083,43 @@ export class InsightsView {
         a.id.localeCompare(b.id),
     );
 
-    const cx = TEAM_W / 2;
-    const cy = TEAM_H / 2;
-    const ringRadius = Math.min(TEAM_W, TEAM_H) / 2 - 170;
     const maxCommits = Math.max(...order.map((d) => d.commits), 1);
-    const n = order.length;
-    const pos = new Map<string, { x: number; y: number }>();
 
-    const nodes: TeamNode[] = order.map((dev, i) => {
-      const single = n === 1;
-      const angle = (2 * Math.PI * i) / n - Math.PI / 2;
-      const cos = Math.cos(angle);
-      const sin = Math.sin(angle);
-      const x = single ? cx : cx + ringRadius * cos;
-      const y = single ? cy : cy + ringRadius * sin;
-      pos.set(dev.id, { x, y });
-      const r = 14 + 30 * Math.sqrt(dev.commits / maxCommits);
-      const labelDist = r + 14;
+    // Tie strength is blended toward recent collaboration by the slider weight;
+    // it drives the layout pull, the drawn edges, and which survive the cap.
+    const strengthOf = (edge: Collaboration): number =>
+      blendStrength(edge.strength, edge.temporalStrength, weight);
+
+    // Run the simulation over the real ties (all of them, not just the drawn
+    // subset) for a faithful shape, then scale the result to fit the box.
+    const renderedSet = new Set(order.map((d) => d.id));
+    const simEdges: ForceEdge[] = graph.collaborations
+      .filter((edge) => renderedSet.has(edge.a) && renderedSet.has(edge.b))
+      .map((edge) => ({ a: edge.a, b: edge.b, weight: strengthOf(edge) }));
+    const raw = forceLayout(
+      order.map((d) => d.id),
+      simEdges,
+      { attraction: TEAM_ATTRACTION },
+    );
+    const place = fitToBox(raw.values(), TEAM_W, TEAM_H, TEAM_MARGIN);
+
+    const pos = new Map<string, Point>();
+    const nodes: TeamNode[] = order.map((dev) => {
+      const point = place(raw.get(dev.id)!);
+      pos.set(dev.id, point);
+      const r = 6 + 12 * Math.sqrt(dev.commits / maxCommits);
       const component = componentOf.get(dev.id) ?? 0;
       return {
         id: dev.id,
         name: dev.name,
         label: shortName(dev.name),
-        x,
-        y,
+        x: point.x,
+        y: point.y,
         r,
-        lx: single ? cx : x + labelDist * cos,
-        ly: single ? cy + r + 22 : y + labelDist * sin + 6,
-        anchor: single ? 'middle' : cos > 0.2 ? 'start' : cos < -0.2 ? 'end' : 'middle',
+        // The label sits centred just below each disc.
+        lx: point.x,
+        ly: point.y + r + 22,
+        anchor: 'middle',
         fill: TEAM_COLORS[component % TEAM_COLORS.length],
         commits: dev.commits,
         files: dev.files,
@@ -1080,13 +1128,16 @@ export class InsightsView {
     });
 
     // Draw the selected developer's ties first so they survive the cap, then
-    // fill the rest with the strongest remaining edges between rendered nodes.
+    // fill with the strongest remaining ties (by blended strength) between
+    // rendered nodes. Every rendered tie keeps a (faint) line — a faded tie is
+    // de-emphasised by opacity/width, never removed.
     const incident: TeamEdge[] = [];
     const rest: TeamEdge[] = [];
     for (const edge of graph.collaborations) {
       const a = pos.get(edge.a);
       const b = pos.get(edge.b);
       if (!a || !b) continue; // an endpoint sits beyond the rendered set
+      const strength = strengthOf(edge);
       const line: TeamEdge = {
         a: edge.a,
         b: edge.b,
@@ -1094,12 +1145,13 @@ export class InsightsView {
         y1: a.y,
         x2: b.x,
         y2: b.y,
-        width: 1 + 6 * edge.strength,
-        strength: edge.strength,
+        width: 1.2 + 5 * strength,
+        strength,
       };
       if (selectedId && (edge.a === selectedId || edge.b === selectedId)) incident.push(line);
       else rest.push(line);
     }
+    rest.sort((x, y) => y.strength - x.strength);
     const edges = incident;
     for (const line of rest) {
       if (edges.length >= MAX_TEAM_EDGES) break;
@@ -1117,8 +1169,9 @@ export class InsightsView {
   /** A selection lights up its own ties; otherwise opacity tracks strength. */
   protected edgeOpacity(edge: TeamEdge): number {
     const id = this.selected();
-    if (id) return edge.a === id || edge.b === id ? 0.85 : 0.06;
-    return 0.18 + 0.5 * edge.strength;
+    if (id) return edge.a === id || edge.b === id ? 0.85 : 0.08;
+    // Every tie stays visible; strength only varies how strongly it reads.
+    return 0.32 + 0.45 * edge.strength;
   }
 
   protected nodeTitle(node: TeamNode): string {
@@ -1136,6 +1189,18 @@ export class InsightsView {
     return this.nameById().get(id) ?? id;
   }
 
+  /**
+   * A collaborator's tie strength as a label, blended at the active slider
+   * weight: `13%`, or `<1%` for a real-but-tiny tie (so a shared-file
+   * collaboration never reads as a flat `0%`), or `0%` only when truly nil.
+   */
+  protected tieLabel(mate: Collaborator): string {
+    const strength = blendStrength(mate.strength, mate.temporalStrength, this.temporalWeight());
+    const pct = Math.round(strength * 100);
+    if (pct > 0) return `${pct}%`;
+    return strength > 0 ? '<1%' : '0%';
+  }
+
   /** Selects a developer, or clears the selection when they are clicked again. */
   protected toggleDeveloper(id: string): void {
     this.selectedDev.update((current) => (current === id ? null : id));
@@ -1143,6 +1208,10 @@ export class InsightsView {
 
   protected clearDeveloper(): void {
     this.selectedDev.set(null);
+  }
+
+  protected onTemporalWeight(event: Event): void {
+    this.temporalWeight.set(Number((event.target as HTMLInputElement).value) / 100);
   }
 
   /** The two handles can't cross: each clamps against the other. */
@@ -1187,4 +1256,33 @@ function shortName(name: string): string {
   const base = (at > 0 ? name.slice(0, at) : name).trim();
   const first = base.split(/\s+/)[0] || base;
   return first.length > 14 ? first.slice(0, 13) + '…' : first;
+}
+
+/**
+ * Builds a mapper that scales the simulation's arbitrary coordinates uniformly
+ * into a `width`×`height` box (centred, with `margin` to spare for discs and
+ * labels), preserving the layout's aspect.
+ */
+function fitToBox(
+  points: Iterable<Point>,
+  width: number,
+  height: number,
+  margin: number,
+): (p: Point) => Point {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of points) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  const spanX = maxX - minX || 1;
+  const spanY = maxY - minY || 1;
+  const scale = Math.min((width - 2 * margin) / spanX, (height - 2 * margin) / spanY);
+  const midX = (minX + maxX) / 2;
+  const midY = (minY + maxY) / 2;
+  return (p) => ({ x: width / 2 + (p.x - midX) * scale, y: height / 2 + (p.y - midY) * scale });
 }

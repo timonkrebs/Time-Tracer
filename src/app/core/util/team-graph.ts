@@ -9,6 +9,13 @@
  * change-coupling analysis (`co-change.ts`): where co-change asks "what changes
  * together", this asks "who changes the same things".
  *
+ * Each tie carries two strengths: an all-time {@link Collaboration.strength}
+ * (file-set Jaccard) and a {@link Collaboration.temporalStrength} that weights
+ * each shared file by how *close together in time* the two edited it (a
+ * handoff/pairing signal) and how *recently* that happened. Blending between
+ * them — see {@link blendStrength} — turns "ever shared a file" into "currently
+ * working together".
+ *
  * Developers are keyed by a stable **identity** — the author's email when known,
  * else their name — so two people who happen to share a display name stay
  * distinct, and one person who commits under several names (but one email) stays
@@ -24,6 +31,8 @@ export interface AuthoredCommit {
   readonly authorName: string;
   /** Author email — the stable identity when present. */
   readonly authorEmail?: string | null;
+  /** ISO 8601 author date — drives the temporal (proximity) weighting. */
+  readonly authoredAt?: string;
   readonly files: readonly string[];
 }
 
@@ -50,8 +59,16 @@ export interface Collaboration {
   readonly b: string;
   /** Distinct files both developers have touched. */
   readonly sharedFiles: number;
-  /** Jaccard overlap of their file sets, 0..1 — the tie's strength. */
+  /** All-time Jaccard overlap of their file sets, 0..1. */
   readonly strength: number;
+  /**
+   * Like {@link strength}, but each shared file is weighted by their best
+   * handoff on it — how close in time the two edits were *and* how recently
+   * (relative to the newest commit in the window) — so current, near-
+   * simultaneous work scores high while old or far-apart ties fade. 0..1,
+   * always ≤ {@link strength}.
+   */
+  readonly temporalStrength: number;
 }
 
 export interface TeamGraph {
@@ -75,10 +92,25 @@ export interface TeamGraphOptions {
   readonly maxCommitFiles?: number;
   /** Fewest shared files for two developers to count as collaborating. */
   readonly minShared?: number;
+  /**
+   * Half-life (days) of the temporal proximity decay: two edits this far apart
+   * count half as much toward {@link Collaboration.temporalStrength} as
+   * simultaneous ones.
+   */
+  readonly proximityHalfLifeDays?: number;
+  /**
+   * Half-life (days) of the age decay: a handoff this long before the newest
+   * commit in the window counts half as much as one at the tip, so old
+   * collaboration fades even when its two edits were close together.
+   */
+  readonly recencyHalfLifeDays?: number;
 }
 
 const DEFAULT_MAX_COMMIT_FILES = 25;
 const DEFAULT_MIN_SHARED = 1;
+const DEFAULT_PROXIMITY_HALF_LIFE_DAYS = 30;
+const DEFAULT_RECENCY_HALF_LIFE_DAYS = 90;
+const DAY_MS = 86_400_000;
 
 /** The zero value: an empty graph, for windows with nothing to analyse. */
 export const EMPTY_TEAM_GRAPH: TeamGraph = {
@@ -88,10 +120,20 @@ export const EMPTY_TEAM_GRAPH: TeamGraph = {
   silos: [],
 };
 
+/**
+ * Blends a tie's all-time and temporal strengths: `weight` 0 returns the
+ * all-time strength, 1 the temporal one, values between interpolate. Because
+ * both strengths share a denominator this is exact, not an approximation.
+ */
+export function blendStrength(strength: number, temporalStrength: number, weight: number): number {
+  return strength + (temporalStrength - strength) * weight;
+}
+
 interface PairAccum {
   a: string;
   b: string;
   shared: number;
+  temporal: number;
 }
 
 /** The stable identity and a display name for a commit's author, or null. */
@@ -121,12 +163,57 @@ function pickName(votes: Map<string, number> | undefined): string {
 }
 
 /**
+ * Closeness in 0..1 of the best **handoff** between A and B on a shared file:
+ * over their edit times, the strongest score of proximity (how close together
+ * the two edits were) × age (how recently the later one landed, relative to
+ * `latest`, the newest commit in the window). 1 for a same-moment handoff at the
+ * tip; 0 when either side has no dated edit.
+ *
+ * `score(a, b)` is piecewise-monotonic in `a` for a fixed `b`, so its maximum
+ * sits at one of `b`'s nearest A-edits on either side or the most recent A-edit.
+ * Found with a binary search per B-edit — O(|B|·log|A|) — rather than the full
+ * O(|A|·|B|) cross product, so "Load all" on a hot file can't lock the tab.
+ */
+function temporalCloseness(
+  timesA: readonly number[],
+  timesB: readonly number[],
+  latest: number,
+  proximityHalfLifeMs: number,
+  recencyHalfLifeMs: number,
+): number {
+  if (timesA.length === 0 || timesB.length === 0) return 0;
+  const a = [...timesA].sort((x, y) => x - y);
+  const score = (ta: number, tb: number): number =>
+    2 ** (-Math.abs(ta - tb) / proximityHalfLifeMs) *
+    2 ** (-(latest - Math.max(ta, tb)) / recencyHalfLifeMs);
+
+  let best = 0;
+  for (const tb of timesB) {
+    // First A-edit strictly after tb; its neighbours (and the most recent
+    // A-edit, covering any half-life ratio) are the only maximum candidates.
+    let lo = 0;
+    let hi = a.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (a[mid] <= tb) lo = mid + 1;
+      else hi = mid;
+    }
+    for (const idx of [lo - 1, lo, a.length - 1]) {
+      if (idx >= 0 && idx < a.length) best = Math.max(best, score(a[idx], tb));
+    }
+  }
+  return best;
+}
+
+/**
  * Builds the {@link TeamGraph} from a stream of authored commits: tallies each
  * author's commits and the set of files they touched (keyed by identity), then
  * ties two developers by how many files they have both edited (Jaccard
- * strength). Like the co-change analysis, commits touching more than
- * `maxCommitFiles` files (sweeping refactors, merges, formatter runs) are
- * dropped, so they don't couple the whole team through one mechanical change.
+ * strength) and by how close in time — and how recently — those edits were
+ * (temporal strength). Like
+ * the co-change analysis, commits touching more than `maxCommitFiles` files
+ * (sweeping refactors, merges, formatter runs) are dropped, so they don't
+ * couple the whole team through one mechanical change.
  */
 export function computeTeamGraph(
   commits: Iterable<AuthoredCommit>,
@@ -134,14 +221,26 @@ export function computeTeamGraph(
 ): TeamGraph {
   const maxCommitFiles = options.maxCommitFiles ?? DEFAULT_MAX_COMMIT_FILES;
   const minShared = options.minShared ?? DEFAULT_MIN_SHARED;
+  const proximityHalfLifeMs =
+    (options.proximityHalfLifeDays ?? DEFAULT_PROXIMITY_HALF_LIFE_DAYS) * DAY_MS;
+  const recencyHalfLifeMs =
+    (options.recencyHalfLifeDays ?? DEFAULT_RECENCY_HALF_LIFE_DAYS) * DAY_MS;
 
   const commitCount = new Map<string, number>();
   const filesByAuthor = new Map<string, Set<string>>();
-  const authorsByFile = new Map<string, Set<string>>();
+  /** Per file, the edit timestamps of each author who touched it. */
+  const editsByFile = new Map<string, Map<string, number[]>>();
   /** Name → count per identity, to resolve a display name for split identities. */
   const nameVotes = new Map<string, Map<string, number>>();
+  /** Newest commit timestamp seen — the reference point for the age decay. */
+  let latest = -Infinity;
 
   for (const commit of commits) {
+    // The age decay's "now" is the newest commit in the window — counted even
+    // for commits skipped below (a formatter sweep or merge can be the newest),
+    // so a stale tie just before such a commit isn't mistaken for current work.
+    const time = commit.authoredAt ? Date.parse(commit.authoredAt) : NaN;
+    if (!Number.isNaN(time) && time > latest) latest = time;
     const identity = identityOf(commit);
     const files = [...new Set(commit.files)];
     if (!identity || files.length === 0 || files.length > maxCommitFiles) continue;
@@ -154,35 +253,55 @@ export function computeTeamGraph(
     if (!owned) filesByAuthor.set(id, (owned = new Set()));
     for (const file of files) {
       owned.add(file);
-      let authors = authorsByFile.get(file);
-      if (!authors) authorsByFile.set(file, (authors = new Set()));
-      authors.add(id);
+      let perAuthor = editsByFile.get(file);
+      if (!perAuthor) editsByFile.set(file, (perAuthor = new Map()));
+      let times = perAuthor.get(id);
+      if (!times) perAuthor.set(id, (times = []));
+      if (!Number.isNaN(time)) times.push(time);
     }
   }
 
-  // Count shared files per unordered identity pair, from each file's author set.
-  // Keyed by "a\nb" (an identity never contains a newline); a/b are kept on the
-  // value so the key is never split.
+  // Per file, accumulate each unordered identity pair: +1 shared, plus the
+  // temporal closeness of their best handoff (proximity × age). Keyed by "a\nb"
+  // (an identity never contains a newline); a/b are kept on the value so the key
+  // isn't split.
   const pairs = new Map<string, PairAccum>();
-  for (const authors of authorsByFile.values()) {
-    if (authors.size < 2) continue;
-    const list = [...authors].sort();
-    for (let i = 0; i < list.length; i++) {
-      for (let j = i + 1; j < list.length; j++) {
-        const key = list[i] + '\n' + list[j];
+  for (const perAuthor of editsByFile.values()) {
+    if (perAuthor.size < 2) continue;
+    const ids = [...perAuthor.keys()].sort();
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        const closeness = temporalCloseness(
+          perAuthor.get(ids[i])!,
+          perAuthor.get(ids[j])!,
+          latest,
+          proximityHalfLifeMs,
+          recencyHalfLifeMs,
+        );
+        const key = ids[i] + '\n' + ids[j];
         const entry = pairs.get(key);
-        if (entry) entry.shared++;
-        else pairs.set(key, { a: list[i], b: list[j], shared: 1 });
+        if (entry) {
+          entry.shared++;
+          entry.temporal += closeness;
+        } else {
+          pairs.set(key, { a: ids[i], b: ids[j], shared: 1, temporal: closeness });
+        }
       }
     }
   }
 
   const collaborations: Collaboration[] = [];
   const degree = new Map<string, number>();
-  for (const { a, b, shared } of pairs.values()) {
+  for (const { a, b, shared, temporal } of pairs.values()) {
     if (shared < minShared) continue;
     const union = (filesByAuthor.get(a)?.size ?? 0) + (filesByAuthor.get(b)?.size ?? 0) - shared;
-    collaborations.push({ a, b, sharedFiles: shared, strength: union > 0 ? shared / union : 0 });
+    collaborations.push({
+      a,
+      b,
+      sharedFiles: shared,
+      strength: union > 0 ? shared / union : 0,
+      temporalStrength: union > 0 ? temporal / union : 0,
+    });
     degree.set(a, (degree.get(a) ?? 0) + 1);
     degree.set(b, (degree.get(b) ?? 0) + 1);
   }
@@ -225,13 +344,19 @@ export interface Collaborator {
   readonly name: string;
   readonly sharedFiles: number;
   readonly strength: number;
+  readonly temporalStrength: number;
 }
 
-/** A developer's collaborators (by identity), most shared files first. */
+/**
+ * A developer's collaborators (by identity), most shared files first. Ties on
+ * shared-file count are broken by blended strength at `temporalWeight` (0 =
+ * all-time, 1 = temporal), so the ordering follows the active slider.
+ */
 export function collaboratorsOf(
   graph: TeamGraph,
   id: string,
   limit = Number.POSITIVE_INFINITY,
+  temporalWeight = 0,
 ): Collaborator[] {
   const nameById = new Map(graph.developers.map((d) => [d.id, d.name]));
   const result: Collaborator[] = [];
@@ -243,12 +368,14 @@ export function collaboratorsOf(
       name: nameById.get(other) ?? other,
       sharedFiles: edge.sharedFiles,
       strength: edge.strength,
+      temporalStrength: edge.temporalStrength,
     });
   }
   result.sort(
     (x, y) =>
       y.sharedFiles - x.sharedFiles ||
-      y.strength - x.strength ||
+      blendStrength(y.strength, y.temporalStrength, temporalWeight) -
+        blendStrength(x.strength, x.temporalStrength, temporalWeight) ||
       x.name.localeCompare(y.name) ||
       x.id.localeCompare(y.id),
   );
