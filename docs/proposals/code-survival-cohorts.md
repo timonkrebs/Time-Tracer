@@ -131,7 +131,13 @@ A few cases the loop above gets right (and that a naïve version does not):
 - **Merges / branches**: the walk follows the **first-parent chain** (a clean linear sequence of
   tree states), so side-branch commits fold into the merge that brings them to the mainline instead
   of being applied to one mutable tree out of order. Because each step diffs against the file's
-  _actual_ content at that commit, the snapshot also self-corrects rather than drifting.
+  _actual_ content at that commit, the snapshot also self-corrects rather than drifting. The
+  trade-off is **authorship**: lines that enter the mainline through a true merge commit are
+  credited to that merge (its author and date), not the original side-branch commit. First-parent
+  keeps the lifetime structure correct; recovering the real origin of merged lines would need a
+  per-merge blame of the second parent (a heavier, Git-of-Theseus-style pass), so it is tracked as
+  future work. Squash- and rebase-merge workflows are unaffected (their mainline commit _is_ the
+  author).
 
 ### 2. Why a `HEAD` blame is not enough (survivorship bias)
 
@@ -260,6 +266,12 @@ Points raised in two rounds of automated review, and how the shipped walk handle
   pagination or signal truncation; this is a **pre-existing, cross-cutting** provider concern
   (co-change and rename detection share it), so it is tracked as a follow-up rather than folded in
   here.
+- **Merge-commit authorship** — a consequence of the first-parent walk: lines merged into the
+  mainline through a true merge commit are credited to that merge's author/date, not the original
+  side-branch commit, which can skew the "% by author" chart and birth years for merge-commit-heavy
+  repos (squash/rebase workflows are unaffected). Recovering the true origin needs a per-merge blame
+  of the second parent — a heavier follow-up that trades request cost for attribution fidelity, and
+  the opposite direction from the first-parent choice that keeps the lifetime structure correct.
 - **Web Worker** offload (roadmap item 21) and **carrying cohorts across renames** via the existing
   candidate search remain the natural follow-ups.
 
