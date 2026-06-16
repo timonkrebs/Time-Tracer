@@ -1,8 +1,8 @@
 import { FsLike, fsError, makeStats } from './fsa-fs';
 
 /**
- * In-memory fs (read + write) — backs zip imports and lets tests build
- * real repositories with isomorphic-git without touching a disk.
+ * In-memory fs (read + write) — lets tests build real repositories with
+ * isomorphic-git without touching a disk.
  */
 export function createMemFs(): FsLike {
   const files = new Map<string, Uint8Array>();
