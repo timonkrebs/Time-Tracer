@@ -46,6 +46,16 @@ describe('forceLayout', () => {
     expect(within).toBeLessThan(across);
   });
 
+  it('lets a zero-weight tie exert no pull', () => {
+    const pulled = forceLayout(['a', 'b'], [{ a: 'a', b: 'b', weight: 1 }]);
+    const slack = forceLayout(['a', 'b'], [{ a: 'a', b: 'b', weight: 0 }]);
+    // With no pull the pair only repels (and is held by gravity), so it sits
+    // farther apart than the same pair under a full-weight tie.
+    expect(dist(slack.get('a')!, slack.get('b')!)).toBeGreaterThan(
+      dist(pulled.get('a')!, pulled.get('b')!),
+    );
+  });
+
   it('settles a strong tie closer than a weak one', () => {
     const pos = forceLayout(
       ['hub', 'strong', 'weak'],

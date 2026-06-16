@@ -17,7 +17,7 @@
 export interface ForceEdge {
   readonly a: string;
   readonly b: string;
-  /** Relative pull (~0..1, default 1) — stronger edges settle closer. */
+  /** Relative pull (~0..1, default 1) — stronger edges settle closer; 0 = no pull. */
   readonly weight?: number;
 }
 
@@ -106,14 +106,16 @@ export function forceLayout(
       }
     }
 
-    // Attraction along edges: distance² / k, scaled by weight.
+    // Attraction along edges: distance² / k, scaled by weight. Weight is honored
+    // linearly, so a 0-weight tie exerts no pull at all (gravity still keeps the
+    // node from drifting off); callers can fade a tie out completely.
     for (const link of links) {
       const a = pos.get(link.a)!;
       const b = pos.get(link.b)!;
       const dx = a.x - b.x;
       const dy = a.y - b.y;
       const dist = Math.hypot(dx, dy) || 0.01;
-      const force = (dist / k) * (0.3 + 0.7 * (link.weight ?? 1));
+      const force = (dist / k) * (link.weight ?? 1);
       const fx = dx * force;
       const fy = dy * force;
       disp.get(link.a)!.x -= fx;

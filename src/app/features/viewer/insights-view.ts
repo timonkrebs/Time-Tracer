@@ -1057,11 +1057,12 @@ export class InsightsView {
     const renderedIds = new Set(linked.slice(0, MAX_DEVELOPERS).map((d) => d.id));
     if (selectedId) {
       // Force the selection in only when it has links (a silo is never drawn);
-      // its collaborators are linked by definition.
+      // its collaborators are linked by definition. Pass the slider weight so
+      // the rendered neighbourhood matches the collaborator panel's order.
       if (graph.developers.find((d) => d.id === selectedId)?.collaborators) {
         renderedIds.add(selectedId);
       }
-      for (const mate of collaboratorsOf(graph, selectedId, MAX_DEVELOPERS))
+      for (const mate of collaboratorsOf(graph, selectedId, MAX_DEVELOPERS, weight))
         renderedIds.add(mate.id);
     }
     const rendered = graph.developers.filter((d) => renderedIds.has(d.id));
