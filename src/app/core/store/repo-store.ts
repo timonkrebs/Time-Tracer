@@ -40,6 +40,7 @@ import {
   selectOwnershipFiles,
   summarizeOwnership,
 } from '../util/ownership';
+import { applyPatch, parsePatch } from '../util/patch';
 import { LineLifetime, SurvivalReport, summarizeSurvival } from '../util/survival';
 import { ancestorsOf, buildTree } from '../util/tree';
 import { RecentRepos } from './recent-repos';
@@ -63,8 +64,10 @@ export const FILE_COCHANGE_COMMIT_CAP = 400;
 
 /** Shared empty size map for the knowledge model on a single-file focus walk. */
 const EMPTY_SIZES: ReadonlyMap<string, number> = new Map();
-/** Recompute the streaming survival report every N walked commits (it is O(lines)). */
-const SURVIVAL_RECOMPUTE_EVERY = 50;
+/** Commit file-lists kept in flight at once during the survival walk (overlaps the requests). */
+const SURVIVAL_PREFETCH = 12;
+/** Minimum gap between streaming recomputes of the survival report (it is O(lines)). */
+const SURVIVAL_PUBLISH_MS = 600;
 
 /** Lifecycle of the per-file commit history panel. */
 export type HistoryStatus = 'idle' | 'loading' | 'loading-more' | 'ready' | 'error';
@@ -1603,9 +1606,35 @@ export class RepoStore {
       const tipTime = Date.parse(commits[0].authoredAt);
       if (!Number.isNaN(tipTime)) now = tipTime;
 
-      // 2. Forward walk: diff each commit's files against the running snapshot.
+      // 2. Forward walk. The per-commit changed-file lists (carrying GitHub's
+      // inline patches) are prefetched with bounded concurrency so the requests
+      // overlap instead of running one at a time, and each file's new content is
+      // rebuilt from its patch — so the common path makes no per-file blob
+      // request at all (one request per commit instead of one per changed file).
+      const fileLists: (Promise<readonly CommitFileChange[]> | undefined)[] = new Array(
+        walk.length,
+      );
+      let started = 0;
+      const prefetch = (limit: number): void => {
+        while (started < walk.length && started < limit) {
+          const promise = provider.getCommitFiles(slug, walk[started].sha);
+          void promise.catch(() => {}); // mark handled; the in-order await still surfaces the error
+          fileLists[started++] = promise;
+        }
+      };
+      prefetch(SURVIVAL_PREFETCH);
+
       let walkClock = Number.NEGATIVE_INFINITY;
-      for (const commit of walk) {
+      let lastPublish = Date.now();
+      for (let index = 0; index < walk.length; index++) {
+        const commit = walk[index];
+        // A provider failure (rate limit, network) must surface as an error, not
+        // be swallowed into an empty change set that silently corrupts the report.
+        const changes = await fileLists[index]!;
+        fileLists[index] = undefined; // release the buffered result
+        if (!live()) return;
+        prefetch(index + 1 + SURVIVAL_PREFETCH); // keep the request window full
+
         const authored = Date.parse(commit.authoredAt);
         if (Number.isNaN(authored)) {
           scanned++;
@@ -1618,11 +1647,6 @@ export class RepoStore {
         const commitTime = walkClock;
         now = commitTime; // censor survivors at the latest observed commit, not wall-clock now
         const tag: Tag = { bornAt: commitTime, author: commit.authorName };
-        // A provider failure here (rate limit, network) must surface as an error,
-        // not be swallowed into an empty change set that silently corrupts the
-        // report — let it throw to the outer handler.
-        const changes = await provider.getCommitFiles(slug, commit.sha);
-        if (!live()) return;
 
         // Compute every change against the **pre-commit** snapshot (we don't mutate
         // `files` until the whole commit is processed) and stage the writes. A
@@ -1645,7 +1669,7 @@ export class RepoStore {
           const oldLines = previous?.lines ?? [];
           const oldTags = previous?.tags ?? [];
 
-          const newLines = await this.survivalNewLines(change, commit.sha);
+          const newLines = await this.resolveNewLines(change, oldLines, commit.sha);
           if (!live()) return;
           if (newLines === null) {
             // Binary or past the size guard: the blob can't be read, but nothing
@@ -1680,7 +1704,7 @@ export class RepoStore {
 
           if (movedFrom) deletes.push(movedFrom); // a rename empties the old path
           if (newLines.length === 0) deletes.push(change.path);
-          else sets.push([change.path, { lines: newLines, tags: newTags }]);
+          else sets.push([change.path, { lines: [...newLines], tags: newTags }]);
         }
         // Deletes first, then sets — so a path a rename vacated but another change
         // re-created in the same commit keeps the newly created file.
@@ -1688,8 +1712,14 @@ export class RepoStore {
         for (const [path, tracked] of sets) files.set(path, tracked);
 
         scanned++;
-        if (scanned % SURVIVAL_RECOMPUTE_EVERY === 0) report = reportFrom();
-        publish('computing');
+        // Recompute/stream the report on a time budget, not every commit, so the
+        // O(lines) roll-up can't dominate a long walk.
+        const elapsed = Date.now();
+        if (elapsed - lastPublish >= SURVIVAL_PUBLISH_MS) {
+          report = reportFrom();
+          lastPublish = elapsed;
+          publish('computing');
+        }
       }
 
       report = reportFrom();
@@ -1711,7 +1741,33 @@ export class RepoStore {
   }
 
   /**
-   * The text lines of a changed file just after a commit, for the survival walk:
+   * A changed file's lines just after a commit, for the survival walk — derived
+   * **without a network request** whenever possible:
+   *
+   * - a removal → `[]`; a no-content-change (pure rename / mode edit) → the old
+   *   lines unchanged;
+   * - otherwise the provider's inline `patch` is applied to `oldLines` (the fast
+   *   path: GitHub ships the diff with the commit, so no blob is fetched);
+   * - only when there is no patch, or it doesn't apply cleanly against the
+   *   running snapshot, does it fall back to {@link survivalNewLines} (a blob
+   *   fetch). `null` means a binary / oversized blob that can't be followed.
+   */
+  private async resolveNewLines(
+    change: CommitFileChange,
+    oldLines: readonly string[],
+    sha: string,
+  ): Promise<readonly string[] | null> {
+    if (/remov|delet/i.test(change.status)) return [];
+    if (change.additions === 0 && change.deletions === 0) return oldLines; // unchanged content
+    if (change.patch !== undefined) {
+      const applied = applyPatch(oldLines, parsePatch(change.patch));
+      if (applied) return applied; // reconstructed from the diff already in hand
+    }
+    return this.survivalNewLines(change, sha);
+  }
+
+  /**
+   * The text lines of a changed file just after a commit, fetched from the blob:
    * `[]` when the file was removed (or is genuinely absent at that commit), or
    * `null` when it is binary / too large and should stop being tracked. Fetches
    * the blob directly (bypassing the UI file cache) so a full-history walk does

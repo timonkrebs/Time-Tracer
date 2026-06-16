@@ -78,6 +78,9 @@ interface GithubCommitResponse {
     filename: string;
     status: string;
     previous_filename?: string;
+    additions?: number;
+    deletions?: number;
+    patch?: string;
   }[];
 }
 
@@ -270,6 +273,9 @@ export class GithubProvider implements GitProvider {
       path: file.filename,
       status: file.status,
       ...(file.previous_filename ? { previousPath: file.previous_filename } : {}),
+      ...(file.additions !== undefined ? { additions: file.additions } : {}),
+      ...(file.deletions !== undefined ? { deletions: file.deletions } : {}),
+      ...(file.patch !== undefined ? { patch: file.patch } : {}),
     }));
   }
 

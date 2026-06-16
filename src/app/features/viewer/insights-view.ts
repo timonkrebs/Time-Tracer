@@ -1542,8 +1542,9 @@ interface Quadrant {
               code half-life set against Bernhardsson's "half-life of code" benchmark.
             </p>
             <p class="mb-3 text-xs text-zinc-600">
-              Walks the <span class="text-zinc-400">whole history</span> (one request per changed
-              file) — best on local repositories; add a token for hosted ones.
+              Walks the <span class="text-zinc-400">whole history</span> — on GitHub it reuses each
+              commit's own diff (about one request per commit); add a token for big repos, or open a
+              local folder.
             </p>
             <button
               type="button"

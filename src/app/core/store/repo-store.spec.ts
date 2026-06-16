@@ -2079,5 +2079,65 @@ describe('RepoStore', () => {
       expect(store.survival()?.status).toBe('ready');
       expect(store.survival()!.report.curve.deaths).toBe(0);
     });
+
+    it('rebuilds content from inline patches without fetching any blobs', async () => {
+      const mk = (
+        sha: string,
+        authorName: string,
+        authoredAt: string,
+        parents: string[],
+      ): CommitInfo => ({
+        sha,
+        message: sha,
+        summary: sha,
+        authorName,
+        authorEmail: null,
+        authoredAt,
+        htmlUrl: `https://github.com/acme/rocket/commit/${sha}`,
+        parentShas: parents,
+      });
+      provider.listCommitsResult = () =>
+        Promise.resolve([
+          mk('c2', 'Bob', '2024-06-01T00:00:00Z', ['c1']),
+          mk('c1', 'Ada', '2024-01-01T00:00:00Z', []),
+        ]);
+      // c1 (Ada) adds a.txt with two lines; c2 (Bob) edits the second — both
+      // carry GitHub-style inline patches, so the walk needs no blob fetch.
+      provider.commitFilesResult = (sha) =>
+        Promise.resolve(
+          sha === 'c1'
+            ? [
+                {
+                  path: 'a.txt',
+                  status: 'added',
+                  additions: 2,
+                  deletions: 0,
+                  patch: '@@ -0,0 +1,2 @@\n+L1\n+L2',
+                },
+              ]
+            : [
+                {
+                  path: 'a.txt',
+                  status: 'modified',
+                  additions: 1,
+                  deletions: 1,
+                  patch: '@@ -1,2 +1,2 @@\n L1\n-L2\n+L2x',
+                },
+              ],
+        );
+
+      await store.loadRepo(slug);
+      await store.computeSurvival();
+
+      const report = store.survival()!.report;
+      expect(report.aliveLines).toBe(2); // L1 (Ada) + L2x (Bob)
+      expect(report.curve.deaths).toBe(1); // L2 (Ada) was replaced
+      expect(report.authors).toEqual([
+        { author: 'Ada', lines: 1, share: 0.5 },
+        { author: 'Bob', lines: 1, share: 0.5 },
+      ]);
+      // The whole history was reconstructed from the patches — zero blob fetches.
+      expect(provider.fileAtRefCalls).toEqual([]);
+    });
   });
 });

@@ -213,12 +213,22 @@ Following the established `hotspots.ts` / `co-change.ts` / `CoChangeState` patte
 
 ## Cost, performance, and honesty about limits
 
-- The walk is request-heavy on hosted providers (one content fetch per changed file per commit). It
-  is gated behind an explicit button, streams as it goes, and the intro repeats the "add a token
-  first" guidance the Insights view already shows for the anonymous 60-req/hr budget. **Local repos
-  are the ideal target** — the isomorphic-git provider has the whole object DB on disk.
+- **Patch fast-path (the key cost win).** GitHub returns each changed file's unified-diff `patch`
+  inline with the commit's file list, so the walk **reconstructs new content from the patch** rather
+  than fetching the blob — `core/util/patch.ts` (`parsePatch` + `applyPatch`, the latter verifying
+  every context/removed line against the running snapshot and returning `null` to trigger a blob
+  fallback on any mismatch). That collapses the network cost from **one request per changed file**
+  to **about one request per commit** (orders of magnitude fewer on real histories), with **zero**
+  blob fetches on the common path.
+- **Pipelined + throttled.** Per-commit file lists are prefetched with bounded concurrency
+  (`SURVIVAL_PREFETCH`) so requests overlap instead of running one-at-a-time, and the O(lines)
+  report roll-up is recomputed on a time budget (`SURVIVAL_PUBLISH_MS`), not every commit, so it
+  can't dominate a long walk.
+- Still gated behind an explicit button, streams as it goes, and repeats the "add a token" guidance
+  for big repos. Providers without inline patches (and binary/oversized files) fall back to the blob
+  fetch; **local repos** (isomorphic-git, whole object DB on disk) remain a great target.
 - Roadmap item 21 (move blame/Trace walks to a **Web Worker**) applies directly and is the natural
-  next step so long histories stay smooth.
+  next step so very long histories stay smooth.
 - Honest framing: the curve tracks "lines through this repo's recorded mainline". Cross-file
   renames are carried when the provider reports `previousPath`; a later enhancement could lean on
   the existing rename-candidate machinery to chase the rest.

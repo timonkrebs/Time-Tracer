@@ -129,6 +129,18 @@ export interface CommitFileChange {
   readonly status: string;
   /** Previous path for renames/copies, when the provider detected one. */
   readonly previousPath?: string;
+  /** Lines added, when the provider reports per-file stats. */
+  readonly additions?: number;
+  /** Lines removed, when the provider reports per-file stats. */
+  readonly deletions?: number;
+  /**
+   * The file's unified-diff hunks, when the provider returns them inline with
+   * the commit (GitHub does). Lets callers reconstruct the new content from the
+   * diff already in hand instead of fetching the blob — the key to walking
+   * history cheaply. Absent for binary/oversized files and providers that don't
+   * supply it.
+   */
+  readonly patch?: string;
 }
 
 /** Categorised provider failures so the UI can react specifically. */
