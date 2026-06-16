@@ -81,6 +81,8 @@ const SILO_FILL = '#52525b';
 const DEFAULT_TEMPORAL_WEIGHT = 0.5;
 /** Ties whose blended strength rounds below this (0%) aren't drawn as edges. */
 const MIN_DRAWN_STRENGTH = 0.005;
+/** Edge pull (< 1) for the team layout — loosens tight clusters so labels stay legible. */
+const TEAM_ATTRACTION = 0.5;
 
 interface GraphNode {
   readonly path: string;
@@ -1099,6 +1101,7 @@ export class InsightsView {
     const raw = forceLayout(
       order.map((d) => d.id),
       simEdges,
+      { attraction: TEAM_ATTRACTION },
     );
     const place = fitToBox(raw.values(), TEAM_W, TEAM_H, TEAM_MARGIN);
 
@@ -1106,7 +1109,7 @@ export class InsightsView {
     const nodes: TeamNode[] = order.map((dev) => {
       const point = place(raw.get(dev.id)!);
       pos.set(dev.id, point);
-      const r = 14 + 30 * Math.sqrt(dev.commits / maxCommits);
+      const r = 9 + 17 * Math.sqrt(dev.commits / maxCommits);
       const component = componentOf.get(dev.id) ?? 0;
       return {
         id: dev.id,

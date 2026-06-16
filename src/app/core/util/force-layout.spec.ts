@@ -56,6 +56,16 @@ describe('forceLayout', () => {
     );
   });
 
+  it('settles connected nodes further apart at lower attraction', () => {
+    const edges: ForceEdge[] = [{ a: 'a', b: 'b' }];
+    const tight = forceLayout(['a', 'b'], edges, { attraction: 1 });
+    const loose = forceLayout(['a', 'b'], edges, { attraction: 0.4 });
+    // Weaker pull lets repulsion settle the pair farther apart.
+    expect(dist(loose.get('a')!, loose.get('b')!)).toBeGreaterThan(
+      dist(tight.get('a')!, tight.get('b')!),
+    );
+  });
+
   it('settles a strong tie closer than a weak one', () => {
     const pos = forceLayout(
       ['hub', 'strong', 'weak'],

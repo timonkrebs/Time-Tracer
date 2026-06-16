@@ -33,11 +33,18 @@ export interface ForceLayoutOptions {
   readonly spread?: number;
   /** Pull toward the centre each step, so disconnected parts don't drift off. */
   readonly gravity?: number;
+  /**
+   * Edge pull multiplier (default 1). Below 1 settles connected nodes farther
+   * apart *relative to the whole graph*, loosening tight clusters so their
+   * labels stay legible after the result is scaled to fit.
+   */
+  readonly attraction?: number;
 }
 
 const DEFAULT_ITERATIONS = 300;
 const DEFAULT_SPREAD = 160;
 const DEFAULT_GRAVITY = 0.03;
+const DEFAULT_ATTRACTION = 1;
 
 /** Computes a position for every node id. Deterministic for a given input. */
 export function forceLayout(
@@ -48,6 +55,7 @@ export function forceLayout(
   const iterations = options.iterations ?? DEFAULT_ITERATIONS;
   const k = options.spread ?? DEFAULT_SPREAD;
   const gravity = options.gravity ?? DEFAULT_GRAVITY;
+  const attraction = options.attraction ?? DEFAULT_ATTRACTION;
 
   const n = nodeIds.length;
   const pos = new Map<string, Point>();
@@ -115,7 +123,7 @@ export function forceLayout(
       const dx = a.x - b.x;
       const dy = a.y - b.y;
       const dist = Math.hypot(dx, dy) || 0.01;
-      const force = (dist / k) * (link.weight ?? 1);
+      const force = (dist / k) * (link.weight ?? 1) * attraction;
       const fx = dx * force;
       const fy = dy * force;
       disp.get(link.a)!.x -= fx;
