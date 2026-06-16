@@ -574,7 +574,7 @@ interface TeamLayout {
             } @else if (graph().developers.length) {
               <p class="mb-2 text-xs text-zinc-500">
                 Who works with whom — developers are linked when they edit the same files. Click one
-                to trace their collaborators; isolated dots work in their own corner.
+                to trace their collaborators; people who share no files are listed below.
               </p>
               <div
                 class="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-zinc-600"
@@ -591,51 +591,60 @@ interface TeamLayout {
                 }
               </div>
 
-              <svg
-                class="aspect-[16/9] w-full rounded border border-zinc-800 bg-zinc-900/30"
-                [attr.viewBox]="'0 0 ' + teamW + ' ' + teamH"
-                preserveAspectRatio="xMidYMid meet"
-                role="img"
-              >
-                @for (edge of teamLayout().edges; track $index) {
-                  <line
-                    [attr.x1]="edge.x1"
-                    [attr.y1]="edge.y1"
-                    [attr.x2]="edge.x2"
-                    [attr.y2]="edge.y2"
-                    stroke="#6366f1"
-                    [attr.stroke-opacity]="edgeOpacity(edge)"
-                    [attr.stroke-width]="edge.width"
-                  />
-                }
-                @for (node of teamLayout().nodes; track node.id) {
-                  <g
-                    class="cursor-pointer"
-                    [attr.opacity]="nodeOpacity(node)"
-                    (click)="toggleDeveloper(node.id)"
-                  >
-                    <title>{{ nodeTitle(node) }}</title>
-                    <circle
-                      [attr.cx]="node.x"
-                      [attr.cy]="node.y"
-                      [attr.r]="node.r"
-                      [attr.fill]="node.fill"
-                      [attr.stroke]="selected() === node.id ? '#fafafa' : '#18181b'"
-                      [attr.stroke-width]="selected() === node.id ? 4 : 2"
+              @if (teamLayout().nodes.length) {
+                <svg
+                  class="aspect-[16/9] w-full rounded border border-zinc-800 bg-zinc-900/30"
+                  [attr.viewBox]="'0 0 ' + teamW + ' ' + teamH"
+                  preserveAspectRatio="xMidYMid meet"
+                  role="img"
+                >
+                  @for (edge of teamLayout().edges; track $index) {
+                    <line
+                      [attr.x1]="edge.x1"
+                      [attr.y1]="edge.y1"
+                      [attr.x2]="edge.x2"
+                      [attr.y2]="edge.y2"
+                      stroke="#6366f1"
+                      [attr.stroke-opacity]="edgeOpacity(edge)"
+                      [attr.stroke-width]="edge.width"
                     />
-                    <text
-                      [attr.x]="node.lx"
-                      [attr.y]="node.ly"
-                      [attr.text-anchor]="node.anchor"
-                      font-size="20"
-                      fill="#d4d4d8"
-                      class="pointer-events-none font-mono"
+                  }
+                  @for (node of teamLayout().nodes; track node.id) {
+                    <g
+                      class="cursor-pointer"
+                      [attr.opacity]="nodeOpacity(node)"
+                      (click)="toggleDeveloper(node.id)"
                     >
-                      {{ node.label }}
-                    </text>
-                  </g>
-                }
-              </svg>
+                      <title>{{ nodeTitle(node) }}</title>
+                      <circle
+                        [attr.cx]="node.x"
+                        [attr.cy]="node.y"
+                        [attr.r]="node.r"
+                        [attr.fill]="node.fill"
+                        [attr.stroke]="selected() === node.id ? '#fafafa' : '#18181b'"
+                        [attr.stroke-width]="selected() === node.id ? 4 : 2"
+                      />
+                      <text
+                        [attr.x]="node.lx"
+                        [attr.y]="node.ly"
+                        [attr.text-anchor]="node.anchor"
+                        font-size="20"
+                        fill="#d4d4d8"
+                        class="pointer-events-none font-mono"
+                      >
+                        {{ node.label }}
+                      </text>
+                    </g>
+                  }
+                </svg>
+              } @else {
+                <p
+                  class="rounded border border-zinc-800 bg-zinc-900/30 p-4 text-center text-xs text-zinc-500"
+                >
+                  No shared-file collaborations in the analysed window — everyone below worked on
+                  separate files.
+                </p>
+              }
 
               @if (selectedDeveloper(); as dev) {
                 <div class="mt-3 rounded border border-zinc-800 bg-zinc-900/40 p-3">
@@ -735,14 +744,12 @@ interface TeamLayout {
                   </p>
                   <div class="flex flex-wrap gap-1.5">
                     @for (id of graph().silos; track id) {
-                      <button
-                        type="button"
-                        class="max-w-[12rem] truncate rounded-full border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100"
+                      <span
+                        class="max-w-[12rem] truncate rounded-full border border-zinc-800 px-2 py-0.5 text-[11px] text-zinc-400"
                         [title]="displayName(id)"
-                        (click)="toggleDeveloper(id)"
                       >
                         {{ displayName(id) }}
-                      </button>
+                      </span>
                     }
                   </div>
                 }
@@ -892,9 +899,13 @@ export class InsightsView {
 
   /** The developer collaboration graph from the overview walk. */
   protected readonly graph = computed<TeamGraph>(() => this.state()?.teamGraph ?? EMPTY_TEAM_GRAPH);
-  /** Developers beyond the render cap (shown only as a count). */
+  /** Developers with ≥ 1 collaborator — the only ones drawn in the graph. */
+  private readonly linkedDevelopers = computed<Developer[]>(() =>
+    this.graph().developers.filter((d) => d.collaborators > 0),
+  );
+  /** Linked developers beyond the render cap (shown only as a count). */
   protected readonly moreDevelopers = computed(() =>
-    Math.max(0, this.graph().developers.length - MAX_DEVELOPERS),
+    Math.max(0, this.linkedDevelopers().length - MAX_DEVELOPERS),
   );
 
   /**
@@ -989,23 +1000,31 @@ export class InsightsView {
   }
 
   /**
-   * Lays the developers out on a ring, ordered so members of the same connected
-   * component (the same "team") sit contiguously — keeping their ties short
-   * chords — with silos falling to the end. Disc size scales with commit count
-   * and colour marks the component.
+   * Lays the **linked** developers out on a ring — people who share no files
+   * with anyone are left out (they are listed beneath the graph instead of
+   * floating as unconnected dots) — ordered so members of the same connected
+   * component (the same "team") sit contiguously, keeping their ties short
+   * chords. Disc size scales with commit count and colour marks the component.
    *
    * Selection-aware: the rendered set is the most-active slice plus, when a
    * developer is selected, that developer and their collaborators — so drilling
-   * into anyone (a silo, or someone past the cap) shows a real neighbourhood
-   * rather than dimming the graph to nothing. The selected developer's own ties
-   * are drawn even past the global edge cap.
+   * into someone past the cap still shows a real neighbourhood rather than
+   * dimming the graph to nothing. The selected developer's own ties are drawn
+   * even past the global edge cap.
    */
   private layoutTeam(graph: TeamGraph, selectedId: string | null): TeamLayout {
-    if (graph.developers.length === 0) return { nodes: [], edges: [] };
+    // Only people with collaboration links belong in the graph; the rest are
+    // listed beneath it, so they never appear as unconnected dots.
+    const linked = graph.developers.filter((d) => d.collaborators > 0);
+    if (linked.length === 0) return { nodes: [], edges: [] };
 
-    const renderedIds = new Set(graph.developers.slice(0, MAX_DEVELOPERS).map((d) => d.id));
+    const renderedIds = new Set(linked.slice(0, MAX_DEVELOPERS).map((d) => d.id));
     if (selectedId) {
-      renderedIds.add(selectedId);
+      // Force the selection in only when it has links (a silo is never drawn);
+      // its collaborators are linked by definition.
+      if (graph.developers.find((d) => d.id === selectedId)?.collaborators) {
+        renderedIds.add(selectedId);
+      }
       for (const mate of collaboratorsOf(graph, selectedId, MAX_DEVELOPERS))
         renderedIds.add(mate.id);
     }
@@ -1053,7 +1072,7 @@ export class InsightsView {
         lx: single ? cx : x + labelDist * cos,
         ly: single ? cy + r + 22 : y + labelDist * sin + 6,
         anchor: single ? 'middle' : cos > 0.2 ? 'start' : cos < -0.2 ? 'end' : 'middle',
-        fill: dev.collaborators === 0 ? SILO_FILL : TEAM_COLORS[component % TEAM_COLORS.length],
+        fill: TEAM_COLORS[component % TEAM_COLORS.length],
         commits: dev.commits,
         files: dev.files,
         collaborators: dev.collaborators,

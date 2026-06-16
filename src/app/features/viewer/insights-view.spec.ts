@@ -302,20 +302,25 @@ describe('InsightsView', () => {
     expect(text()).toContain('hot.ts');
   });
 
-  it('maps the team as a social graph, ranks connectors and lists silos', async () => {
+  it('graphs only linked developers and lists the silos beneath', async () => {
     await setState(TEAM);
     button('Team')!.click();
     await fixture.whenStable();
 
-    // The graph is drawn as an SVG node-link diagram (a disc per developer).
-    expect(fixture.nativeElement.querySelectorAll('svg circle').length).toBe(3);
+    // Only the two linked developers (Ada, Bo) get a node; Cy works alone, so it
+    // is left out of the graph and listed underneath instead.
+    expect(fixture.nativeElement.querySelectorAll('svg circle').length).toBe(2);
+    const titles = Array.from(
+      fixture.nativeElement.querySelectorAll('svg title') as SVGTitleElement[],
+    ).map((el) => el.textContent ?? '');
+    expect(titles.some((title) => title.includes('Cy'))).toBe(false);
+
     const t = text();
     expect(t).toContain('3 developers');
     expect(t).toContain('1 ties');
-    // Ada and Bo collaborate; Cy works alone.
     expect(t).toContain('Most connected');
     expect(t).toContain('Working in isolation');
-    expect(t).toContain('Cy');
+    expect(t).toContain('Cy'); // listed beneath the graph, not drawn in it
   });
 
   it('selects a developer to reveal their collaborators, and clears again', async () => {
