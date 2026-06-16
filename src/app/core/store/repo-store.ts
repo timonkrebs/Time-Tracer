@@ -22,6 +22,7 @@ import {
 } from '../util/co-change';
 import { FileDiff, computeFileDiff, diffLines, lineSimilarity, splitLines } from '../util/diff';
 import { FileMetric, Hotspot, computeFileMetric, computeHotspots } from '../util/hotspots';
+import { EMPTY_TEAM_GRAPH, TeamGraph, computeTeamGraph } from '../util/team-graph';
 import {
   LineRange,
   changeRegions,
@@ -244,6 +245,11 @@ export interface CoChangeState {
   readonly result: CoChangeResult;
   /** Files ranked by recency-weighted churn (repo-wide only; empty for a focus). */
   readonly hotspots: readonly Hotspot[];
+  /**
+   * Developer collaboration graph from the same walk — who works with whom, by
+   * shared file authorship (repo-wide only; the empty graph for a focus).
+   */
+  readonly teamGraph: TeamGraph;
   readonly message?: string;
 }
 
@@ -1325,8 +1331,13 @@ export class RepoStore {
       if (entry.kind === 'file') sizes.set(entry.path, entry.size ?? 0);
     }
 
-    // Each commit keeps its date/author (for churn scoring) and changed files.
-    const collected: (CommitFiles & { authoredAt: string; authorName: string })[] = [];
+    // Each commit keeps its date/author (for churn scoring and the team graph)
+    // and changed files.
+    const collected: (CommitFiles & {
+      authoredAt: string;
+      authorName: string;
+      authorEmail: string | null;
+    })[] = [];
     const publish = (status: CoChangeState['status'], message?: string): void =>
       sink.set({
         status,
@@ -1334,8 +1345,10 @@ export class RepoStore {
         scanned: collected.length,
         target: options.cap,
         result: computeCoChange(collected, { minSupport: options.minSupport }),
-        // Hotspots are a repo-wide metric; a single file's walk doesn't have them.
+        // Hotspots and the team graph are repo-wide metrics; a single file's
+        // walk doesn't have them.
         hotspots: options.focus ? [] : computeHotspots(collected, sizes),
+        teamGraph: options.focus ? EMPTY_TEAM_GRAPH : computeTeamGraph(collected),
         message,
       });
 
@@ -1359,6 +1372,7 @@ export class RepoStore {
             sha: commit.sha,
             authoredAt: commit.authoredAt,
             authorName: commit.authorName,
+            authorEmail: commit.authorEmail,
             files,
           });
           if (collected.length % 5 === 0) publish('computing');
@@ -1376,6 +1390,7 @@ export class RepoStore {
         target: options.cap,
         result: computeCoChange(collected, { minSupport: options.minSupport }),
         hotspots: options.focus ? [] : computeHotspots(collected, sizes),
+        teamGraph: options.focus ? EMPTY_TEAM_GRAPH : computeTeamGraph(collected),
         message: toRepoProviderError(error).message,
       });
     }
