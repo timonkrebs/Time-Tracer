@@ -4,7 +4,6 @@ import { Router } from '@angular/router';
 import { AccessTokens, TokenProviderId, hostKey } from '../../core/git/access-tokens';
 import { GitProvider, ProviderRegistry } from '../../core/git/git-provider';
 import { LocalRepos, supportsLocalRepos } from '../../core/git/local/local-repos';
-import { ZipRepos } from '../../core/git/local/zip-repos';
 import { ParsedRepoUrl } from '../../core/models';
 import { RecentRepos, RecentRepo } from '../../core/store/recent-repos';
 
@@ -115,34 +114,6 @@ type CustomFlavor = (typeof CUSTOM_FLAVORS)[number]['id'];
             Open a local repository folder…
           </button>
         }
-
-        <button
-          type="button"
-          [disabled]="busy()"
-          class="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900/60 px-4 py-2.5 text-sm text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100 disabled:cursor-wait disabled:opacity-60"
-          (click)="zipInput.click()"
-        >
-          <svg
-            class="size-4 text-indigo-300/80"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.8"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M21 8v13H3V8M1 3h22v5H1zM10 12h4" />
-          </svg>
-          Open a repository .zip…
-        </button>
-        <input
-          #zipInput
-          type="file"
-          accept=".zip,application/zip"
-          class="hidden"
-          (change)="openZip($event)"
-        />
 
         <div class="mt-4 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
           <span>Try:</span>
@@ -477,7 +448,6 @@ export class LoaderPage {
   private readonly router = inject(Router);
   private readonly registry = inject(ProviderRegistry);
   private readonly localRepos = inject(LocalRepos);
-  private readonly zipRepos = inject(ZipRepos);
   protected readonly recents = inject(RecentRepos);
   protected readonly tokens = inject(AccessTokens);
 
@@ -634,24 +604,6 @@ export class LoaderPage {
       return new URL(host).hostname;
     } catch {
       return host;
-    }
-  }
-
-  /** Imports a repository from a .zip archive (works in every browser). */
-  protected async openZip(event: Event): Promise<void> {
-    const input = event.target as HTMLInputElement;
-    const file = input.files?.[0];
-    input.value = '';
-    if (!file || this.busy()) return;
-    this.busy.set(true);
-    this.error.set(null);
-    try {
-      const name = await this.zipRepos.open(file);
-      void this.router.navigate(['/local', name]);
-    } catch (error) {
-      this.error.set(error instanceof Error ? error.message : 'Could not read the zip file.');
-    } finally {
-      this.busy.set(false);
     }
   }
 

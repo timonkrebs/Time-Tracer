@@ -3,9 +3,8 @@
 **Try it live: [gittimetracer.netlify.app](https://gittimetracer.netlify.app/)**
 
 Explore any public GitHub, GitLab, Bitbucket or Azure DevOps repository — a self-hosted GitHub
-Enterprise / GitLab / Bitbucket Server instance, or a git repository from your own disk or a .zip
-archive — and travel back through its history change by change. Installable as an offline-capable
-PWA.
+Enterprise / GitLab / Bitbucket Server instance, or a git repository from your own disk — and
+travel back through its history change by change. Installable as an offline-capable PWA.
 
 Time Tracer is a **client-only** Angular app: there is no backend. Hosted repositories are read
 through the GitHub/GitLab/Bitbucket/Azure DevOps REST APIs; local folders are read directly via the
@@ -45,10 +44,6 @@ renames — see the feature list and roadmap below for what's done and what's ne
   Time Tracer parses its `.git` directly in the browser with isomorphic-git — full tree, history,
   diffs, blame and rename candidates, completely offline and read-only. Folder handles persist
   across reloads (IndexedDB); a one-click "Reconnect folder" re-grants permission.
-- **Open .zip archives** (every browser): zips containing a `.git` folder keep their full
-  history; plain source archives (e.g. GitHub's "Download ZIP") get a single synthetic
-  "Imported from …" commit so browsing, diffing and annotating work uniformly. Wrapper folders
-  like `repo-main/` are stripped automatically.
 - **Desktop-first split-pane viewer**: resizable file tree (drag the divider, double-click to
   reset, or collapse it entirely with the header toggle — remembered while you browse, and
   re-revealed whenever you open another repository) next to a file view with a line-number
@@ -219,7 +214,7 @@ src/app/
 │   │   ├── gitlab/          # URL parser + REST v4 implementation (gitlab.com + self-hosted)
 │   │   ├── bitbucket/       # Cloud (REST 2.0) + Server/Data Center (REST 1.0) providers
 │   │   ├── azd/             # Azure DevOps URL parser + REST 7.1 implementation
-│   │   └── local/           # FS-Access/zip filesystems + isomorphic-git provider
+│   │   └── local/           # FS-Access filesystem + isomorphic-git provider
 │   ├── store/
 │   │   ├── repo-store.ts    # signals store: load lifecycle, tree, selection, file +
 │   │   │                    # history caches, time-travel (viewAt) state
