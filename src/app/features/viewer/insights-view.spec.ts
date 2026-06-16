@@ -367,4 +367,19 @@ describe('InsightsView', () => {
     await fixture.whenStable();
     expect(text()).toContain('100%');
   });
+
+  it('drops faded ties from the graph at the recent end', async () => {
+    await setState(TEAM);
+    button('Team')!.click();
+    await fixture.whenStable();
+    // At the default blend the Ada–Bo tie is drawn…
+    expect(fixture.nativeElement.querySelector('svg line')).not.toBeNull();
+
+    // …but TEAM has no commit dates, so fully weighted toward recent every tie
+    // fades to 0% and none are drawn (the nodes remain).
+    drag('Temporal weighting', 100);
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelector('svg line')).toBeNull();
+    expect(fixture.nativeElement.querySelectorAll('svg circle').length).toBe(2);
+  });
 });

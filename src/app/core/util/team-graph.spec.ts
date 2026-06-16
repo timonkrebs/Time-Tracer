@@ -168,6 +168,40 @@ describe('computeTeamGraph', () => {
     expect(cyDi.temporalStrength).toBeGreaterThan(0.9);
     expect(adaBo.temporalStrength).toBeLessThan(0.1);
   });
+
+  it('measures age from the newest commit even when it was skipped as a sweep', () => {
+    const sweep = Array.from({ length: 30 }, (_, i) => `f${i}.ts`);
+    const graph = computeTeamGraph(
+      [
+        // A tight handoff…
+        { authorName: 'Ada', authorEmail: 'ada@x', authoredAt: day(0), files: ['a.ts'] },
+        { authorName: 'Bo', authorEmail: 'bo@x', authoredAt: day(1), files: ['a.ts'] },
+        // …then a far newer formatter sweep: dropped from ties, but it is "now".
+        { authorName: 'Sweep', authorEmail: 'sweep@x', authoredAt: day(400), files: sweep },
+      ],
+      { maxCommitFiles: 25, recencyHalfLifeDays: 90 },
+    );
+    expect(graph.developers.some((d) => d.id === 'sweep@x')).toBe(false); // sweep skipped
+    const adaBo = graph.collaborations.find((e) => e.a === 'ada@x' && e.b === 'bo@x')!;
+    // Age is taken from the day-400 sweep, so the day-0 handoff reads as stale.
+    expect(adaBo.temporalStrength).toBeLessThan(0.1);
+  });
+
+  it('finds the best handoff among many edits without a quadratic blow-up', () => {
+    const graph = computeTeamGraph(
+      [
+        { authorName: 'A', authorEmail: 'a@x', authoredAt: day(0), files: ['f.ts'] },
+        { authorName: 'A', authorEmail: 'a@x', authoredAt: day(100), files: ['f.ts'] },
+        { authorName: 'A', authorEmail: 'a@x', authoredAt: day(200), files: ['f.ts'] },
+        { authorName: 'B', authorEmail: 'b@x', authoredAt: day(5), files: ['f.ts'] },
+        { authorName: 'B', authorEmail: 'b@x', authoredAt: day(201), files: ['f.ts'] },
+      ],
+      { proximityHalfLifeDays: 30, recencyHalfLifeDays: 90 },
+    );
+    const ab = graph.collaborations.find((e) => e.a === 'a@x' && e.b === 'b@x')!;
+    // Best pair is A@200 ↔ B@201: gap 1 day, age 0 (latest = 201). union = 1.
+    expect(ab.temporalStrength).toBeCloseTo(2 ** (-1 / 30), 4);
+  });
 });
 
 describe('blendStrength', () => {

@@ -164,11 +164,15 @@ function pickName(votes: Map<string, number> | undefined): string {
 
 /**
  * Closeness in 0..1 of the best **handoff** between A and B on a shared file:
- * the strongest cross-edit pair, scored by how close together the two edits
- * were (proximity) *and* how recently the later of them landed relative to
- * `latest`, the newest commit in the window (age). 1 for a same-moment handoff
- * at the tip, decaying with both the gap and the age. Zero when either side has
- * no dated edit.
+ * over their edit times, the strongest score of proximity (how close together
+ * the two edits were) × age (how recently the later one landed, relative to
+ * `latest`, the newest commit in the window). 1 for a same-moment handoff at the
+ * tip; 0 when either side has no dated edit.
+ *
+ * `score(a, b)` is piecewise-monotonic in `a` for a fixed `b`, so its maximum
+ * sits at one of `b`'s nearest A-edits on either side or the most recent A-edit.
+ * Found with a binary search per B-edit — O(|B|·log|A|) — rather than the full
+ * O(|A|·|B|) cross product, so "Load all" on a hot file can't lock the tab.
  */
 function temporalCloseness(
   timesA: readonly number[],
@@ -177,13 +181,25 @@ function temporalCloseness(
   proximityHalfLifeMs: number,
   recencyHalfLifeMs: number,
 ): number {
+  if (timesA.length === 0 || timesB.length === 0) return 0;
+  const a = [...timesA].sort((x, y) => x - y);
+  const score = (ta: number, tb: number): number =>
+    2 ** (-Math.abs(ta - tb) / proximityHalfLifeMs) *
+    2 ** (-(latest - Math.max(ta, tb)) / recencyHalfLifeMs);
+
   let best = 0;
-  for (const ta of timesA) {
-    for (const tb of timesB) {
-      const proximityScore = 2 ** (-Math.abs(ta - tb) / proximityHalfLifeMs);
-      const ageScore = 2 ** (-(latest - Math.max(ta, tb)) / recencyHalfLifeMs);
-      const score = proximityScore * ageScore;
-      if (score > best) best = score;
+  for (const tb of timesB) {
+    // First A-edit strictly after tb; its neighbours (and the most recent
+    // A-edit, covering any half-life ratio) are the only maximum candidates.
+    let lo = 0;
+    let hi = a.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (a[mid] <= tb) lo = mid + 1;
+      else hi = mid;
+    }
+    for (const idx of [lo - 1, lo, a.length - 1]) {
+      if (idx >= 0 && idx < a.length) best = Math.max(best, score(a[idx], tb));
     }
   }
   return best;
@@ -220,12 +236,15 @@ export function computeTeamGraph(
   let latest = -Infinity;
 
   for (const commit of commits) {
+    // The age decay's "now" is the newest commit in the window — counted even
+    // for commits skipped below (a formatter sweep or merge can be the newest),
+    // so a stale tie just before such a commit isn't mistaken for current work.
+    const time = commit.authoredAt ? Date.parse(commit.authoredAt) : NaN;
+    if (!Number.isNaN(time) && time > latest) latest = time;
     const identity = identityOf(commit);
     const files = [...new Set(commit.files)];
     if (!identity || files.length === 0 || files.length > maxCommitFiles) continue;
     const { id, name } = identity;
-    const time = commit.authoredAt ? Date.parse(commit.authoredAt) : NaN;
-    if (!Number.isNaN(time) && time > latest) latest = time;
     commitCount.set(id, (commitCount.get(id) ?? 0) + 1);
     let votes = nameVotes.get(id);
     if (!votes) nameVotes.set(id, (votes = new Map()));

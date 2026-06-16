@@ -79,6 +79,8 @@ const TEAM_COLORS = [
 const SILO_FILL = '#52525b';
 /** Default blend toward the temporal (recent-collaboration) tie strength. */
 const DEFAULT_TEMPORAL_WEIGHT = 0.5;
+/** Ties whose blended strength rounds below this (0%) aren't drawn as edges. */
+const MIN_DRAWN_STRENGTH = 0.005;
 
 interface GraphNode {
   readonly path: string;
@@ -1134,6 +1136,8 @@ export class InsightsView {
       const b = pos.get(edge.b);
       if (!a || !b) continue; // an endpoint sits beyond the rendered set
       const strength = strengthOf(edge);
+      // A tie the slider has faded to ~0% (e.g. stale or undated) isn't drawn.
+      if (strength < MIN_DRAWN_STRENGTH) continue;
       const line: TeamEdge = {
         a: edge.a,
         b: edge.b,
