@@ -268,6 +268,7 @@ Points raised in two rounds of automated review, and how the shipped walk handle
 | Rename without a provider hint        | A removed + added pair of identical content (e.g. a local `git mv`, which has no `previousPath`) is detected as a rename, carrying age/author.                                             |
 | Patch truncated between hunks         | The reconstructed diff is trusted only when its added/removed totals match the provider's `additions`/`deletions` (`patchStatsMatch`), else it fetches the blob.                           |
 | Unreadable file dropped, not censored | When a tracked file turns binary/oversized its lines are **right-censored** at that commit (`censoredAt`) — counted and in the risk set, but not dead and not live — instead of vanishing. |
+| Edited rename without a provider hint | Beyond exact content, an unflagged remove+add is paired by **content similarity** (≥ 50%, bounded), so a `git mv` that also edits a line keeps the unchanged lines' age/author.            |
 
 ## Open questions / future work
 
@@ -275,21 +276,23 @@ Points raised in two rounds of automated review, and how the shipped walk handle
   refinement.
 - **Authorship over time** — shipped as the current-snapshot 100%-stacked bar; a time-series stack
   could be added if it earns the screen space.
-- **`getCommitFiles` pagination** — GitHub's commit endpoint caps the `files` array at 300 and
-  paginates beyond it, while the provider reads only the first page. A commit touching >300 files
-  (mass imports/vendoring) is rare, but for full fidelity `getCommitFiles` should exhaust
-  pagination or signal truncation; this is a **pre-existing, cross-cutting** provider concern
-  (co-change and rename detection share it), so it is tracked as a follow-up rather than folded in
-  here.
+- **`getCommitFiles` pagination/limits** — a commit's changed-file list can be truncated by the
+  provider: GitHub caps the `files` array at 300 and paginates beyond it, and GitLab's
+  `/commits/:sha/diff` paginates and imposes diff limits — in both cases the provider reads only the
+  first page. A commit touching that many files (mass imports/vendoring) is rare, but for full
+  fidelity `getCommitFiles` should exhaust pagination or signal truncation. This is a
+  **pre-existing, cross-cutting** provider concern (co-change and rename detection share it), so it
+  is tracked as a follow-up rather than folded in here.
 - **Merge-commit authorship** — a consequence of the first-parent walk: lines merged into the
   mainline through a true merge commit are credited to that merge's author/date, not the original
   side-branch commit, which can skew the "% by author" chart and birth years for merge-commit-heavy
   repos (squash/rebase workflows are unaffected). Recovering the true origin needs a per-merge blame
   of the second parent — a heavier follow-up that trades request cost for attribution fidelity, and
   the opposite direction from the first-parent choice that keeps the lifetime structure correct.
-- **Renames across edits** — exact-content renames are now carried (both via the provider's
-  `previousPath` and via same-commit remove/add content matching); a rename that also _edits_ the
-  file still reads as churn, which the existing similarity/candidate search could later resolve.
+- **Renames** — carried via the provider's `previousPath`, via same-commit exact-content matching,
+  and via **bounded content-similarity** pairing (≥ 50%, like git's `-M`) so a rename that also
+  edits the file keeps the unchanged lines' age/author. Provider-level rename detection (which would
+  also help blame and rename candidates) remains the cleaner long-term home.
 - **Web Worker** offload (roadmap item 21) remains the natural follow-up for very long histories.
 
 ## Roadmap note

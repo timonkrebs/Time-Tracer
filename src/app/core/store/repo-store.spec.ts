@@ -2230,5 +2230,62 @@ describe('RepoStore', () => {
       expect(report.aliveLines).toBe(2);
       expect(report.authors).toEqual([{ author: 'Ada', lines: 2, share: 1 }]);
     });
+
+    it('detects a rename that also edits the file, by content similarity', async () => {
+      const mk = (
+        sha: string,
+        authorName: string,
+        authoredAt: string,
+        parents: string[],
+      ): CommitInfo => ({
+        sha,
+        message: sha,
+        summary: sha,
+        authorName,
+        authorEmail: null,
+        authoredAt,
+        htmlUrl: `https://github.com/acme/rocket/commit/${sha}`,
+        parentShas: parents,
+      });
+      provider.listCommitsResult = () =>
+        Promise.resolve([
+          mk('c2', 'Bob', '2024-06-01T00:00:00Z', ['c1']),
+          mk('c1', 'Ada', '2024-01-01T00:00:00Z', []),
+        ]);
+      // c1 (Ada) adds a 3-line a.txt; c2 (Bob) moves it to b.txt AND edits one
+      // line — reported (no previousPath) as remove + add, ~67% similar.
+      provider.commitFilesResult = (sha) =>
+        Promise.resolve(
+          sha === 'c1'
+            ? [{ path: 'a.txt', status: 'added' }]
+            : [
+                { path: 'a.txt', status: 'removed' },
+                { path: 'b.txt', status: 'added' },
+              ],
+        );
+      const blobs: Record<string, string> = {
+        'a.txt@c1': 'L1\nL2\nL3\n',
+        'b.txt@c2': 'L1\nL2x\nL3\n',
+      };
+      provider.fileAtRefResult = (path, ref) => {
+        const text = blobs[`${path}@${ref}`];
+        return text === undefined
+          ? Promise.reject(new RepoProviderError('absent', 'not-found'))
+          : Promise.resolve({ kind: 'text', path, sha: `${path}-${ref}`, size: text.length, text });
+      };
+
+      await store.loadRepo(slug);
+      await store.computeSurvival();
+
+      const report = store.survival()!.report;
+      // The two unchanged lines keep Ada's authorship; only the edited line dies
+      // and is reborn under Bob — not the whole file.
+      expect(report.curve.deaths).toBe(1);
+      expect(report.aliveLines).toBe(3);
+      expect(report.authors).toEqual([
+        { author: 'Ada', lines: 2, share: 2 / 3 },
+        { author: 'Bob', lines: 1, share: 1 / 3 },
+      ]);
+    });
   });
 });

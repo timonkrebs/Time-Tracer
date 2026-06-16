@@ -68,6 +68,10 @@ const EMPTY_SIZES: ReadonlyMap<string, number> = new Map();
 const SURVIVAL_PREFETCH = 12;
 /** Minimum gap between streaming recomputes of the survival report (it is O(lines)). */
 const SURVIVAL_PUBLISH_MS = 600;
+/** Cap on removed×added pairs the survival walk will similarity-test for renames per commit. */
+const SURVIVAL_RENAME_PAIR_LIMIT = 200;
+/** Minimum content similarity (0..1) to treat an unflagged remove+add as a rename. */
+const SURVIVAL_RENAME_SIMILARITY = 0.5;
 
 /** Lifecycle of the per-file commit history panel. */
 export type HistoryStatus = 'idle' | 'loading' | 'loading-more' | 'ready' | 'error';
@@ -1676,34 +1680,67 @@ export class RepoStore {
 
         // Detect renames the provider didn't flag — notably a local `git mv`,
         // which the isomorphic-git reader reports as a plain remove + add with no
-        // `previousPath`. Pair a removed file with an added file of identical
-        // content so the lines carry their age/author instead of dying and being
-        // reborn (which would reset code age on the repos we call the cheap path).
-        const removedByContent = new Map<string, (typeof resolved)[number]>();
+        // `previousPath`. Pairing carries the lines' age/author across the move
+        // instead of recording deaths and rebirths (which would reset code age on
+        // the repos we advertise as the cheap path).
+        type Resolved = (typeof resolved)[number];
+        const isRemovedSource = (r: Resolved): boolean =>
+          !r.movedFrom &&
+          r.oldLines.length > 0 &&
+          r.newLines !== null &&
+          r.newLines.length === 0 &&
+          /remov|delet/i.test(r.change.status);
+        const isAddedTarget = (r: Resolved): boolean =>
+          !r.change.previousPath &&
+          /^add/i.test(r.change.status) &&
+          r.newLines !== null &&
+          r.newLines.length > 0;
+        const pairRename = (added: Resolved, source: Resolved): void => {
+          added.movedFrom = source.change.path; // treat the add as a rename of the removed file
+          added.oldLines = source.oldLines;
+          added.oldTags = source.oldTags;
+          source.skip = true; // its removal *is* the rename, not a deletion
+        };
+
+        // 1) Exact content (a pure `git mv`) — cheap, matched by hash.
+        const removedByContent = new Map<string, Resolved>();
         for (const item of resolved) {
-          if (
-            !item.movedFrom &&
-            item.oldLines.length > 0 &&
-            item.newLines !== null &&
-            item.newLines.length === 0 &&
-            /remov|delet/i.test(item.change.status)
-          ) {
-            removedByContent.set(item.oldLines.join('\n'), item);
-          }
+          if (isRemovedSource(item)) removedByContent.set(item.oldLines.join('\n'), item);
         }
         if (removedByContent.size > 0) {
           for (const item of resolved) {
-            const isAdd = !item.change.previousPath && /^add/i.test(item.change.status);
-            if (!isAdd || item.movedFrom || !item.newLines || item.newLines.length === 0) continue;
-            const key = item.newLines.join('\n');
+            if (!isAddedTarget(item) || item.movedFrom) continue;
+            const key = item.newLines!.join('\n');
             const source = removedByContent.get(key);
-            if (source && source !== item) {
-              item.movedFrom = source.change.path; // treat the add as a rename of the removed file
-              item.oldLines = source.oldLines;
-              item.oldTags = source.oldTags;
-              source.skip = true; // its removal *is* the rename, not a deletion
+            if (source && source !== item && !source.skip) {
+              pairRename(item, source);
               removedByContent.delete(key);
             }
+          }
+        }
+
+        // 2) Similarity (a rename that also edited the file) — bounded greedy
+        // best-match above a threshold, like git's own rename detection. Capped so
+        // a mass move can't blow up into an O(removed×added) diff storm.
+        const looseRemoved = resolved.filter((r) => isRemovedSource(r) && !r.skip);
+        const looseAdded = resolved.filter((r) => isAddedTarget(r) && !r.movedFrom);
+        if (
+          looseRemoved.length > 0 &&
+          looseAdded.length > 0 &&
+          looseRemoved.length * looseAdded.length <= SURVIVAL_RENAME_PAIR_LIMIT
+        ) {
+          const candidates: { added: Resolved; source: Resolved; score: number }[] = [];
+          for (const added of looseAdded) {
+            const newText = added.newLines!.join('\n');
+            for (const source of looseRemoved) {
+              const score = lineSimilarity(source.oldLines.join('\n'), newText);
+              if (score >= SURVIVAL_RENAME_SIMILARITY) candidates.push({ added, source, score });
+            }
+          }
+          candidates.sort((a, b) => b.score - a.score);
+          for (const { added, source } of candidates) {
+            if (added.movedFrom || source.skip) continue; // each side pairs at most once
+            pairRename(added, source);
           }
         }
 
