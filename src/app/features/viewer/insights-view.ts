@@ -726,7 +726,7 @@ interface TeamLayout {
                             {{ mate.name }}
                           </button>
                           <span class="shrink-0 text-[11px] text-zinc-500 tabular-nums">
-                            {{ mate.sharedFiles }} shared · {{ tiePct(mate) }}%
+                            {{ mate.sharedFiles }} shared · {{ tiePct(mate) }}% overlap
                           </span>
                         </li>
                       }
