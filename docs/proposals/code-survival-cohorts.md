@@ -247,25 +247,27 @@ Following the established `hotspots.ts` / `co-change.ts` / `CoChangeState` patte
 
 Points raised in two rounds of automated review, and how the shipped walk handles each:
 
-| Concern                              | Resolution                                                                                                                                      |
-| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| Capped Tier-1 snapshot truncation    | Dropped the capped tier — **one full-history walk** drives every chart, so no pre-window line is mis-bucketed.                                  |
-| Merge/branch ordering                | Walk the **first-parent chain**; parents are **resolved on demand** (`resolveCommit`) when a provider omits them (Azure DevOps).                |
-| Removed line left in the live array  | Tags are **rebuilt** from the diff ops, so a removed line is recorded dead **and** absent from the next snapshot.                               |
-| In-place moves reset age             | Reuse `movedLinePairs` (as blame does): a moved block carries its tag — no death, no rebirth.                                                   |
-| Deleted files                        | No fetch for a removal (and a not-found blob is treated as empty), so the all-removes diff kills every remaining tag.                           |
-| Half-life when median not observed   | `halfLifeDays` is **nullable**; the UI renders "not reached".                                                                                   |
-| Censoring date                       | Survivors are censored at the **tip commit's time**, not wall-clock now.                                                                        |
-| Blob fetch error ≠ deletion          | Only an expected `not-found` maps to empty; rate-limit/network errors **re-throw** so the walk fails loudly, not corruptly.                     |
-| `getCommitFiles` failure swallowed   | No longer caught — a provider failure mid-walk **surfaces as an error** (with the partial report) instead of a stale "ready".                   |
-| Copied files inherit age             | A `copied` change is **new births** at the copy commit; only a rename carries the source's tags (and removes the source).                       |
-| 10-year survival extrapolated        | `maxObservedAgeDays` gates it — a history shorter than 10 yr shows **"unobserved"** rather than a flattering extrapolated number.               |
-| Non-monotonic commit dates           | Commit times are **clamped monotonically** along the chain, so a rebased/backdated commit can't record `diedAt < bornAt`.                       |
-| Same-commit rename + recreate        | Each commit is computed against a **pre-commit snapshot** with staged writes (deletes before sets), so `a→b` plus a new `a` stay distinct.      |
-| Size-guarded blobs counted as deaths | A `too-large`/binary blob stops tracking the file **without** recording deaths (no false mass-deaths for big vendored files).                   |
-| Truncated/malformed patch trusted    | `applyPatch` checks each hunk consumed/produced exactly its header's `oldCount`/`newCount`, returning `null` (→ blob fallback) on any mismatch. |
-| Undated commit skipped               | An unparseable date no longer skips the commit (which drifted the snapshot); it borrows the monotonic clock and still applies.                  |
-| Rename without a provider hint       | A removed + added pair of identical content (e.g. a local `git mv`, which has no `previousPath`) is detected as a rename, carrying age/author.  |
+| Concern                               | Resolution                                                                                                                                                                                 |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Capped Tier-1 snapshot truncation     | Dropped the capped tier — **one full-history walk** drives every chart, so no pre-window line is mis-bucketed.                                                                             |
+| Merge/branch ordering                 | Walk the **first-parent chain**; parents are **resolved on demand** (`resolveCommit`) when a provider omits them (Azure DevOps).                                                           |
+| Removed line left in the live array   | Tags are **rebuilt** from the diff ops, so a removed line is recorded dead **and** absent from the next snapshot.                                                                          |
+| In-place moves reset age              | Reuse `movedLinePairs` (as blame does): a moved block carries its tag — no death, no rebirth.                                                                                              |
+| Deleted files                         | No fetch for a removal (and a not-found blob is treated as empty), so the all-removes diff kills every remaining tag.                                                                      |
+| Half-life when median not observed    | `halfLifeDays` is **nullable**; the UI renders "not reached".                                                                                                                              |
+| Censoring date                        | Survivors are censored at the **tip commit's time**, not wall-clock now.                                                                                                                   |
+| Blob fetch error ≠ deletion           | Only an expected `not-found` maps to empty; rate-limit/network errors **re-throw** so the walk fails loudly, not corruptly.                                                                |
+| `getCommitFiles` failure swallowed    | No longer caught — a provider failure mid-walk **surfaces as an error** (with the partial report) instead of a stale "ready".                                                              |
+| Copied files inherit age              | A `copied` change is **new births** at the copy commit; only a rename carries the source's tags (and removes the source).                                                                  |
+| 10-year survival extrapolated         | `maxObservedAgeDays` gates it — a history shorter than 10 yr shows **"unobserved"** rather than a flattering extrapolated number.                                                          |
+| Non-monotonic commit dates            | Commit times are **clamped monotonically** along the chain, so a rebased/backdated commit can't record `diedAt < bornAt`.                                                                  |
+| Same-commit rename + recreate         | Each commit is computed against a **pre-commit snapshot** with staged writes (deletes before sets), so `a→b` plus a new `a` stay distinct.                                                 |
+| Size-guarded blobs counted as deaths  | A `too-large`/binary blob stops tracking the file **without** recording deaths (no false mass-deaths for big vendored files).                                                              |
+| Truncated/malformed patch trusted     | `applyPatch` checks each hunk consumed/produced exactly its header's `oldCount`/`newCount`, returning `null` (→ blob fallback) on any mismatch.                                            |
+| Undated commit skipped                | An unparseable date no longer skips the commit (which drifted the snapshot); it borrows the monotonic clock and still applies.                                                             |
+| Rename without a provider hint        | A removed + added pair of identical content (e.g. a local `git mv`, which has no `previousPath`) is detected as a rename, carrying age/author.                                             |
+| Patch truncated between hunks         | The reconstructed diff is trusted only when its added/removed totals match the provider's `additions`/`deletions` (`patchStatsMatch`), else it fetches the blob.                           |
+| Unreadable file dropped, not censored | When a tracked file turns binary/oversized its lines are **right-censored** at that commit (`censoredAt`) — counted and in the risk set, but not dead and not live — instead of vanishing. |
 
 ## Open questions / future work
 

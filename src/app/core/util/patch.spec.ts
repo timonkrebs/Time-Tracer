@@ -1,4 +1,4 @@
-import { applyPatch, parsePatch } from './patch';
+import { applyPatch, parsePatch, patchStatsMatch } from './patch';
 
 /** Apply a raw unified-diff patch to old lines (the way the survival walk does). */
 function patched(oldLines: string[], patch: string): string[] | null {
@@ -64,5 +64,22 @@ describe('parsePatch / applyPatch', () => {
     // hunk whose prefix matches must not be accepted.
     const out = patched(['a', 'b', 'c', 'd', 'e'], ['@@ -1,5 +1,5 @@', ' a', '-b'].join('\n'));
     expect(out).toBeNull();
+  });
+});
+
+describe('patchStatsMatch', () => {
+  const hunks = parsePatch(['@@ -1,2 +1,2 @@', ' a', '-b', '+B'].join('\n')); // 1 add, 1 del
+
+  it('accepts a patch whose totals match the provider stats', () => {
+    expect(patchStatsMatch(hunks, { additions: 1, deletions: 1 })).toBe(true);
+  });
+
+  it('rejects a patch whose totals fall short (truncated between hunks)', () => {
+    expect(patchStatsMatch(hunks, { additions: 5, deletions: 1 })).toBe(false);
+    expect(patchStatsMatch(hunks, { additions: 1, deletions: 3 })).toBe(false);
+  });
+
+  it('does not check stats the provider did not supply', () => {
+    expect(patchStatsMatch(hunks, {})).toBe(true);
   });
 });

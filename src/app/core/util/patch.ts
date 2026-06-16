@@ -113,3 +113,28 @@ export function applyPatch(
   while (oldIdx < oldLines.length) out.push(oldLines[oldIdx++]);
   return out;
 }
+
+/**
+ * Whether a parsed patch's added/removed line totals match the provider's
+ * per-file `additions`/`deletions` stats. Guards against a patch truncated
+ * *between* hunks (a valid prefix of a larger diff) being mistaken for the whole
+ * file's diff — each hunk can satisfy its own header yet the diff be incomplete.
+ * Stats the provider did not supply are not checked.
+ */
+export function patchStatsMatch(
+  hunks: readonly PatchHunk[],
+  stats: { readonly additions?: number; readonly deletions?: number },
+): boolean {
+  let added = 0;
+  let removed = 0;
+  for (const hunk of hunks) {
+    for (const line of hunk.lines) {
+      if (line.kind === 'add') added++;
+      else if (line.kind === 'del') removed++;
+    }
+  }
+  return (
+    (stats.additions === undefined || added === stats.additions) &&
+    (stats.deletions === undefined || removed === stats.deletions)
+  );
+}

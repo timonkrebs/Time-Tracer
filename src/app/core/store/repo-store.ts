@@ -40,7 +40,7 @@ import {
   selectOwnershipFiles,
   summarizeOwnership,
 } from '../util/ownership';
-import { applyPatch, parsePatch } from '../util/patch';
+import { applyPatch, parsePatch, patchStatsMatch } from '../util/patch';
 import { LineLifetime, SurvivalReport, summarizeSurvival } from '../util/survival';
 import { ancestorsOf, buildTree } from '../util/tree';
 import { RecentRepos } from './recent-repos';
@@ -1714,8 +1714,20 @@ export class RepoStore {
         for (const { change, movedFrom, oldLines, oldTags, newLines, skip } of resolved) {
           if (skip) continue;
           if (newLines === null) {
-            // Binary or past the size guard: nothing was deleted, so stop following
-            // the file without inventing deaths for its lines.
+            // Binary or past the size guard: the blob can't be read, but nothing
+            // was deleted. Right-**censor** its tracked lines at this commit
+            // (observed alive until now, then unobservable) instead of inventing
+            // deaths or dropping them silently, then stop following the file.
+            for (const owner of oldTags) {
+              if (owner) {
+                dead.push({
+                  bornAt: owner.bornAt,
+                  author: owner.author,
+                  diedAt: null,
+                  censoredAt: commitTime,
+                });
+              }
+            }
             if (movedFrom) deletes.push(movedFrom);
             deletes.push(change.path);
             continue;
@@ -1785,10 +1797,12 @@ export class RepoStore {
    * - a removal → `[]`; a no-content-change (pure rename / mode edit) → the old
    *   lines unchanged;
    * - otherwise the provider's inline `patch` is applied to `oldLines` (the fast
-   *   path: GitHub ships the diff with the commit, so no blob is fetched);
-   * - only when there is no patch, or it doesn't apply cleanly against the
-   *   running snapshot, does it fall back to {@link survivalNewLines} (a blob
-   *   fetch). `null` means a binary / oversized blob that can't be followed.
+   *   path: GitHub ships the diff with the commit, so no blob is fetched) — but
+   *   only when its hunks apply cleanly **and** the added/removed line totals
+   *   match the provider's per-file stats, so a patch truncated between hunks
+   *   (a valid prefix of a larger diff) can't be mistaken for the whole thing;
+   * - failing that it falls back to {@link survivalNewLines} (a blob fetch).
+   *   `null` means a binary / oversized blob that can't be followed.
    */
   private async resolveNewLines(
     change: CommitFileChange,
@@ -1798,8 +1812,9 @@ export class RepoStore {
     if (/remov|delet/i.test(change.status)) return [];
     if (change.additions === 0 && change.deletions === 0) return oldLines; // unchanged content
     if (change.patch !== undefined) {
-      const applied = applyPatch(oldLines, parsePatch(change.patch));
-      if (applied) return applied; // reconstructed from the diff already in hand
+      const hunks = parsePatch(change.patch);
+      const applied = applyPatch(oldLines, hunks);
+      if (applied && patchStatsMatch(hunks, change)) return applied; // whole diff, in hand
     }
     return this.survivalNewLines(change, sha);
   }

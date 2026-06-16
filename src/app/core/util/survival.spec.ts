@@ -133,6 +133,23 @@ describe('authorShares', () => {
   });
 });
 
+describe('censored-early lifetimes (a line that became unobservable)', () => {
+  it('counts them, but not as deaths or live code, and censors them at censoredAt', () => {
+    const lines: LineLifetime[] = [
+      { bornAt: 0, diedAt: 2 * DAY, author: 'Ada' }, // dies at age 2
+      { bornAt: 0, diedAt: null, censoredAt: 4 * DAY, author: 'Bob' }, // last seen alive at age 4
+    ];
+    const report = summarizeSurvival(lines, { now: NOW });
+
+    expect(report.trackedLines).toBe(2); // both observed, neither dropped
+    expect(report.aliveLines).toBe(0); // neither confirmed in the current tree
+    expect(report.curve.deaths).toBe(1);
+    expect(report.curve.censored).toBe(1); // the unobservable line is censored, not dead
+    expect(report.curve.maxObservedAgeDays).toBe(4); // observed out to its censoring age
+    expect(report.authors).toEqual([]); // no live code → no author shares
+  });
+});
+
 describe('summarizeSurvival', () => {
   it('rolls the three analyses up from one lifetime table', () => {
     const report = summarizeSurvival([death(4), alive(2, 'Bob'), alive(8)], { now: NOW });

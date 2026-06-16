@@ -27,14 +27,21 @@ export const DAYS_PER_YEAR = 365.25;
 
 /**
  * One physical line observed across history: born at a commit, and either died
- * at a later commit or is still alive at the observation tip (`diedAt === null`,
- * i.e. right-censored).
+ * at a later commit, became unobservable partway (`censoredAt`), or is still
+ * present at the observation tip (`diedAt === null && censoredAt === undefined`,
+ * i.e. right-censored at the tip).
  */
 export interface LineLifetime {
   /** ms epoch of the commit that added the line. */
   readonly bornAt: number;
-  /** ms epoch of the commit that removed it, or null when it is still present. */
+  /** ms epoch of the commit that removed it, or null when it did not die. */
   readonly diedAt: number | null;
+  /**
+   * ms epoch at which the line stopped being observable without dying — e.g. its
+   * file turned binary or crossed the size guard. The line is right-censored
+   * here (observed alive up to this commit) rather than counted dead or dropped.
+   */
+  readonly censoredAt?: number;
   /** Author of the adding commit, for the authorship breakdown. */
   readonly author: string;
 }
@@ -98,11 +105,11 @@ export function kaplanMeier(lifetimes: Iterable<LineLifetime>, now = Date.now())
   let censored = 0;
   let maxObservedAgeDays = 0;
   for (const line of lifetimes) {
-    const end = line.diedAt ?? now;
+    const end = line.diedAt ?? line.censoredAt ?? now;
     const age = Math.max(0, (end - line.bornAt) / DAY_MS);
     if (age > maxObservedAgeDays) maxObservedAgeDays = age;
     if (line.diedAt !== null) deaths++;
-    else censored++;
+    else censored++; // includes lines censored early (became unobservable)
     observations.push({ age, death: line.diedAt !== null });
   }
 
@@ -221,9 +228,12 @@ export function cohortSeries(
     const delta = deltas.get(bandKey(line.bornAt))!;
     const bornIdx = firstAtOrAfter(times, line.bornAt);
     if (bornIdx < samples) delta[bornIdx] += 1;
-    if (line.diedAt !== null) {
-      const dieIdx = firstAtOrAfter(times, line.diedAt);
-      if (dieIdx < samples) delta[dieIdx] -= 1;
+    // A line stops contributing when it dies or becomes unobservable (censored
+    // early); a line still present at the tip contributes through the last sample.
+    const end = line.diedAt ?? line.censoredAt ?? null;
+    if (end !== null) {
+      const endIdx = firstAtOrAfter(times, end);
+      if (endIdx < samples) delta[endIdx] -= 1;
     }
   }
 
@@ -264,7 +274,7 @@ export function authorShares(
   const byAuthor = new Map<string, number>();
   let total = 0;
   for (const line of lifetimes) {
-    if (line.diedAt !== null) continue; // only code that is still present
+    if (line.diedAt !== null || line.censoredAt !== undefined) continue; // only code present at the tip
     total++;
     byAuthor.set(line.author, (byAuthor.get(line.author) ?? 0) + 1);
   }
@@ -321,7 +331,7 @@ export function summarizeSurvival(
   const list = [...lifetimes];
   const now = options.now ?? Date.now();
   let alive = 0;
-  for (const line of list) if (line.diedAt === null) alive++;
+  for (const line of list) if (line.diedAt === null && line.censoredAt === undefined) alive++;
   return {
     curve: kaplanMeier(list, now),
     cohorts: cohortSeries(list, { now, samples: options.samples, maxBands: options.maxBands }),

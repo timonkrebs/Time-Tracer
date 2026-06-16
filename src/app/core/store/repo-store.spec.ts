@@ -2075,9 +2075,14 @@ describe('RepoStore', () => {
       await store.computeSurvival();
 
       // No deletion was observed — the client just couldn't load the blob — so the
-      // file's lines must not be counted as deaths (which would be false mass-deaths).
+      // lines are right-censored at that commit: counted (not dropped), but not
+      // deaths and not part of the live code.
+      const report = store.survival()!.report;
       expect(store.survival()?.status).toBe('ready');
-      expect(store.survival()!.report.curve.deaths).toBe(0);
+      expect(report.curve.deaths).toBe(0);
+      expect(report.trackedLines).toBe(2); // observed, censored — not silently dropped
+      expect(report.curve.censored).toBe(2);
+      expect(report.aliveLines).toBe(0); // can't confirm them in the current tree
     });
 
     it('rebuilds content from inline patches without fetching any blobs', async () => {
@@ -2138,6 +2143,42 @@ describe('RepoStore', () => {
       ]);
       // The whole history was reconstructed from the patches — zero blob fetches.
       expect(provider.fileAtRefCalls).toEqual([]);
+    });
+
+    it('falls back to the blob when a patch is truncated (stats do not match)', async () => {
+      const mk = (sha: string, authoredAt: string, parents: string[]): CommitInfo => ({
+        sha,
+        message: sha,
+        summary: sha,
+        authorName: 'Ada',
+        authorEmail: null,
+        authoredAt,
+        htmlUrl: `https://github.com/acme/rocket/commit/${sha}`,
+        parentShas: parents,
+      });
+      provider.listCommitsResult = () => Promise.resolve([mk('c1', '2024-01-01T00:00:00Z', [])]);
+      // The header says 3 additions but the patch only carries 2 — a diff
+      // truncated between hunks; the walk must not trust it.
+      provider.commitFilesResult = () =>
+        Promise.resolve([
+          {
+            path: 'a.txt',
+            status: 'added',
+            additions: 3,
+            deletions: 0,
+            patch: '@@ -0,0 +1,2 @@\n+L1\n+L2',
+          },
+        ]);
+      provider.fileAtRefResult = (path) =>
+        Promise.resolve({ kind: 'text', path, sha: 'a1', size: 9, text: 'L1\nL2\nL3\n' });
+
+      await store.loadRepo(slug);
+      await store.computeSurvival();
+
+      const report = store.survival()!.report;
+      // It fetched the real blob and got all three lines, not the truncated two.
+      expect(provider.fileAtRefCalls).toEqual([{ path: 'a.txt', ref: 'c1' }]);
+      expect(report.aliveLines).toBe(3);
     });
 
     it('detects a rename by matching content when the provider gives no previousPath', async () => {
