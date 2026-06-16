@@ -15,10 +15,12 @@ import { Hotspot, heatLevel } from '../../core/util/hotspots';
 import { disambiguateLabels } from '../../core/util/path-label';
 import { relativeTime } from '../../core/util/relative-time';
 import {
+  Collaboration,
   Collaborator,
   Developer,
   EMPTY_TEAM_GRAPH,
   TeamGraph,
+  blendStrength,
   collaboratorsOf,
 } from '../../core/util/team-graph';
 import { TreemapTile, squarify } from '../../core/util/treemap';
@@ -75,6 +77,8 @@ const TEAM_COLORS = [
 ];
 /** Fill for a developer who shares no files with anyone (a silo). */
 const SILO_FILL = '#52525b';
+/** Default blend toward the temporal (recent-collaboration) tie strength. */
+const DEFAULT_TEMPORAL_WEIGHT = 0.5;
 
 interface GraphNode {
   readonly path: string;
@@ -594,6 +598,30 @@ interface TeamLayout {
                 }
               </div>
 
+              @if (graph().collaborations.length) {
+                <div
+                  class="mb-3 flex items-center gap-2 text-[11px] text-zinc-500"
+                  title="Weight ties toward co-edits that happened close together in time — handoffs and recent pairing — instead of any shared file ever."
+                >
+                  <span class="shrink-0">Timing</span>
+                  <span class="shrink-0 text-zinc-600">all-time</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    [value]="temporalWeightPct()"
+                    (input)="onTemporalWeight($event)"
+                    class="h-1 min-w-0 flex-1 cursor-pointer accent-indigo-400"
+                    aria-label="Temporal weighting"
+                  />
+                  <span class="shrink-0 text-zinc-600">recent</span>
+                  <span class="w-8 shrink-0 text-right tabular-nums text-zinc-400">
+                    {{ temporalWeightPct() }}%
+                  </span>
+                </div>
+              }
+
               @if (teamLayout().nodes.length) {
                 <svg
                   class="aspect-[16/9] w-full rounded border border-zinc-800 bg-zinc-900/30"
@@ -696,7 +724,7 @@ interface TeamLayout {
                             {{ mate.name }}
                           </button>
                           <span class="shrink-0 text-[11px] text-zinc-500 tabular-nums">
-                            {{ mate.sharedFiles }} shared · {{ pct(mate.strength) }}%
+                            {{ mate.sharedFiles }} shared · {{ tiePct(mate) }}%
                           </span>
                         </li>
                       }
@@ -844,6 +872,9 @@ export class InsightsView {
   protected readonly maxClusterSize = signal(DEFAULT_MAX_CLUSTER_FILES);
   /** The developer the team graph is focused on, or null. */
   private readonly selectedDev = signal<string | null>(null);
+  /** Slider 0..1: blend ties from all-time (0) toward recent collaboration (1). */
+  protected readonly temporalWeight = signal(DEFAULT_TEMPORAL_WEIGHT);
+  protected readonly temporalWeightPct = computed(() => Math.round(this.temporalWeight() * 100));
 
   /** The selected band as track percentages, for the slider's filled segment. */
   protected readonly rangePercent = computed(() => {
@@ -924,7 +955,7 @@ export class InsightsView {
 
   protected readonly selectedCollaborators = computed<Collaborator[]>(() => {
     const id = this.selected();
-    return id ? collaboratorsOf(this.graph(), id, MAX_COLLABORATORS) : [];
+    return id ? collaboratorsOf(this.graph(), id, MAX_COLLABORATORS, this.temporalWeight()) : [];
   });
 
   /** Developers with the most collaborators — the people who bridge the work. */
@@ -948,9 +979,10 @@ export class InsightsView {
   // The layout is selection-aware: it always draws the selected developer and
   // their collaborators (even past the caps), so clicking anyone — including a
   // silo or a less-central developer outside the top slice — lights up a real
-  // neighbourhood instead of dimming the graph to nothing.
+  // neighbourhood instead of dimming the graph to nothing. It also depends on
+  // the temporal weight, so dragging the slider re-shapes the graph live.
   protected readonly teamLayout = computed<TeamLayout>(() =>
-    this.layoutTeam(this.graph(), this.selected()),
+    this.layoutTeam(this.graph(), this.selected(), this.temporalWeight()),
   );
 
   /** Fill per rendered developer identity, for the swatches in the lists. */
@@ -1016,7 +1048,7 @@ export class InsightsView {
    * dimming the graph to nothing. The selected developer's own ties are drawn
    * even past the global edge cap.
    */
-  private layoutTeam(graph: TeamGraph, selectedId: string | null): TeamLayout {
+  private layoutTeam(graph: TeamGraph, selectedId: string | null, weight: number): TeamLayout {
     // Only people with collaboration links belong in the graph; the rest are
     // listed beneath it, so they never appear as unconnected dots.
     const linked = graph.developers.filter((d) => d.collaborators > 0);
@@ -1050,12 +1082,17 @@ export class InsightsView {
 
     const maxCommits = Math.max(...order.map((d) => d.commits), 1);
 
+    // Tie strength is blended toward recent collaboration by the slider weight;
+    // it drives the layout pull, the drawn edges, and which survive the cap.
+    const strengthOf = (edge: Collaboration): number =>
+      blendStrength(edge.strength, edge.temporalStrength, weight);
+
     // Run the simulation over the real ties (all of them, not just the drawn
     // subset) for a faithful shape, then scale the result to fit the box.
     const renderedSet = new Set(order.map((d) => d.id));
     const simEdges: ForceEdge[] = graph.collaborations
       .filter((edge) => renderedSet.has(edge.a) && renderedSet.has(edge.b))
-      .map((edge) => ({ a: edge.a, b: edge.b, weight: edge.strength }));
+      .map((edge) => ({ a: edge.a, b: edge.b, weight: strengthOf(edge) }));
     const raw = forceLayout(
       order.map((d) => d.id),
       simEdges,
@@ -1087,13 +1124,15 @@ export class InsightsView {
     });
 
     // Draw the selected developer's ties first so they survive the cap, then
-    // fill the rest with the strongest remaining edges between rendered nodes.
+    // fill with the strongest remaining ties (by blended strength) between
+    // rendered nodes. Edge opacity/width read the blended strength too.
     const incident: TeamEdge[] = [];
     const rest: TeamEdge[] = [];
     for (const edge of graph.collaborations) {
       const a = pos.get(edge.a);
       const b = pos.get(edge.b);
       if (!a || !b) continue; // an endpoint sits beyond the rendered set
+      const strength = strengthOf(edge);
       const line: TeamEdge = {
         a: edge.a,
         b: edge.b,
@@ -1101,12 +1140,13 @@ export class InsightsView {
         y1: a.y,
         x2: b.x,
         y2: b.y,
-        width: 1 + 6 * edge.strength,
-        strength: edge.strength,
+        width: 1 + 6 * strength,
+        strength,
       };
       if (selectedId && (edge.a === selectedId || edge.b === selectedId)) incident.push(line);
       else rest.push(line);
     }
+    rest.sort((x, y) => y.strength - x.strength);
     const edges = incident;
     for (const line of rest) {
       if (edges.length >= MAX_TEAM_EDGES) break;
@@ -1143,6 +1183,13 @@ export class InsightsView {
     return this.nameById().get(id) ?? id;
   }
 
+  /** A collaborator's tie strength as a %, blended at the active slider weight. */
+  protected tiePct(mate: Collaborator): number {
+    return Math.round(
+      blendStrength(mate.strength, mate.temporalStrength, this.temporalWeight()) * 100,
+    );
+  }
+
   /** Selects a developer, or clears the selection when they are clicked again. */
   protected toggleDeveloper(id: string): void {
     this.selectedDev.update((current) => (current === id ? null : id));
@@ -1150,6 +1197,10 @@ export class InsightsView {
 
   protected clearDeveloper(): void {
     this.selectedDev.set(null);
+  }
+
+  protected onTemporalWeight(event: Event): void {
+    this.temporalWeight.set(Number((event.target as HTMLInputElement).value) / 100);
   }
 
   /** The two handles can't cross: each clamps against the other. */

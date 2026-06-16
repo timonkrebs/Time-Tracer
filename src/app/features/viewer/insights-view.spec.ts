@@ -354,4 +354,17 @@ describe('InsightsView', () => {
     button('Analyze recent history')!.click();
     expect(analyzed).toBe(1);
   });
+
+  it('exposes a temporal-weight slider that updates its readout', async () => {
+    await setState(TEAM);
+    button('Team')!.click();
+    await fixture.whenStable();
+
+    // Defaults to a balanced blend, shown as a percentage.
+    expect(text()).toContain('50%');
+
+    drag('Temporal weighting', 100);
+    await fixture.whenStable();
+    expect(text()).toContain('100%');
+  });
 });

@@ -1,4 +1,7 @@
-import { AuthoredCommit, collaboratorsOf, computeTeamGraph } from './team-graph';
+import { AuthoredCommit, blendStrength, collaboratorsOf, computeTeamGraph } from './team-graph';
+
+/** ISO timestamp for day N of 2026, for legible temporal fixtures. */
+const day = (n: number): string => new Date(Date.UTC(2026, 0, 1 + n)).toISOString();
 
 const COMMITS: AuthoredCommit[] = [
   { authorName: 'Ada', files: ['auth.ts', 'session.ts'] },
@@ -23,8 +26,11 @@ describe('computeTeamGraph', () => {
     const graph = computeTeamGraph(COMMITS);
 
     // Ada and Bo both touched auth.ts and session.ts (2 shared); their union of
-    // files is also {auth, session} → strength 1. Cy shares nothing.
-    expect(graph.collaborations).toEqual([{ a: 'Ada', b: 'Bo', sharedFiles: 2, strength: 1 }]);
+    // files is also {auth, session} → strength 1. Cy shares nothing. With no
+    // dates on these commits the temporal strength is 0.
+    expect(graph.collaborations).toEqual([
+      { a: 'Ada', b: 'Bo', sharedFiles: 2, strength: 1, temporalStrength: 0 },
+    ]);
   });
 
   it('reports a partial-overlap strength below 1', () => {
@@ -70,7 +76,9 @@ describe('computeTeamGraph', () => {
     );
     // Ada's sweep is ignored, so Ada has no files and ties to no one.
     expect(graph.developers.map((d) => d.name).sort()).toEqual(['Bo', 'Cy']);
-    expect(graph.collaborations).toEqual([{ a: 'Bo', b: 'Cy', sharedFiles: 2, strength: 1 }]);
+    expect(graph.collaborations).toEqual([
+      { a: 'Bo', b: 'Cy', sharedFiles: 2, strength: 1, temporalStrength: 0 },
+    ]);
   });
 
   it('honours a higher minimum shared-files threshold', () => {
@@ -124,6 +132,41 @@ describe('computeTeamGraph', () => {
       { id: 'Ada', name: 'Ada', commits: 2, files: 2, collaborators: 0 },
     ]);
   });
+
+  it('weights a tie by how close in time the shared edits were', () => {
+    const graph = computeTeamGraph(
+      [
+        // Ada & Bo edit shared.ts a day apart — a tight handoff.
+        { authorName: 'Ada', authorEmail: 'ada@x', authoredAt: day(0), files: ['shared.ts'] },
+        { authorName: 'Bo', authorEmail: 'bo@x', authoredAt: day(1), files: ['shared.ts'] },
+        // Ada & Cy edit other.ts over a year apart — stale.
+        { authorName: 'Ada', authorEmail: 'ada@x', authoredAt: day(0), files: ['other.ts'] },
+        { authorName: 'Cy', authorEmail: 'cy@x', authoredAt: day(400), files: ['other.ts'] },
+      ],
+      { proximityHalfLifeDays: 30 },
+    );
+    const adaBo = graph.collaborations.find((e) => e.a === 'ada@x' && e.b === 'bo@x')!;
+    const adaCy = graph.collaborations.find((e) => e.a === 'ada@x' && e.b === 'cy@x')!;
+
+    // All-time, both ties look identical (one shared file, same Jaccard)…
+    expect(adaBo.sharedFiles).toBe(1);
+    expect(adaCy.sharedFiles).toBe(1);
+    expect(adaBo.strength).toBeCloseTo(adaCy.strength, 10);
+    // …but temporally the day-apart handoff dominates the year-apart one.
+    expect(adaBo.temporalStrength).toBeGreaterThan(adaCy.temporalStrength);
+    expect(adaBo.temporalStrength).toBeGreaterThan(0.4);
+    expect(adaCy.temporalStrength).toBeLessThan(0.01);
+    // Temporal strength never exceeds all-time strength.
+    expect(adaBo.temporalStrength).toBeLessThanOrEqual(adaBo.strength);
+  });
+});
+
+describe('blendStrength', () => {
+  it('interpolates from all-time at weight 0 to temporal at weight 1', () => {
+    expect(blendStrength(0.8, 0.2, 0)).toBeCloseTo(0.8);
+    expect(blendStrength(0.8, 0.2, 1)).toBeCloseTo(0.2);
+    expect(blendStrength(0.8, 0.2, 0.5)).toBeCloseTo(0.5);
+  });
 });
 
 describe('collaboratorsOf', () => {
@@ -134,8 +177,8 @@ describe('collaboratorsOf', () => {
       { authorName: 'Cy', files: ['c'] }, // shares 1 with Ada
     ]);
     expect(collaboratorsOf(graph, 'Ada')).toEqual([
-      { id: 'Bo', name: 'Bo', sharedFiles: 2, strength: 2 / 3 },
-      { id: 'Cy', name: 'Cy', sharedFiles: 1, strength: 1 / 3 },
+      { id: 'Bo', name: 'Bo', sharedFiles: 2, strength: 2 / 3, temporalStrength: 0 },
+      { id: 'Cy', name: 'Cy', sharedFiles: 1, strength: 1 / 3, temporalStrength: 0 },
     ]);
   });
 
@@ -144,5 +187,19 @@ describe('collaboratorsOf', () => {
     expect(collaboratorsOf(graph, 'Ada', 0)).toEqual([]);
     expect(collaboratorsOf(graph, 'Cy')).toEqual([]); // a silo
     expect(collaboratorsOf(graph, 'nobody')).toEqual([]);
+  });
+
+  it('reorders equal-shared collaborators by the temporal weight', () => {
+    // Hub shares one file with each of Amy (stale) and Zoe (recent handoff).
+    const graph = computeTeamGraph([
+      { authorName: 'Hub', authorEmail: 'hub@x', authoredAt: day(0), files: ['a.ts'] },
+      { authorName: 'Hub', authorEmail: 'hub@x', authoredAt: day(0), files: ['b.ts'] },
+      { authorName: 'Amy', authorEmail: 'amy@x', authoredAt: day(400), files: ['a.ts'] },
+      { authorName: 'Zoe', authorEmail: 'zoe@x', authoredAt: day(1), files: ['b.ts'] },
+    ]);
+    // All-time, the tie is a draw (1 shared file each) so name order wins → Amy.
+    expect(collaboratorsOf(graph, 'hub@x', Infinity, 0).map((c) => c.name)).toEqual(['Amy', 'Zoe']);
+    // Weighted toward recency, Zoe's day-apart handoff outranks Amy's stale tie.
+    expect(collaboratorsOf(graph, 'hub@x', Infinity, 1).map((c) => c.name)).toEqual(['Zoe', 'Amy']);
   });
 });
