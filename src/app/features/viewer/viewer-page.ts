@@ -347,6 +347,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
               [state]="store.coChange()"
               [focus]="store.coupleFocus()"
               [survival]="store.survival()"
+              [survivalAvailable]="store.hasLocalData()"
               [commitCap]="commitCap"
               (analyze)="store.computeCoChange()"
               (loadAll)="store.computeCoChange({ all: true })"

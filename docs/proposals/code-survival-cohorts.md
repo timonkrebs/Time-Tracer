@@ -208,25 +208,26 @@ Following the established `hotspots.ts` / `co-change.ts` / `CoChangeState` patte
 - **`features/viewer/insights-view.ts`**: `tab` extended to `'hotspots' | 'coupling' | 'age'`, the
   **Age** tab, and three hand-drawn SVG charts (KM step polyline + dashed benchmark, stacked-area
   cohorts, 100%-stacked author bar). Input `[survival]`, output `(computeSurvival)`.
-- **`features/viewer/viewer-page.ts`**: `[survival]="store.survival()"`, `(computeSurvival)` and a
-  Reset that clears co-change **and** survival, next to the existing `coChange` / `coupleFocus`.
+- **`features/viewer/viewer-page.ts`**: `[survival]="store.survival()"`,
+  `[survivalAvailable]="store.hasLocalData()"` (the local-only gate), `(computeSurvival)` and a Reset
+  that clears co-change **and** survival, next to the existing `coChange` / `coupleFocus`.
 
 ## Cost, performance, and honesty about limits
 
-- **Patch fast-path (the key cost win).** GitHub returns each changed file's unified-diff `patch`
-  inline with the commit's file list, so the walk **reconstructs new content from the patch** rather
-  than fetching the blob — `core/util/patch.ts` (`parsePatch` + `applyPatch`, the latter verifying
-  every context/removed line against the running snapshot and returning `null` to trigger a blob
-  fallback on any mismatch). That collapses the network cost from **one request per changed file**
-  to **about one request per commit** (orders of magnitude fewer on real histories), with **zero**
-  blob fetches on the common path.
+- **Local-only.** The walk covers the **whole** history, so the Age tab is offered **only for local
+  repositories** (the isomorphic-git provider, whole object DB on disk → no per-commit network
+  requests). The tab is gated on `RepoStore.hasLocalData()`; hosted repos don't show it. This keeps
+  the feature firmly within budget — there is no per-commit API spend to reason about.
+- **Patch fast-path (kept for fidelity/speed).** Where a provider ships each changed file's
+  unified-diff `patch` inline with the commit's file list, the walk **reconstructs new content from
+  the patch** rather than reading the blob — `core/util/patch.ts` (`parsePatch` + `applyPatch`,
+  verifying every context/removed line against the running snapshot and the totals against the
+  provider stats, returning `null` to fall back to the blob on any mismatch). This still helps the
+  local reader avoid redundant blob reads on the common path.
 - **Pipelined + throttled.** Per-commit file lists are prefetched with bounded concurrency
-  (`SURVIVAL_PREFETCH`) so requests overlap instead of running one-at-a-time, and the O(lines)
-  report roll-up is recomputed on a time budget (`SURVIVAL_PUBLISH_MS`), not every commit, so it
-  can't dominate a long walk.
-- Still gated behind an explicit button, streams as it goes, and repeats the "add a token" guidance
-  for big repos. Providers without inline patches (and binary/oversized files) fall back to the blob
-  fetch; **local repos** (isomorphic-git, whole object DB on disk) remain a great target.
+  (`SURVIVAL_PREFETCH`) so reads overlap instead of running one-at-a-time, and the O(lines) report
+  roll-up is recomputed on a time budget (`SURVIVAL_PUBLISH_MS`), not every commit, so it can't
+  dominate a long walk.
 - Roadmap item 21 (move blame/Trace walks to a **Web Worker**) applies directly and is the natural
   next step so very long histories stay smooth.
 - Honest framing: the curve tracks "lines through this repo's recorded mainline". Cross-file

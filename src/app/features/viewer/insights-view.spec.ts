@@ -617,14 +617,27 @@ describe('InsightsView', () => {
 
   describe('Age tab (code survival)', () => {
     async function setSurvival(survival: SurvivalState): Promise<void> {
+      fixture.componentRef.setInput('survivalAvailable', true);
       fixture.componentRef.setInput('survival', survival);
       await fixture.whenStable();
     }
 
-    it('offers a survival analysis from the cold start and emits it', () => {
+    it('offers a survival analysis from the cold start and emits it (local repos)', async () => {
+      fixture.componentRef.setInput('survivalAvailable', true);
+      await fixture.whenStable();
       expect(text()).toContain('code survival');
       button('Analyze code age & survival')!.click();
       expect(survivalRuns).toBe(1);
+    });
+
+    it('hides the Age option for non-local repositories', async () => {
+      // Cold start, hosted repo: no survival entry…
+      expect(button('Analyze code age & survival')).toBeUndefined();
+      // …and once coupling is analysed, the tab bar shows no Age tab.
+      fixture.componentRef.setInput('state', OVERVIEW);
+      await fixture.whenStable();
+      expect(button('Age')).toBeUndefined();
+      expect(button('Hotspots')).toBeDefined();
     });
 
     it('charts the cohort stack, authorship and Kaplan–Meier curve when ready', async () => {

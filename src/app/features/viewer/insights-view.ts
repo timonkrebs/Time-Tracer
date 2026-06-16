@@ -371,18 +371,20 @@ interface Quadrant {
           >
             Knowledge
           </button>
-          <button
-            type="button"
-            class="border-b-2 pb-1 font-medium transition"
-            [class]="
-              tab() === 'age'
-                ? 'border-indigo-400 text-zinc-100'
-                : 'border-transparent text-zinc-500 hover:text-zinc-300'
-            "
-            (click)="tab.set('age')"
-          >
-            Age
-          </button>
+          @if (survivalAvailable()) {
+            <button
+              type="button"
+              class="border-b-2 pb-1 font-medium transition"
+              [class]="
+                tab() === 'age'
+                  ? 'border-indigo-400 text-zinc-100'
+                  : 'border-transparent text-zinc-500 hover:text-zinc-300'
+              "
+              (click)="tab.set('age')"
+            >
+              Age
+            </button>
+          }
           <span class="flex-1"></span>
           @if (tab() === 'age') {
             @if (survival(); as sv) {
@@ -1542,9 +1544,8 @@ interface Quadrant {
               code half-life set against Bernhardsson's "half-life of code" benchmark.
             </p>
             <p class="mb-3 text-xs text-zinc-600">
-              Walks the <span class="text-zinc-400">whole history</span> — on GitHub it reuses each
-              commit's own diff (about one request per commit); add a token for big repos, or open a
-              local folder.
+              Walks the <span class="text-zinc-400">whole history</span> from this local
+              repository's object database — entirely offline, no network requests.
             </p>
             <button
               type="button"
@@ -1579,17 +1580,19 @@ interface Quadrant {
               Load all commits
             </button>
           </div>
-          <p class="mt-4 text-xs leading-5 text-zinc-500">
-            Or chart <span class="text-zinc-300">code survival &amp; age</span> — cohorts by year,
-            authorship of the live code, and a Kaplan–Meier half-life.
-          </p>
-          <button
-            type="button"
-            class="mt-2 rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100"
-            (click)="startSurvival()"
-          >
-            Analyze code age &amp; survival
-          </button>
+          @if (survivalAvailable()) {
+            <p class="mt-4 text-xs leading-5 text-zinc-500">
+              Or chart <span class="text-zinc-300">code survival &amp; age</span> — cohorts by year,
+              authorship of the live code, and a Kaplan–Meier half-life.
+            </p>
+            <button
+              type="button"
+              class="mt-2 rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100"
+              (click)="startSurvival()"
+            >
+              Analyze code age &amp; survival
+            </button>
+          }
         </div>
       }
     </div>
@@ -1604,6 +1607,12 @@ export class InsightsView {
   readonly focus = input<CoChangeState | null>(null);
   /** Code-survival analysis (cohorts + Kaplan–Meier), or null. */
   readonly survival = input<SurvivalState | null>(null);
+  /**
+   * Whether the code-survival ("Age") analysis is offered. It walks the full
+   * history, so it is enabled only for local repositories (a local object DB,
+   * no per-commit network requests); hosted repos hide the tab.
+   */
+  readonly survivalAvailable = input<boolean>(false);
   readonly commitCap = input<number>(75);
 
   readonly analyze = output<void>();
@@ -2032,6 +2041,11 @@ export class InsightsView {
     // Applying a file filter is a coupling action — show that tab.
     effect(() => {
       if (this.focus()) this.tab.set('coupling');
+    });
+    // The Age tab is local-only; if it's not offered (e.g. after opening a hosted
+    // repo), fall back so a hidden tab can't stay selected.
+    effect(() => {
+      if (!this.survivalAvailable() && this.tab() === 'age') this.tab.set('hotspots');
     });
   }
 

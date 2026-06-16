@@ -429,7 +429,7 @@ export class RepoStore {
 
   /**
    * True when the active provider reads the whole repository from a local
-   * object database (the folder reader) rather than a paged remote API.
+   * object database (the local folder reader) rather than a paged remote API.
    * Bulk passes like the folder-ownership scan then cost no network requests,
    * so callers can run them eagerly instead of behind an opt-in. Detected via
    * the optional {@link GitProvider.primeHistories} capability, which only such
