@@ -133,31 +133,40 @@ describe('computeTeamGraph', () => {
     ]);
   });
 
-  it('weights a tie by how close in time the shared edits were', () => {
+  it('weights a recent tight handoff above a recent loose one (proximity)', () => {
     const graph = computeTeamGraph(
       [
-        // Ada & Bo edit shared.ts a day apart — a tight handoff.
-        { authorName: 'Ada', authorEmail: 'ada@x', authoredAt: day(0), files: ['shared.ts'] },
-        { authorName: 'Bo', authorEmail: 'bo@x', authoredAt: day(1), files: ['shared.ts'] },
-        // Ada & Cy edit other.ts over a year apart — stale.
-        { authorName: 'Ada', authorEmail: 'ada@x', authoredAt: day(0), files: ['other.ts'] },
-        { authorName: 'Cy', authorEmail: 'cy@x', authoredAt: day(400), files: ['other.ts'] },
+        // Ada & Bo edit f1 at the same moment, at the tip.
+        { authorName: 'Ada', authorEmail: 'ada@x', authoredAt: day(400), files: ['f1.ts'] },
+        { authorName: 'Bo', authorEmail: 'bo@x', authoredAt: day(400), files: ['f1.ts'] },
+        // Ada & Cy edit f2 a month apart, but the later edit is also at the tip.
+        { authorName: 'Ada', authorEmail: 'ada@x', authoredAt: day(370), files: ['f2.ts'] },
+        { authorName: 'Cy', authorEmail: 'cy@x', authoredAt: day(400), files: ['f2.ts'] },
       ],
       { proximityHalfLifeDays: 30 },
     );
     const adaBo = graph.collaborations.find((e) => e.a === 'ada@x' && e.b === 'bo@x')!;
     const adaCy = graph.collaborations.find((e) => e.a === 'ada@x' && e.b === 'cy@x')!;
-
-    // All-time, both ties look identical (one shared file, same Jaccard)…
-    expect(adaBo.sharedFiles).toBe(1);
-    expect(adaCy.sharedFiles).toBe(1);
-    expect(adaBo.strength).toBeCloseTo(adaCy.strength, 10);
-    // …but temporally the day-apart handoff dominates the year-apart one.
+    // Both land at the tip (age 0), so only the gap separates them.
     expect(adaBo.temporalStrength).toBeGreaterThan(adaCy.temporalStrength);
-    expect(adaBo.temporalStrength).toBeGreaterThan(0.4);
-    expect(adaCy.temporalStrength).toBeLessThan(0.01);
-    // Temporal strength never exceeds all-time strength.
     expect(adaBo.temporalStrength).toBeLessThanOrEqual(adaBo.strength);
+  });
+
+  it('fades a tie as its handoff ages, even when the edits were simultaneous', () => {
+    const graph = computeTeamGraph([
+      // An old, same-moment handoff…
+      { authorName: 'Ada', authorEmail: 'ada@x', authoredAt: day(0), files: ['old.ts'] },
+      { authorName: 'Bo', authorEmail: 'bo@x', authoredAt: day(0), files: ['old.ts'] },
+      // …and a current one at the tip (defines "now" for the age decay).
+      { authorName: 'Cy', authorEmail: 'cy@x', authoredAt: day(400), files: ['new.ts'] },
+      { authorName: 'Di', authorEmail: 'di@x', authoredAt: day(400), files: ['new.ts'] },
+    ]);
+    const adaBo = graph.collaborations.find((e) => e.a === 'ada@x' && e.b === 'bo@x')!;
+    const cyDi = graph.collaborations.find((e) => e.a === 'cy@x' && e.b === 'di@x')!;
+    // Identical all-time strength and gap (0), but the ~400-day-old tie fades.
+    expect(adaBo.strength).toBeCloseTo(cyDi.strength, 10);
+    expect(cyDi.temporalStrength).toBeGreaterThan(0.9);
+    expect(adaBo.temporalStrength).toBeLessThan(0.1);
   });
 });
 

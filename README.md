@@ -96,11 +96,13 @@ renames — see the feature list and roadmap below for what's done and what's ne
     teams clump and bridges sit between; disc = commits, colour = the connected "team") over the
     same commit walk. Developers are keyed by email identity (name for display). A **Timing
     slider** blends each tie from its **all-time** file overlap toward a **temporal** strength that
-    only counts files the two edited close together in time (their nearest handoff, decayed by a
-    ~30-day half-life) — dragging it from _all-time_ to _recent_ re-shapes the force layout live, so
-    the graph morphs from "ever shared a file" toward "currently working together". **Click a
-    developer** to light up their collaborators and read them ranked by shared files; a **"Most
-    connected"** list surfaces the people who bridge the work and a **"Working in isolation"** list
+    weights every shared file by the two developers' best **handoff** on it — how close together
+    their edits were (~30-day half-life) _and_ how recently it happened relative to the newest commit
+    (~90-day age half-life) — so dragging from _all-time_ to _recent_ re-shapes the force layout
+    live, morphing the graph from "ever shared a file" toward "currently working together" (and
+    fading old, far-apart ties to nothing). **Click a developer** to light up their collaborators and
+    read them ranked by shared files; a **"Most connected"** list surfaces the people who bridge the
+    work and a **"Working in isolation"** list
     the silos — developers whose files nobody else touches (left out of the graph, since they have
     nothing to connect to). Reveals cross-team collaboration and silos from git alone, no review API
     required.
