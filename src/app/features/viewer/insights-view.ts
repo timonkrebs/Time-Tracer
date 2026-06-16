@@ -80,7 +80,7 @@ const SILO_FILL = '#52525b';
 /** Default blend toward the temporal (recent-collaboration) tie strength. */
 const DEFAULT_TEMPORAL_WEIGHT = 0.5;
 /** Edge pull (< 1) for the team layout — loosens tight clusters so labels stay legible. */
-const TEAM_ATTRACTION = 0.5;
+const TEAM_ATTRACTION = 0.3;
 
 interface GraphNode {
   readonly path: string;
@@ -1107,7 +1107,7 @@ export class InsightsView {
     const nodes: TeamNode[] = order.map((dev) => {
       const point = place(raw.get(dev.id)!);
       pos.set(dev.id, point);
-      const r = 9 + 17 * Math.sqrt(dev.commits / maxCommits);
+      const r = 6 + 12 * Math.sqrt(dev.commits / maxCommits);
       const component = componentOf.get(dev.id) ?? 0;
       return {
         id: dev.id,
