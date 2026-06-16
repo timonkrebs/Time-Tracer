@@ -79,8 +79,6 @@ const TEAM_COLORS = [
 const SILO_FILL = '#52525b';
 /** Default blend toward the temporal (recent-collaboration) tie strength. */
 const DEFAULT_TEMPORAL_WEIGHT = 0.5;
-/** Ties whose blended strength rounds below this (0%) aren't drawn as edges. */
-const MIN_DRAWN_STRENGTH = 0.005;
 /** Edge pull (< 1) for the team layout — loosens tight clusters so labels stay legible. */
 const TEAM_ATTRACTION = 0.5;
 
@@ -1131,7 +1129,8 @@ export class InsightsView {
 
     // Draw the selected developer's ties first so they survive the cap, then
     // fill with the strongest remaining ties (by blended strength) between
-    // rendered nodes. Edge opacity/width read the blended strength too.
+    // rendered nodes. Every rendered tie keeps a (faint) line — a faded tie is
+    // de-emphasised by opacity/width, never removed.
     const incident: TeamEdge[] = [];
     const rest: TeamEdge[] = [];
     for (const edge of graph.collaborations) {
@@ -1139,8 +1138,6 @@ export class InsightsView {
       const b = pos.get(edge.b);
       if (!a || !b) continue; // an endpoint sits beyond the rendered set
       const strength = strengthOf(edge);
-      // A tie the slider has faded to ~0% (e.g. stale or undated) isn't drawn.
-      if (strength < MIN_DRAWN_STRENGTH) continue;
       const line: TeamEdge = {
         a: edge.a,
         b: edge.b,
@@ -1148,7 +1145,7 @@ export class InsightsView {
         y1: a.y,
         x2: b.x,
         y2: b.y,
-        width: 1 + 6 * strength,
+        width: 1.2 + 5 * strength,
         strength,
       };
       if (selectedId && (edge.a === selectedId || edge.b === selectedId)) incident.push(line);
@@ -1172,8 +1169,9 @@ export class InsightsView {
   /** A selection lights up its own ties; otherwise opacity tracks strength. */
   protected edgeOpacity(edge: TeamEdge): number {
     const id = this.selected();
-    if (id) return edge.a === id || edge.b === id ? 0.85 : 0.06;
-    return 0.18 + 0.5 * edge.strength;
+    if (id) return edge.a === id || edge.b === id ? 0.85 : 0.08;
+    // Every tie stays visible; strength only varies how strongly it reads.
+    return 0.32 + 0.45 * edge.strength;
   }
 
   protected nodeTitle(node: TeamNode): string {
