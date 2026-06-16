@@ -24,7 +24,7 @@ export function parseAzdUrl(input: string): ParsedRepoUrl | null {
   const url = tryParseHttpUrl(trimmed);
   if (!url) return null;
   const host = url.hostname.toLowerCase();
-  const segments = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+  const segments = url.pathname.split('/').filter(Boolean).map(decodeSegment);
 
   let org: string | undefined;
   let rest: string[];
@@ -85,5 +85,13 @@ function tryParseHttpUrl(input: string): URL | null {
     return url.protocol === 'http:' || url.protocol === 'https:' ? url : null;
   } catch {
     return null;
+  }
+}
+
+function decodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
   }
 }

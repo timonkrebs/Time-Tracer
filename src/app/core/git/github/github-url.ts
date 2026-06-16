@@ -41,7 +41,7 @@ export function parseGithubUrl(input: string, host?: string): ParsedRepoUrl | nu
   const url = tryParseHttpUrl(trimmed, hostname);
   if (url) {
     const h = url.hostname.toLowerCase();
-    const segments = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+    const segments = url.pathname.split('/').filter(Boolean).map(decodeSegment);
     if (hostname) {
       return h === hostname ? fromGithubSegments(segments, origin) : null;
     }

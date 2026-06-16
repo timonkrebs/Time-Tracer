@@ -29,6 +29,7 @@ describe('parseAzdUrl', () => {
       'https://dev.azure.com/org/My%20Project/_git/My%20Repo',
       { owner: 'org/My Project', repo: 'My Repo' },
     ],
+    ['https://dev.azure.com/org/%E0%A4%A/_git/repo', { owner: 'org/%E0%A4%A', repo: 'repo' }],
   ])('parses %s', (input, expected) => {
     expect(parseAzdUrl(input)).toEqual(expected);
   });
