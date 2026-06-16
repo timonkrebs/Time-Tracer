@@ -1,10 +1,11 @@
 import { provideZonelessChangeDetection } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 
-import { CoChangeState } from '../../core/store/repo-store';
+import { CoChangeState, SurvivalState } from '../../core/store/repo-store';
 import { computeCoChange } from '../../core/util/co-change';
 import { computeHotspots } from '../../core/util/hotspots';
 import { computeKnowledgeRisk } from '../../core/util/knowledge';
+import { LineLifetime, summarizeSurvival } from '../../core/util/survival';
 import { EMPTY_TEAM_GRAPH, computeTeamGraph } from '../../core/util/team-graph';
 import { InsightsView } from './insights-view';
 
@@ -160,10 +161,28 @@ const KNOWLEDGE: CoChangeState = {
   ),
 };
 
+// A lifetime table with survivors (2020 + 2024 cohorts) and two deaths, so the
+// Age tab has cohorts, authorship and a Kaplan–Meier curve to draw.
+const SURVIVAL_NOW = Date.UTC(2026, 0, 1);
+const LIFETIMES: LineLifetime[] = [
+  { bornAt: Date.UTC(2020, 0, 1), diedAt: null, author: 'Ada' },
+  { bornAt: Date.UTC(2020, 0, 1), diedAt: null, author: 'Ada' },
+  { bornAt: Date.UTC(2024, 0, 1), diedAt: null, author: 'Bob' },
+  { bornAt: Date.UTC(2019, 0, 1), diedAt: Date.UTC(2021, 0, 1), author: 'Ada' },
+  { bornAt: Date.UTC(2019, 0, 1), diedAt: Date.UTC(2025, 0, 1), author: 'Bob' },
+];
+const SURVIVAL: SurvivalState = {
+  status: 'ready',
+  scanned: 12,
+  total: 12,
+  report: summarizeSurvival(LIFETIMES, { now: SURVIVAL_NOW }),
+};
+
 describe('InsightsView', () => {
   let fixture: ComponentFixture<InsightsView>;
   let analyzed: number;
   let loadedAll: number;
+  let survivalRuns: number;
   let focused: string[];
   let clearedFocus: number;
   let opened: string[];
@@ -181,11 +200,13 @@ describe('InsightsView', () => {
     fixture = TestBed.createComponent(InsightsView);
     analyzed = 0;
     loadedAll = 0;
+    survivalRuns = 0;
     focused = [];
     clearedFocus = 0;
     opened = [];
     fixture.componentInstance.analyze.subscribe(() => analyzed++);
     fixture.componentInstance.loadAll.subscribe(() => loadedAll++);
+    fixture.componentInstance.computeSurvival.subscribe(() => survivalRuns++);
     fixture.componentInstance.focusFile.subscribe((p) => focused.push(p));
     fixture.componentInstance.clearFocus.subscribe(() => clearedFocus++);
     fixture.componentInstance.openFile.subscribe((p) => opened.push(p));
@@ -592,5 +613,46 @@ describe('InsightsView', () => {
     await fixture.whenStable();
     expect(fixture.nativeElement.querySelector('svg line')).not.toBeNull();
     expect(fixture.nativeElement.querySelectorAll('svg circle').length).toBe(2);
+  });
+
+  describe('Age tab (code survival)', () => {
+    async function setSurvival(survival: SurvivalState): Promise<void> {
+      fixture.componentRef.setInput('survival', survival);
+      await fixture.whenStable();
+    }
+
+    it('offers a survival analysis from the cold start and emits it', () => {
+      expect(text()).toContain('code survival');
+      button('Analyze code age & survival')!.click();
+      expect(survivalRuns).toBe(1);
+    });
+
+    it('charts the cohort stack, authorship and Kaplan–Meier curve when ready', async () => {
+      await setSurvival(SURVIVAL);
+      button('Age')!.click();
+      await fixture.whenStable();
+
+      expect(text()).toContain('Survival curve');
+      expect(text()).toContain('Kaplan–Meier');
+      expect(text()).toContain('Code half-life');
+      expect(text()).toContain('surviving code by author');
+      // Birth-year cohorts and authors of the live code show up in the legends.
+      expect(text()).toContain('2020');
+      expect(text()).toContain('Ada');
+      // The three charts each render at least one SVG.
+      expect(fixture.nativeElement.querySelectorAll('svg').length).toBeGreaterThanOrEqual(3);
+    });
+
+    it('shows progress while the history is still being walked', async () => {
+      await setSurvival({
+        status: 'computing',
+        scanned: 40,
+        total: 100,
+        report: summarizeSurvival([], { now: SURVIVAL_NOW }),
+      });
+      button('Age')!.click();
+      await fixture.whenStable();
+      expect(text()).toContain('Walking the full history');
+    });
   });
 });

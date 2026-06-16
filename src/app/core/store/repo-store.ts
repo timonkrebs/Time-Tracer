@@ -40,6 +40,7 @@ import {
   selectOwnershipFiles,
   summarizeOwnership,
 } from '../util/ownership';
+import { LineLifetime, SurvivalReport, summarizeSurvival } from '../util/survival';
 import { ancestorsOf, buildTree } from '../util/tree';
 import { RecentRepos } from './recent-repos';
 
@@ -62,6 +63,8 @@ export const FILE_COCHANGE_COMMIT_CAP = 400;
 
 /** Shared empty size map for the knowledge model on a single-file focus walk. */
 const EMPTY_SIZES: ReadonlyMap<string, number> = new Map();
+/** Recompute the streaming survival report every N walked commits (it is O(lines)). */
+const SURVIVAL_RECOMPUTE_EVERY = 50;
 
 /** Lifecycle of the per-file commit history panel. */
 export type HistoryStatus = 'idle' | 'loading' | 'loading-more' | 'ready' | 'error';
@@ -270,6 +273,25 @@ export interface CoChangeState {
   readonly message?: string;
 }
 
+/**
+ * Async state of the code-survival analysis: the whole history is walked
+ * forward (oldest → newest), every commit's changed files diffed against the
+ * running snapshot so each line's birth and death is recorded, and the cohort
+ * stack / authorship share / Kaplan–Meier curve folded from those lifetimes.
+ * Because a snapshot of survivors alone can't reveal deaths, this needs the
+ * full walk — request-heavy on hosted providers, cheap on local repositories.
+ */
+export interface SurvivalState {
+  readonly status: 'reading' | 'computing' | 'ready' | 'error';
+  /** Commits walked so far. */
+  readonly scanned: number;
+  /** Commits to walk (0 until the history has been counted). */
+  readonly total: number;
+  /** Everything the Age tab renders, recomputed as the walk streams. */
+  readonly report: SurvivalReport;
+  readonly message?: string;
+}
+
 interface HistorySnapshot {
   commits: readonly CommitInfo[];
   hasMore: boolean;
@@ -360,6 +382,10 @@ export class RepoStore {
   private focusRun = 0;
   /** Changed-file lists per commit sha, shared by the co-change walks. */
   private readonly commitFilesCache = new Map<string, Promise<readonly string[]>>();
+  /** Repo-wide code-survival analysis (cohorts + Kaplan–Meier), when started. */
+  private readonly _survival = signal<SurvivalState | null>(null);
+  /** Bumped to cancel a superseded or cleared survival walk. */
+  private survivalRun = 0;
 
   readonly phase = this._phase.asReadonly();
   readonly error = this._error.asReadonly();
@@ -380,6 +406,7 @@ export class RepoStore {
   readonly folderOwnership = this._folderOwnership.asReadonly();
   readonly coChange = this._coChange.asReadonly();
   readonly coupleFocus = this._coupleFocus.asReadonly();
+  readonly survival = this._survival.asReadonly();
   readonly fileMetrics = this._fileMetrics.asReadonly();
 
   /** Files coupled to the selected one (empty until co-change has been run). */
@@ -535,6 +562,7 @@ export class RepoStore {
     this.clearLineTrace();
     this.clearFolderOwnership();
     this.clearCoChange();
+    this.clearSurvival();
     this._phase.set('metadata');
 
     try {
@@ -1308,6 +1336,12 @@ export class RepoStore {
     this._coupleFocus.set(null);
   }
 
+  /** Drops the survival analysis and cancels its walk. */
+  clearSurvival(): void {
+    this.survivalRun++;
+    this._survival.set(null);
+  }
+
   /**
    * Repo-wide co-change: walks recent commits (up to
    * {@link CO_CHANGE_COMMIT_CAP}, or the whole history with `all`) and surfaces
@@ -1466,6 +1500,209 @@ export class RepoStore {
     } catch (error) {
       if (!live()) return; // a cleared/superseded walk must not resurrect state
       sink.set(compose('error', toRepoProviderError(error).message));
+    }
+  }
+
+  /**
+   * Code survival & age cohorts ("Git of Theseus"): walks the **whole** history
+   * forward, keeping a cohort tag per live line of every file. Each commit's
+   * changed files are re-fetched and diffed against the running snapshot — added
+   * lines are born, removed lines die (recording their lifetime), survivors at
+   * the tip are right-censored — and the lifetimes folded into the cohort stack,
+   * the authorship share and a Kaplan–Meier survival curve. One content request
+   * per changed file per commit, so it is heavy on hosted providers (add a token)
+   * and cheap on local repositories. Streams as it goes; cancelled by navigation
+   * or a superseding run.
+   */
+  async computeSurvival(): Promise<void> {
+    const slug = this._slug();
+    if (!slug || this._phase() !== 'ready') return;
+    const provider = this.registry.byId(slug.provider);
+    const ref = this.ref() ?? undefined;
+
+    const run = ++this.survivalRun;
+    const seq = this.loadSeq;
+    const live = (): boolean => seq === this.loadSeq && run === this.survivalRun;
+
+    /** A cohort tag shared by every line one commit introduces. */
+    interface Tag {
+      readonly bornAt: number;
+      readonly author: string;
+    }
+    /** The running snapshot of one file: its current lines and their owning tags. */
+    interface Tracked {
+      lines: string[];
+      tags: Tag[];
+    }
+
+    const dead: LineLifetime[] = [];
+    const files = new Map<string, Tracked>();
+    let scanned = 0;
+    let total = 0;
+
+    // Lifetimes = recorded deaths + every still-live tag (censored at the tip).
+    const lifetimes = (): LineLifetime[] => {
+      const all = dead.slice();
+      for (const tracked of files.values()) {
+        for (const tag of tracked.tags) {
+          all.push({ bornAt: tag.bornAt, author: tag.author, diedAt: null });
+        }
+      }
+      return all;
+    };
+
+    // Survivors are right-censored at the tip commit's time, not wall-clock now,
+    // so an archived or old ref is not read as if its code survived until today.
+    let now = Date.now();
+    const reportFrom = (): SurvivalReport => summarizeSurvival(lifetimes(), { now });
+    let report = reportFrom();
+    const publish = (status: SurvivalState['status'], message?: string): void =>
+      this._survival.set({ status, scanned, total, report, message });
+
+    publish('reading', 'Reading history…');
+    try {
+      // 1. Page the whole history (cheap metadata), then walk it oldest-first.
+      const commits: CommitInfo[] = [];
+      for (let page = 1; ; page++) {
+        const batch = await provider.listCommits(slug, { ref, perPage: HISTORY_PAGE_SIZE, page });
+        if (!live()) return;
+        if (batch.length === 0) break;
+        this.cacheCommits(batch);
+        commits.push(...batch);
+        total = commits.length;
+        publish('reading', `Reading history… ${commits.length} commits`);
+        if (batch.length < HISTORY_PAGE_SIZE) break;
+      }
+      if (commits.length === 0) {
+        publish('ready', 'No commit history found.');
+        return;
+      }
+
+      // Walk the **first-parent chain** (a clean linear sequence of tree states),
+      // so side-branch commits fold into the merge that brings them to the
+      // mainline instead of being applied to the snapshot out of order and
+      // double-counted. Fall back to date order when a provider omits parent
+      // links in its commit list (e.g. Azure DevOps).
+      const bySha = new Map(commits.map((commit) => [commit.sha, commit]));
+      const chain: CommitInfo[] = [];
+      const seen = new Set<string>();
+      let cursor: CommitInfo | undefined = commits[0]; // newest reachable = the tip
+      while (cursor && !seen.has(cursor.sha)) {
+        seen.add(cursor.sha);
+        chain.push(cursor);
+        const parent: string | undefined = cursor.parentShas[0];
+        cursor = parent ? bySha.get(parent) : undefined;
+      }
+      const walk =
+        chain.length > 1 || commits.length <= 1
+          ? chain.reverse() // oldest → newest along the mainline
+          : [...commits].sort((a, b) => Date.parse(a.authoredAt) - Date.parse(b.authoredAt));
+      total = walk.length;
+      const tipTime = Date.parse(commits[0].authoredAt);
+      if (!Number.isNaN(tipTime)) now = tipTime;
+
+      // 2. Forward walk: diff each commit's files against the running snapshot.
+      for (const commit of walk) {
+        const bornAt = Date.parse(commit.authoredAt);
+        if (Number.isNaN(bornAt)) {
+          scanned++;
+          continue; // an undated commit can't be placed in time; the snapshot re-syncs later
+        }
+        const tag: Tag = { bornAt, author: commit.authorName };
+        let changes: readonly CommitFileChange[] = [];
+        try {
+          changes = await provider.getCommitFiles(slug, commit.sha);
+        } catch {
+          changes = []; // a commit whose file list we can't read just contributes nothing
+        }
+        if (!live()) return;
+
+        for (const change of changes) {
+          const movedFrom =
+            change.previousPath && change.previousPath !== change.path ? change.previousPath : null;
+          const source = movedFrom ?? change.path;
+          const previous = files.get(source);
+          const oldLines = previous?.lines ?? [];
+          const oldTags = previous?.tags ?? [];
+
+          const newLines = await this.survivalNewLines(change, commit.sha);
+          if (!live()) return;
+          if (newLines === null) {
+            // Became binary / too large / unreadable: its tracked lines have left
+            // the text domain — record them dead here and stop following it.
+            for (const owner of oldTags) {
+              if (owner) dead.push({ bornAt: owner.bornAt, author: owner.author, diedAt: bornAt });
+            }
+            files.delete(source);
+            continue;
+          }
+
+          const ops = diffLines(oldLines, newLines);
+          // A block moved within the file surfaces as remove+add; treat those as
+          // the same surviving line (carry its tag, no death) the way blame does,
+          // so a pure refactor does not reset code age or depress the curve.
+          const moved = movedLinePairs(ops);
+          const movedOld = new Set(moved.values());
+          const newTags: Tag[] = [];
+          for (const op of ops) {
+            if (op.kind === 'equal') {
+              newTags.push(oldTags[op.oldLine - 1]);
+            } else if (op.kind === 'remove') {
+              if (movedOld.has(op.oldLine)) continue; // moved elsewhere, not dead
+              const owner = oldTags[op.oldLine - 1];
+              if (owner) dead.push({ bornAt: owner.bornAt, author: owner.author, diedAt: bornAt });
+            } else {
+              const fromOld = moved.get(op.newLine);
+              newTags.push(fromOld !== undefined ? oldTags[fromOld - 1] : tag);
+            }
+          }
+
+          if (movedFrom && change.status !== 'copied') files.delete(movedFrom);
+          if (newLines.length === 0) files.delete(change.path);
+          else files.set(change.path, { lines: newLines, tags: newTags });
+        }
+
+        scanned++;
+        if (scanned % SURVIVAL_RECOMPUTE_EVERY === 0) report = reportFrom();
+        publish('computing');
+      }
+
+      report = reportFrom();
+      publish(
+        'ready',
+        report.trackedLines === 0 ? 'No text lines found in this history.' : undefined,
+      );
+    } catch (error) {
+      if (!live()) return; // a cleared/superseded walk must not resurrect state
+      report = reportFrom();
+      this._survival.set({
+        status: 'error',
+        scanned,
+        total,
+        report,
+        message: toRepoProviderError(error).message,
+      });
+    }
+  }
+
+  /**
+   * The text lines of a changed file just after a commit, for the survival walk:
+   * `[]` when the file was removed (or is absent at that commit), or `null` when
+   * it is binary / too large / unreadable and should stop being tracked. Fetches
+   * the blob directly (bypassing the UI file cache) so a full-history walk does
+   * not flood it.
+   */
+  private async survivalNewLines(change: CommitFileChange, sha: string): Promise<string[] | null> {
+    if (/remov|delet/i.test(change.status)) return [];
+    const slug = this._slug();
+    if (!slug) return null;
+    try {
+      const file = await this.registry.byId(slug.provider).getFileAtRef(slug, change.path, sha);
+      return file.kind === 'text' ? splitLines(file.text) : null;
+    } catch (error) {
+      // Absent at this commit (deleted, or not yet on this path) → empty; any
+      // other failure (binary guard, network) → stop tracking the file.
+      return toRepoProviderError(error).kind === 'not-found' ? [] : null;
     }
   }
 

@@ -1737,4 +1737,87 @@ describe('RepoStore', () => {
       expect(store.coChange()?.status).toBe('ready');
     });
   });
+
+  describe('code survival (computeSurvival)', () => {
+    /** A three-commit history that adds, edits and trims one file. */
+    function scriptSurvivalHistory(): void {
+      const mk = (
+        sha: string,
+        authorName: string,
+        authoredAt: string,
+        parents: string[],
+      ): CommitInfo => ({
+        sha,
+        message: sha,
+        summary: sha,
+        authorName,
+        authorEmail: null,
+        authoredAt,
+        htmlUrl: `https://github.com/acme/rocket/commit/${sha}`,
+        parentShas: parents,
+      });
+      // c1 Ada adds 3 lines · c2 Bob edits L2 and appends L4 · c3 Ada drops L4.
+      const c1 = mk('c1', 'Ada', '2024-01-01T00:00:00Z', []);
+      const c2 = mk('c2', 'Bob', '2024-06-01T00:00:00Z', ['c1']);
+      const c3 = mk('c3', 'Ada', '2025-01-01T00:00:00Z', ['c2']);
+      provider.listCommitsResult = () => Promise.resolve([c3, c2, c1]); // newest first
+      provider.commitFilesResult = (sha) =>
+        Promise.resolve([{ path: 'a.txt', status: sha === 'c1' ? 'added' : 'modified' }]);
+      const text: Record<string, string> = {
+        c1: 'L1\nL2\nL3\n',
+        c2: 'L1\nL2x\nL3\nL4\n',
+        c3: 'L1\nL2x\nL3\n',
+      };
+      provider.fileAtRefResult = (path, ref) =>
+        Promise.resolve({
+          kind: 'text',
+          path,
+          sha: `blob-${ref}`,
+          size: text[ref].length,
+          text: text[ref],
+        });
+    }
+
+    it('tracks line births and deaths into cohorts, authorship and a survival curve', async () => {
+      scriptSurvivalHistory();
+      await store.loadRepo(slug);
+
+      await store.computeSurvival();
+
+      const state = store.survival();
+      expect(state?.status).toBe('ready');
+      const report = state!.report;
+      // Surviving lines at the tip: L1 (Ada), L2x (Bob), L3 (Ada).
+      expect(report.aliveLines).toBe(3);
+      // Deaths: L2 (Ada) at c2, L4 (Bob) at c3.
+      expect(report.curve.deaths).toBe(2);
+      expect(report.curve.censored).toBe(3);
+      expect(report.trackedLines).toBe(5);
+      // "% of code by author" counts only the lines alive today.
+      expect(report.authors).toEqual([
+        { author: 'Ada', lines: 2, share: 2 / 3 },
+        { author: 'Bob', lines: 1, share: 1 / 3 },
+      ]);
+    });
+
+    it('clears the survival analysis on demand', async () => {
+      scriptSurvivalHistory();
+      await store.loadRepo(slug);
+      await store.computeSurvival();
+      expect(store.survival()).not.toBeNull();
+
+      store.clearSurvival();
+      expect(store.survival()).toBeNull();
+    });
+
+    it('reports an empty history without error', async () => {
+      provider.listCommitsResult = () => Promise.resolve([]);
+      await store.loadRepo(slug);
+
+      await store.computeSurvival();
+
+      expect(store.survival()?.status).toBe('ready');
+      expect(store.survival()?.report.trackedLines).toBe(0);
+    });
+  });
 });

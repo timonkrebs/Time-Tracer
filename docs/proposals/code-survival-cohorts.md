@@ -1,7 +1,12 @@
 # Proposal — Code survival & age cohorts ("Git of Theseus" for Time Tracer)
 
-**Status:** Draft proposal · **Area:** Insights (`features/viewer/insights-view.ts`) ·
+**Status:** ✅ Implemented · **Area:** Insights (`features/viewer/insights-view.ts`) ·
 **Roadmap:** extends item 22, _Repository Insights_
+
+> **Implemented** as the Insights **Age** tab. The "Implementation notes" section at the
+> bottom records how the shipped code differs from this original sketch — in particular the
+> correctness points (merges, in-place moves, deleted files, tip-time censoring) raised in
+> review and addressed in the walk.
 
 ## Summary
 
@@ -65,18 +70,21 @@ The **authorship share** chart is the cohort plot keyed by author instead of bir
 
 /** A physical line observed over history: born at a commit, died at another or still alive. */
 export interface LineLifetime {
-  readonly bornAt: number;        // ms epoch of the adding commit
-  readonly bornYear: number;      // birth cohort bucket
-  readonly author: string;        // normalized author of the adding commit
-  readonly diedAt: number | null; // ms epoch of the removing commit, or null = alive at HEAD
+  readonly bornAt: number; // ms epoch of the adding commit
+  readonly author: string; // author of the adding commit
+  readonly diedAt: number | null; // ms epoch of the removing commit, or null = alive at the tip
 }
 ```
 
+(The birth-year cohort is derived from `bornAt` inside `cohortSeries`, not stored.)
+
 - **Cohort stack** = for each time bucket `t`, count lines with `bornAt ≤ t` and
-  `(diedAt === null || diedAt > t)`, grouped by `bornYear`.
+  `(diedAt === null || diedAt > t)`, grouped by birth year.
 - **Authorship share** = the same, grouped by `author` (snapshot at `t = now`).
 - **Survival curve** = Kaplan–Meier over the lifetimes `diedAt − bornAt`, with `diedAt === null`
-  rows treated as **right-censored** at `now − bornAt`.
+  rows treated as **right-censored** at `tip − bornAt` — where `tip` is the **latest analysed
+  commit's time**, not wall-clock now, so an archived or old ref is not read as if its code
+  survived until today.
 
 ## Methodology
 
@@ -84,21 +92,45 @@ export interface LineLifetime {
 
 Time Tracer already reconstructs line identity in reverse for blame (`runBlame` in
 `repo-store.ts`, walking history with `core/util/diff.ts`). Survival needs the same mechanism run
-**forward**: walk commits oldest→newest, and for each commit diff every changed file against its
-parent. The diff ops give us exactly what we need, positionally — no fragile content matching:
+**forward**: walk the mainline oldest→newest, and for each commit diff every changed file against
+the running snapshot. The diff ops give us exactly what we need, positionally — no fragile content
+matching. The per-file tag array is **rebuilt** each step (so removed lines leave it, not just get
+flagged dead):
 
 ```ts
-// per file, maintain a cohort tag for each currently-live line
-for (const op of diffOps) {            // DiffOp from core/util/diff.ts
-  if (op.kind === 'remove') death(tags[op.oldLine - 1]);          // a line dies
-  if (op.kind === 'add')    tags.splice(op.newLine - 1, 0, born); // a line is born
-  // 'equal' lines keep their existing tag
+// per changed file: diff the running snapshot (oldLines/oldTags) against the new content
+const ops = diffLines(oldLines, newLines);
+const moved = movedLinePairs(ops); // an in-file block move: remove+add of the same line
+const movedOld = new Set(moved.values());
+const newTags: Tag[] = [];
+for (const op of ops) {
+  if (op.kind === 'equal') newTags.push(oldTags[op.oldLine - 1]); // survives, keep tag
+  else if (op.kind === 'remove') {
+    if (movedOld.has(op.oldLine)) continue; // moved, not dead
+    death(oldTags[op.oldLine - 1]); // a line dies (its tag is dropped — it is not in newTags)
+  } else {
+    const from = moved.get(op.newLine);
+    newTags.push(from !== undefined ? oldTags[from - 1] : bornTag); // carried move, or genuinely born
+  }
 }
+files.set(path, { lines: newLines, tags: newTags });
 ```
 
 At the end of the walk every tag still in a file's array is a **survivor**, emitted with
 `diedAt = null`. This is the same shape of work as `loadAllHistory` + the blame diff-walk, over the
-content already cached per `<sha, path>`.
+content fetched per `<sha, path>`.
+
+A few cases the loop above gets right (and that a naïve version does not):
+
+- **In-place moves** reuse `movedLinePairs` exactly as blame does, so a pure refactor carries the
+  line's age instead of resetting it (remove+add of the same content is one surviving line, not a
+  death plus a birth).
+- **Deleted files** never fetch — `newLines = []`, so the diff is all-removes and every remaining
+  tag in that file dies. A not-found blob at the commit is treated the same way.
+- **Merges / branches**: the walk follows the **first-parent chain** (a clean linear sequence of
+  tree states), so side-branch commits fold into the merge that brings them to the mainline instead
+  of being applied to one mutable tree out of order. Because each step diffs against the file's
+  _actual_ content at that commit, the snapshot also self-corrects rather than drifting.
 
 ### 2. Why a `HEAD` blame is not enough (survivorship bias)
 
@@ -118,13 +150,15 @@ risk** (lifetime `≥ tᵢ`, i.e. still alive and observed up to `tᵢ`, censore
 S(tᵢ) = S(tᵢ₋₁) · (1 − dᵢ / nᵢ)          S(0) = 1
 ```
 
-Censored lines (alive at `HEAD`) leave the risk set at their censoring age **without** counting as
+Censored lines (alive at the tip) leave the risk set at their censoring age **without** counting as
 a death — this is what correctly stops recently-added lines, which simply haven't had time to die,
 from dragging the curve down. We report:
 
-- **Code half-life** = the age where `S(t)` first crosses 0.5 (median line lifetime).
+- **Code half-life** = the age where `S(t)` first crosses 0.5 (median line lifetime). It is
+  **nullable**: a young or very stable repo whose curve never reaches ½ has no observed median,
+  rendered as "not reached" rather than a fabricated number.
 - **S(10y)** = survival at ten years, to compare directly with Bernhardsson's ~40%.
-- An optional fitted exponential `S(t) = 2^(−t/halfLife)` overlay, plus the dashed benchmark line.
+- The dashed benchmark reference line (two anchors: ½ at 6 yr, 0.4 at 10 yr).
 
 > Equivalence note: `git-of-theseus` aggregates per-cohort survivor counts across history
 > snapshots; the line-lifetime formulation above is mathematically equivalent and far cheaper given
@@ -132,87 +166,90 @@ from dragging the curve down. We report:
 
 ### 4. Observation window / left-truncation
 
-If the walk runs on a **capped** window rather than full history, the oldest lines are
-left-truncated (born before the window) and their true age is unknown. The survival curve therefore
-**requires the full walk** ("Compute survival — full history", mirroring co-change's _Load all_).
-The capped walk powers only the cheap cohort/author snapshot, where truncation is harmless.
+A **capped** window left-truncates the oldest lines (born before the window, so their true age and
+even their birth is unknown) — which would silently mis-bucket or drop old live code. Rather than
+carry that hazard, the feature shipped as a **single full-history walk** (no capped tier): all
+three charts come from the same complete lifetime table, so there is no truncation to correct for.
+It is the only statistically honest choice for the survival curve, and it keeps the cohort/author
+snapshots exact too.
 
-## Two-tier design (mirrors the existing capped vs. "Load all" pattern)
+## A single full-history walk (as built)
 
-| Tier | Trigger | Cost | Delivers |
-|------|---------|------|----------|
-| **1 — Age snapshot** | default, on tab open | one history-walk per file (= the Owners _folder scan_ over the whole tree, `computeFolderOwnership` without the folder filter) | cohort stack at `HEAD` + authorship share. **No survival curve** (survivors only). |
-| **2 — Survival** | explicit "Compute survival (full history)" button | one diff per changed `<sha,path>` across all commits (= `loadAllHistory` + blame walk) | line-lifetime table → full cohort time-series, author-over-time, **Kaplan–Meier curve**. |
+The two-tier "cheap snapshot + opt-in deep walk" split in the original sketch was dropped: a capped
+snapshot tier can't bucket pre-window live code (see Observation window above), and the cohort
+time-series and survival curve both need the full lifetime table anyway. So there is **one**
+analysis — `RepoStore.computeSurvival()` — triggered by an explicit **"Analyze code age &
+survival"** button. It walks the whole mainline, **streams** a recomputed report every
+`SURVIVAL_RECOMPUTE_EVERY` commits, and is **cancelled by navigation** through the same
+load-sequence guards every other walk uses. All three charts are derived from its lifetime table.
 
-Tier 1 is essentially the existing repo-wide blame the Owners panel already performs, re-bucketed
-by year instead of summarised per file. Tier 2 is the deep, opt-in pass. Both **stream
-progressively** and are **cancelled by navigation** through the same load-sequence guards every
-other walk uses.
+## Where it lives in the code (as built)
 
-## Where it lives in the code
+Following the established `hotspots.ts` / `co-change.ts` / `CoChangeState` patterns:
 
-Concrete, following the established `hotspots.ts` / `co-change.ts` / `CoChangeState` patterns:
-
-- **`core/util/survival.ts`** (new pure util + `survival.spec.ts`):
-  - `kaplanMeier(lifetimes, now)` → `{ points: { ageDays, survival, atRisk, deaths }[], halfLifeDays, survivalAt(days) }`
-  - `cohortSeries(lifetimes, { bucket: 'year' })` → stacked series for the area chart
-  - `authorSeries(lifetimes, now)` → reuses author normalization from `ownership.ts`
-  - `BERNHARDSSON_BENCHMARK = { halfLifeYears: 6, survivalAt10y: 0.40 }`
-- **`core/store/repo-store.ts`**: a `_survival` signal + `SurvivalState` (status/scanned/target/
-  result/message — same shape as `CoChangeState`) and a `computeSurvival({ all })` walk modelled on
-  `walkCoChange`, fetching content per `<sha,path>` through the existing cache and folding diffs into
-  the lifetime table. Tier 1 can reuse `computeFolderOwnership`'s blame results unbucketed.
-- **`features/viewer/insights-view.ts`**: extend `tab` to `'hotspots' | 'coupling' | 'age'`, add the
-  tab button and three SVG charts (stacked-area path generator, 100%-stacked bar, KM step polyline +
-  benchmark dashes). Inputs `[survival]`, outputs `(computeSurvival)` / `(computeSurvivalAll)`.
-- **`features/viewer/viewer-page.ts`**: wire `[survival]="store.survival()"` and the new outputs into
-  `<app-insights-view>`, next to the existing `coChange` / `coupleFocus` bindings.
+- **`core/util/survival.ts`** (pure util + `survival.spec.ts`):
+  - `kaplanMeier(lifetimes, now)` → `{ points: { ageDays, survival, atRisk, deaths }[], totalLines, deaths, censored, halfLifeDays }`
+  - `survivalAt(curve, ageDays)` → `S(t)` read off the step function
+  - `cohortSeries(lifetimes, { now, samples, maxBands })` → stacked per-band series (oldest folded into a `≤YYYY` band)
+  - `authorShares(lifetimes, { limit })` → share of the **alive** lines by author (tail folded into "Others")
+  - `summarizeSurvival(lifetimes, { now, … })` → the `SurvivalReport` the store publishes
+  - `CODE_HALF_LIFE_BENCHMARK = { halfLifeYears: 6, survivalAtTenYears: 0.4, points: […] }`
+- **`core/store/repo-store.ts`**: a `_survival` signal + `SurvivalState`
+  (`status: 'reading' | 'computing' | 'ready' | 'error'`, `scanned`, `total`, `report`, `message`),
+  `computeSurvival()` (the first-parent forward walk) and `clearSurvival()`. Content is fetched per
+  `<sha,path>` directly (bypassing the UI file cache so a full walk doesn't flood it).
+- **`features/viewer/insights-view.ts`**: `tab` extended to `'hotspots' | 'coupling' | 'age'`, the
+  **Age** tab, and three hand-drawn SVG charts (KM step polyline + dashed benchmark, stacked-area
+  cohorts, 100%-stacked author bar). Input `[survival]`, output `(computeSurvival)`.
+- **`features/viewer/viewer-page.ts`**: `[survival]="store.survival()"`, `(computeSurvival)` and a
+  Reset that clears co-change **and** survival, next to the existing `coChange` / `coupleFocus`.
 
 ## Cost, performance, and honesty about limits
 
-- **Tier 1** costs what the Owners folder scan costs over the whole tree — bounded, cached, and
-  free for **local repositories** (the isomorphic-git provider has the whole object DB on disk and
-  already scans folders automatically).
-- **Tier 2** is request-heavy on hosted providers (one content/diff fetch per changed file per
-  commit). It is gated behind an explicit button, streams as it goes, and surfaces the same
-  "add a token first" guidance the Insights intro already shows for the anonymous 60-req/hr budget.
-  **Local repos are the ideal target.** Roadmap item 21 (move blame/Trace walks to a **Web Worker**)
-  applies directly — the survival walk should run off the main thread so long histories stay smooth.
-- Honest framing in the UI: the curve is "lines tracked through this repo's recorded history";
-  renames/moves follow only as far as the diff walk does (a later enhancement could lean on the
-  existing rename-candidate machinery to carry cohorts across renames).
+- The walk is request-heavy on hosted providers (one content fetch per changed file per commit). It
+  is gated behind an explicit button, streams as it goes, and the intro repeats the "add a token
+  first" guidance the Insights view already shows for the anonymous 60-req/hr budget. **Local repos
+  are the ideal target** — the isomorphic-git provider has the whole object DB on disk.
+- Roadmap item 21 (move blame/Trace walks to a **Web Worker**) applies directly and is the natural
+  next step so long histories stay smooth.
+- Honest framing: the curve tracks "lines through this repo's recorded mainline". Cross-file
+  renames are carried when the provider reports `previousPath`; a later enhancement could lean on
+  the existing rename-candidate machinery to chase the rest.
 
-## Testing
+## Testing (as built)
 
-Following `hotspots.spec.ts` / `co-change.spec.ts` / the local-provider integration tests:
+- **`survival.spec.ts`** — a hand-verified KM example (step values + censoring), cohort bucketing
+  and `≤YYYY` folding, a fully-censored table (all alive → `S = 1`, no survivorship-bias collapse),
+  half-life extraction and the benchmark figures.
+- **`repo-store.spec.ts`** — a scripted add/edit/trim history through the `FakeProvider` asserting
+  the resulting births, deaths, censored survivors and author shares.
+- **`insights-view.spec.ts`** — the Age tab renders the three charts from a fixture `SurvivalState`,
+  shows progress while walking, and emits the analysis from the cold start.
 
-- **`survival.spec.ts`** — hand-built lifetime tables with known answers: the textbook KM example
-  (verify step values and censoring), cohort bucketing, a fully-censored table (all alive →
-  `S = 1`, no survivorship-bias collapse), median/half-life extraction.
-- **Store integration** — build a real in-memory git repo (the project already does this for the
-  local provider) with a scripted add/delete pattern and assert the resulting cohort counts and
-  survival points.
-- **`insights-view.spec.ts`** — tab switching and chart rendering from a fixture `SurvivalState`.
+## Implementation notes — review resolutions
 
-## Phased rollout
+Points raised in review of the original sketch, and how the shipped walk handles each:
 
-1. `core/util/survival.ts` + tests (pure, no UI) — Kaplan–Meier, cohort/author series, benchmark.
-2. Tier 1 store walk + **Age** tab with the cohort stack and authorship share (cheap, ships value
-   immediately).
-3. Tier 2 survival walk + the Kaplan–Meier curve with half-life and the Bernhardsson reference.
-4. Move the Tier 2 walk to a Web Worker (with roadmap item 21); optionally carry cohorts across
-   renames using the existing candidate search.
+| Concern                            | Resolution                                                                                                                    |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Capped Tier-1 snapshot truncation  | Dropped the capped tier — **one full-history walk** drives every chart, so no pre-window line is mis-bucketed.                |
+| Merge/branch ordering              | Walk the **first-parent chain** (fallback to date order only when a provider omits parents); each step re-diffs real content. |
+| Removed line left in the live array| Tags are **rebuilt** from the diff ops, so a removed line is recorded dead **and** absent from the next snapshot.             |
+| In-place moves reset age           | Reuse `movedLinePairs` (as blame does): a moved block carries its tag — no death, no rebirth.                                 |
+| Deleted files                      | No fetch for a removal (and a not-found blob is treated as empty), so the all-removes diff kills every remaining tag.         |
+| Half-life when median not observed | `halfLifeDays` is **nullable**; the UI renders "not reached".                                                                 |
+| Censoring date                     | Survivors are censored at the **tip commit's time**, not wall-clock now.                                                      |
 
-## Open questions
+## Open questions / future work
 
-- **Default bucket** for cohorts — calendar **year** (matches Git of Theseus) vs. quarter for young
-  repos. Proposed: year, auto-switching to quarter when history < ~2 years.
-- **Authorship over time** vs. snapshot only — start with the current-snapshot 100%-stacked bar;
-  add the time-series stack if it earns the screen space.
-- **LOC vs. bytes** — blame is line-based, so cohorts are in **lines**; the treemap's byte-size
-  proxy is not reused here.
+- **Cohort bucket** is calendar **year**; quarter-bucketing for very young repos is a possible
+  refinement.
+- **Authorship over time** — shipped as the current-snapshot 100%-stacked bar; a time-series stack
+  could be added if it earns the screen space.
+- **Web Worker** offload (roadmap item 21) and **carrying cohorts across renames** via the existing
+  candidate search remain the natural follow-ups.
 
 ## Roadmap note
 
-Update README item 22 to list, after the contributor leaderboard and bus-factor map,
+README item 22 now lists, alongside the contributor leaderboard and bus-factor map,
 "**code survival / age cohorts** (Git-of-Theseus-style cohort stack + Kaplan–Meier survival curve)".
