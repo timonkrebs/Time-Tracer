@@ -91,12 +91,15 @@ renames — see the feature list and roadmap below for what's done and what's ne
     the History panel.
   - **Team collaboration** — a **developer social graph** (`core/util/team-graph.ts`): the
     people-shaped twin of change coupling. Two developers are tied when they **edit the same
-    files**, the tie's strength being their file-set Jaccard overlap, drawn as a node-link graph
-    (disc = commits, colour = the connected "team") over the same commit walk. **Click a developer**
-    to light up their collaborators and read them ranked by shared files; a **"Most connected"**
-    list surfaces the people who bridge the work and a **"Working in isolation"** list the silos —
-    developers whose files nobody else touches. Reveals cross-team collaboration and silos from git
-    alone, no review API required.
+    files**, the tie's strength being their file-set Jaccard overlap, drawn as a **force-directed
+    node-link graph** (`core/util/force-layout.ts` — collaborators attract, everyone repels, so
+    teams clump and bridges sit between; disc = commits, colour = the connected "team") over the
+    same commit walk. Developers are keyed by email identity (name for display). **Click a
+    developer** to light up their collaborators and read them ranked by shared files; a **"Most
+    connected"** list surfaces the people who bridge the work and a **"Working in isolation"** list
+    the silos — developers whose files nobody else touches (left out of the graph, since they have
+    nothing to connect to). Reveals cross-team collaboration and silos from git alone, no review API
+    required.
 
   Mega-commits are filtered out as churn noise; the walk streams as it goes.
 

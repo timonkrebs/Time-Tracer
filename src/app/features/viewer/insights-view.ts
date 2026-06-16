@@ -10,6 +10,7 @@ import {
 
 import { CoChangeState } from '../../core/store/repo-store';
 import { CoChangeCluster, clusterCoChange, relatedFiles } from '../../core/util/co-change';
+import { ForceEdge, Point, forceLayout } from '../../core/util/force-layout';
 import { Hotspot, heatLevel } from '../../core/util/hotspots';
 import { disambiguateLabels } from '../../core/util/path-label';
 import { relativeTime } from '../../core/util/relative-time';
@@ -59,6 +60,8 @@ const MAX_CONNECTORS = 8;
 /** Team-graph coordinate space (16:9, scaled to fill its box). */
 const TEAM_W = 1600;
 const TEAM_H = 900;
+/** Padding (viewBox units) kept around the fitted graph for discs + labels. */
+const TEAM_MARGIN = 150;
 /** Categorical node fills, indexed by connected component (the "teams"). */
 const TEAM_COLORS = [
   '#818cf8',
@@ -1000,11 +1003,12 @@ export class InsightsView {
   }
 
   /**
-   * Lays the **linked** developers out on a ring — people who share no files
-   * with anyone are left out (they are listed beneath the graph instead of
-   * floating as unconnected dots) — ordered so members of the same connected
-   * component (the same "team") sit contiguously, keeping their ties short
-   * chords. Disc size scales with commit count and colour marks the component.
+   * Positions the **linked** developers with a force-directed simulation —
+   * people who share no files are left out (listed beneath the graph instead of
+   * floating as unconnected dots). Collaborators attract and everyone repels,
+   * so teams clump together and whoever bridges them settles between, then the
+   * result is scaled to fit the box. Disc size scales with commit count and
+   * colour marks the connected component.
    *
    * Selection-aware: the rendered set is the most-active slice plus, when a
    * developer is selected, that developer and their collaborators — so drilling
@@ -1044,34 +1048,37 @@ export class InsightsView {
         a.id.localeCompare(b.id),
     );
 
-    const cx = TEAM_W / 2;
-    const cy = TEAM_H / 2;
-    const ringRadius = Math.min(TEAM_W, TEAM_H) / 2 - 170;
     const maxCommits = Math.max(...order.map((d) => d.commits), 1);
-    const n = order.length;
-    const pos = new Map<string, { x: number; y: number }>();
 
-    const nodes: TeamNode[] = order.map((dev, i) => {
-      const single = n === 1;
-      const angle = (2 * Math.PI * i) / n - Math.PI / 2;
-      const cos = Math.cos(angle);
-      const sin = Math.sin(angle);
-      const x = single ? cx : cx + ringRadius * cos;
-      const y = single ? cy : cy + ringRadius * sin;
-      pos.set(dev.id, { x, y });
+    // Run the simulation over the real ties (all of them, not just the drawn
+    // subset) for a faithful shape, then scale the result to fit the box.
+    const renderedSet = new Set(order.map((d) => d.id));
+    const simEdges: ForceEdge[] = graph.collaborations
+      .filter((edge) => renderedSet.has(edge.a) && renderedSet.has(edge.b))
+      .map((edge) => ({ a: edge.a, b: edge.b, weight: edge.strength }));
+    const raw = forceLayout(
+      order.map((d) => d.id),
+      simEdges,
+    );
+    const place = fitToBox(raw.values(), TEAM_W, TEAM_H, TEAM_MARGIN);
+
+    const pos = new Map<string, Point>();
+    const nodes: TeamNode[] = order.map((dev) => {
+      const point = place(raw.get(dev.id)!);
+      pos.set(dev.id, point);
       const r = 14 + 30 * Math.sqrt(dev.commits / maxCommits);
-      const labelDist = r + 14;
       const component = componentOf.get(dev.id) ?? 0;
       return {
         id: dev.id,
         name: dev.name,
         label: shortName(dev.name),
-        x,
-        y,
+        x: point.x,
+        y: point.y,
         r,
-        lx: single ? cx : x + labelDist * cos,
-        ly: single ? cy + r + 22 : y + labelDist * sin + 6,
-        anchor: single ? 'middle' : cos > 0.2 ? 'start' : cos < -0.2 ? 'end' : 'middle',
+        // The label sits centred just below each disc.
+        lx: point.x,
+        ly: point.y + r + 22,
+        anchor: 'middle',
         fill: TEAM_COLORS[component % TEAM_COLORS.length],
         commits: dev.commits,
         files: dev.files,
@@ -1187,4 +1194,33 @@ function shortName(name: string): string {
   const base = (at > 0 ? name.slice(0, at) : name).trim();
   const first = base.split(/\s+/)[0] || base;
   return first.length > 14 ? first.slice(0, 13) + '…' : first;
+}
+
+/**
+ * Builds a mapper that scales the simulation's arbitrary coordinates uniformly
+ * into a `width`×`height` box (centred, with `margin` to spare for discs and
+ * labels), preserving the layout's aspect.
+ */
+function fitToBox(
+  points: Iterable<Point>,
+  width: number,
+  height: number,
+  margin: number,
+): (p: Point) => Point {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of points) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  const spanX = maxX - minX || 1;
+  const spanY = maxY - minY || 1;
+  const scale = Math.min((width - 2 * margin) / spanX, (height - 2 * margin) / spanY);
+  const midX = (minX + maxX) / 2;
+  const midY = (minY + maxY) / 2;
+  return (p) => ({ x: width / 2 + (p.x - midX) * scale, y: height / 2 + (p.y - midY) * scale });
 }
