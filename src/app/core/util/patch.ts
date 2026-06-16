@@ -87,16 +87,27 @@ export function applyPatch(
     if (copyUntil < oldIdx || copyUntil > oldLines.length) return null;
     while (oldIdx < copyUntil) out.push(oldLines[oldIdx++]);
 
+    let oldConsumed = 0;
+    let newProduced = 0;
     for (const line of hunk.lines) {
       if (line.kind === 'add') {
         out.push(line.text);
+        newProduced++;
       } else {
         // context or del must match the old content exactly
         if (oldIdx >= oldLines.length || oldLines[oldIdx] !== line.text) return null;
-        if (line.kind === 'context') out.push(oldLines[oldIdx]);
+        if (line.kind === 'context') {
+          out.push(oldLines[oldIdx]);
+          newProduced++;
+        }
         oldIdx++;
+        oldConsumed++;
       }
     }
+    // The body must consume/produce exactly what the header promised; a truncated
+    // or malformed hunk that merely matched its prefix is rejected so the caller
+    // falls back to the blob instead of silently dropping part of the diff.
+    if (oldConsumed !== hunk.oldCount || newProduced !== hunk.newCount) return null;
   }
 
   while (oldIdx < oldLines.length) out.push(oldLines[oldIdx++]);

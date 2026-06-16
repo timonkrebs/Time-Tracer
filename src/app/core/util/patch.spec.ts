@@ -29,18 +29,9 @@ describe('parsePatch / applyPatch', () => {
   it('applies multiple hunks in one patch', () => {
     const out = patched(
       ['1', '2', '3', '4', '5', '6', '7', '8'],
-      [
-        '@@ -1,3 +1,3 @@',
-        ' 1',
-        '-2',
-        '+X',
-        ' 3',
-        '@@ -6,3 +6,3 @@',
-        ' 6',
-        '-7',
-        '+Y',
-        ' 8',
-      ].join('\n'),
+      ['@@ -1,3 +1,3 @@', ' 1', '-2', '+X', ' 3', '@@ -6,3 +6,3 @@', ' 6', '-7', '+Y', ' 8'].join(
+        '\n',
+      ),
     );
     expect(out).toEqual(['1', 'X', '3', '4', '5', '6', 'Y', '8']);
   });
@@ -65,6 +56,13 @@ describe('parsePatch / applyPatch', () => {
 
   it('returns null for an out-of-range hunk', () => {
     const out = patched(['a'], ['@@ -5,1 +5,1 @@', '-a', '+b'].join('\n'));
+    expect(out).toBeNull();
+  });
+
+  it('returns null when a hunk body does not match its header counts (truncated patch)', () => {
+    // Header promises 5 old lines but the body only describes 2 — a truncated
+    // hunk whose prefix matches must not be accepted.
+    const out = patched(['a', 'b', 'c', 'd', 'e'], ['@@ -1,5 +1,5 @@', ' a', '-b'].join('\n'));
     expect(out).toBeNull();
   });
 });

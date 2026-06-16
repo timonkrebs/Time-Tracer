@@ -1636,29 +1636,30 @@ export class RepoStore {
         prefetch(index + 1 + SURVIVAL_PREFETCH); // keep the request window full
 
         const authored = Date.parse(commit.authoredAt);
-        if (Number.isNaN(authored)) {
-          scanned++;
-          continue; // an undated commit can't be placed in time; the snapshot re-syncs later
-        }
         // Clamp commit times to be monotonically non-decreasing along the chain,
         // so a rebased / cherry-picked / backdated commit can never record a death
-        // before the line's birth (diedAt < bornAt → negative cohort counts).
-        walkClock = Math.max(walkClock, authored);
-        const commitTime = walkClock;
+        // before the line's birth (diedAt < bornAt → negative cohort counts). An
+        // undated commit still applies (keeping the snapshot in sync) — it borrows
+        // the running clock rather than being skipped.
+        if (!Number.isNaN(authored)) walkClock = Math.max(walkClock, authored);
+        const commitTime = Number.isFinite(walkClock) ? walkClock : 0;
         now = commitTime; // censor survivors at the latest observed commit, not wall-clock now
         const tag: Tag = { bornAt: commitTime, author: commit.authorName };
 
-        // Compute every change against the **pre-commit** snapshot (we don't mutate
-        // `files` until the whole commit is processed) and stage the writes. A
-        // provider's change list has no guaranteed order, so this keeps a commit
-        // that both renames a→b and (re)creates a from reading or deleting the
-        // wrong side of the same path.
-        const sets: [string, Tracked][] = [];
-        const deletes: string[] = [];
+        // Resolve each change against the **pre-commit** snapshot (we don't mutate
+        // `files` until the whole commit is computed). New content comes from the
+        // inline patch when present, else a blob fetch.
+        const resolved: {
+          change: CommitFileChange;
+          movedFrom: string | null;
+          oldLines: readonly string[];
+          oldTags: Tag[];
+          newLines: readonly string[] | null; // null = binary / too large
+          skip: boolean;
+        }[] = [];
         for (const change of changes) {
-          // Only a **rename** carries the source file's tracked snapshot (and
-          // removes the source). A **copy**, or a freshly **added** file, starts
-          // from empty so it can't inherit another path's age/author.
+          // Only a **rename** carries the source's tracked snapshot; a **copy** or
+          // a freshly **added** file starts from empty.
           const isCopy = /copy|copied/i.test(change.status);
           const movedFrom =
             !isCopy && change.previousPath && change.previousPath !== change.path
@@ -1668,22 +1669,61 @@ export class RepoStore {
           const previous = isAdd ? undefined : files.get(movedFrom ?? change.path);
           const oldLines = previous?.lines ?? [];
           const oldTags = previous?.tags ?? [];
-
           const newLines = await this.resolveNewLines(change, oldLines, commit.sha);
           if (!live()) return;
+          resolved.push({ change, movedFrom, oldLines, oldTags, newLines, skip: false });
+        }
+
+        // Detect renames the provider didn't flag — notably a local `git mv`,
+        // which the isomorphic-git reader reports as a plain remove + add with no
+        // `previousPath`. Pair a removed file with an added file of identical
+        // content so the lines carry their age/author instead of dying and being
+        // reborn (which would reset code age on the repos we call the cheap path).
+        const removedByContent = new Map<string, (typeof resolved)[number]>();
+        for (const item of resolved) {
+          if (
+            !item.movedFrom &&
+            item.oldLines.length > 0 &&
+            item.newLines !== null &&
+            item.newLines.length === 0 &&
+            /remov|delet/i.test(item.change.status)
+          ) {
+            removedByContent.set(item.oldLines.join('\n'), item);
+          }
+        }
+        if (removedByContent.size > 0) {
+          for (const item of resolved) {
+            const isAdd = !item.change.previousPath && /^add/i.test(item.change.status);
+            if (!isAdd || item.movedFrom || !item.newLines || item.newLines.length === 0) continue;
+            const key = item.newLines.join('\n');
+            const source = removedByContent.get(key);
+            if (source && source !== item) {
+              item.movedFrom = source.change.path; // treat the add as a rename of the removed file
+              item.oldLines = source.oldLines;
+              item.oldTags = source.oldTags;
+              source.skip = true; // its removal *is* the rename, not a deletion
+              removedByContent.delete(key);
+            }
+          }
+        }
+
+        // Apply (staged): deletes before sets, so a path a rename vacated but
+        // another change re-created in the same commit keeps the new file.
+        const sets: [string, Tracked][] = [];
+        const deletes: string[] = [];
+        for (const { change, movedFrom, oldLines, oldTags, newLines, skip } of resolved) {
+          if (skip) continue;
           if (newLines === null) {
-            // Binary or past the size guard: the blob can't be read, but nothing
-            // was deleted — stop following the file without inventing deaths for
-            // its lines (false mass-deaths for big vendored/generated files).
+            // Binary or past the size guard: nothing was deleted, so stop following
+            // the file without inventing deaths for its lines.
             if (movedFrom) deletes.push(movedFrom);
             deletes.push(change.path);
             continue;
           }
 
           const ops = diffLines(oldLines, newLines);
-          // A block moved within the file surfaces as remove+add; treat those as
-          // the same surviving line (carry its tag, no death) the way blame does,
-          // so a pure refactor does not reset code age or depress the curve.
+          // A block moved within the file surfaces as remove+add; carry its tag
+          // (no death, no rebirth) as blame does, so a refactor keeps its age.
           const moved = movedLinePairs(ops);
           const movedOld = new Set(moved.values());
           const newTags: Tag[] = [];
@@ -1691,7 +1731,7 @@ export class RepoStore {
             if (op.kind === 'equal') {
               newTags.push(oldTags[op.oldLine - 1]);
             } else if (op.kind === 'remove') {
-              if (movedOld.has(op.oldLine)) continue; // moved elsewhere, not dead
+              if (movedOld.has(op.oldLine)) continue; // moved within the file, not dead
               const owner = oldTags[op.oldLine - 1];
               if (owner) {
                 dead.push({ bornAt: owner.bornAt, author: owner.author, diedAt: commitTime });
@@ -1706,8 +1746,6 @@ export class RepoStore {
           if (newLines.length === 0) deletes.push(change.path);
           else sets.push([change.path, { lines: [...newLines], tags: newTags }]);
         }
-        // Deletes first, then sets — so a path a rename vacated but another change
-        // re-created in the same commit keeps the newly created file.
         for (const path of deletes) files.delete(path);
         for (const [path, tracked] of sets) files.set(path, tracked);
 
