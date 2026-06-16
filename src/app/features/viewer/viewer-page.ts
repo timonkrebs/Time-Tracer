@@ -143,27 +143,9 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
         }
         <a
           routerLink="/"
-          class="flex shrink-0 items-center gap-2 text-zinc-100 transition hover:text-white"
+          class="shrink-0 text-sm font-semibold tracking-tight text-zinc-100 transition hover:text-white"
         >
-          <span
-            class="flex size-6 items-center justify-center rounded-md border border-indigo-400/30 bg-indigo-500/10 text-indigo-300"
-          >
-            <svg
-              class="size-3.5"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M3 12a9 9 0 1 0 3-6.7" />
-              <path d="M3 4v4h4" />
-              <path d="M12 7v5l3.5 2" />
-            </svg>
-          </span>
-          <span class="text-sm font-semibold tracking-tight">Time Tracer</span>
+          Time Tracer
         </a>
 
         <span class="text-zinc-700">/</span>
@@ -220,6 +202,20 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
           }
         }
 
+        <a
+          href="https://github.com/timonkrebs/Time-Tracer/issues"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="shrink-0 rounded p-1.5 text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-100"
+          aria-label="Report an issue on GitHub"
+          title="Report an issue on GitHub"
+        >
+          <svg class="size-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path
+              d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.3.8-.6 0-.3 0-1 0-2-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17 4.6 18 4.9 18 4.9c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.3 0 1.6 0 3 0 3.4 0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5z"
+            />
+          </svg>
+        </a>
         <a
           routerLink="/"
           class="shrink-0 rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100"
