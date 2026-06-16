@@ -1604,42 +1604,55 @@ export class RepoStore {
       if (!Number.isNaN(tipTime)) now = tipTime;
 
       // 2. Forward walk: diff each commit's files against the running snapshot.
+      let walkClock = Number.NEGATIVE_INFINITY;
       for (const commit of walk) {
-        const bornAt = Date.parse(commit.authoredAt);
-        if (Number.isNaN(bornAt)) {
+        const authored = Date.parse(commit.authoredAt);
+        if (Number.isNaN(authored)) {
           scanned++;
           continue; // an undated commit can't be placed in time; the snapshot re-syncs later
         }
-        const tag: Tag = { bornAt, author: commit.authorName };
+        // Clamp commit times to be monotonically non-decreasing along the chain,
+        // so a rebased / cherry-picked / backdated commit can never record a death
+        // before the line's birth (diedAt < bornAt → negative cohort counts).
+        walkClock = Math.max(walkClock, authored);
+        const commitTime = walkClock;
+        now = commitTime; // censor survivors at the latest observed commit, not wall-clock now
+        const tag: Tag = { bornAt: commitTime, author: commit.authorName };
         // A provider failure here (rate limit, network) must surface as an error,
         // not be swallowed into an empty change set that silently corrupts the
         // report — let it throw to the outer handler.
         const changes = await provider.getCommitFiles(slug, commit.sha);
         if (!live()) return;
 
+        // Compute every change against the **pre-commit** snapshot (we don't mutate
+        // `files` until the whole commit is processed) and stage the writes. A
+        // provider's change list has no guaranteed order, so this keeps a commit
+        // that both renames a→b and (re)creates a from reading or deleting the
+        // wrong side of the same path.
+        const sets: [string, Tracked][] = [];
+        const deletes: string[] = [];
         for (const change of changes) {
           // Only a **rename** carries the source file's tracked snapshot (and
-          // removes the source). A **copy** adds new physical lines at this
-          // commit, so it must not inherit the original's age/author.
+          // removes the source). A **copy**, or a freshly **added** file, starts
+          // from empty so it can't inherit another path's age/author.
           const isCopy = /copy|copied/i.test(change.status);
           const movedFrom =
             !isCopy && change.previousPath && change.previousPath !== change.path
               ? change.previousPath
               : null;
-          const source = movedFrom ?? change.path;
-          const previous = files.get(source);
+          const isAdd = !change.previousPath && /^add/i.test(change.status);
+          const previous = isAdd ? undefined : files.get(movedFrom ?? change.path);
           const oldLines = previous?.lines ?? [];
           const oldTags = previous?.tags ?? [];
 
           const newLines = await this.survivalNewLines(change, commit.sha);
           if (!live()) return;
           if (newLines === null) {
-            // Became binary / too large / unreadable: its tracked lines have left
-            // the text domain — record them dead here and stop following it.
-            for (const owner of oldTags) {
-              if (owner) dead.push({ bornAt: owner.bornAt, author: owner.author, diedAt: bornAt });
-            }
-            files.delete(source);
+            // Binary or past the size guard: the blob can't be read, but nothing
+            // was deleted — stop following the file without inventing deaths for
+            // its lines (false mass-deaths for big vendored/generated files).
+            if (movedFrom) deletes.push(movedFrom);
+            deletes.push(change.path);
             continue;
           }
 
@@ -1656,17 +1669,23 @@ export class RepoStore {
             } else if (op.kind === 'remove') {
               if (movedOld.has(op.oldLine)) continue; // moved elsewhere, not dead
               const owner = oldTags[op.oldLine - 1];
-              if (owner) dead.push({ bornAt: owner.bornAt, author: owner.author, diedAt: bornAt });
+              if (owner) {
+                dead.push({ bornAt: owner.bornAt, author: owner.author, diedAt: commitTime });
+              }
             } else {
               const fromOld = moved.get(op.newLine);
               newTags.push(fromOld !== undefined ? oldTags[fromOld - 1] : tag);
             }
           }
 
-          if (movedFrom) files.delete(movedFrom); // a rename empties the old path
-          if (newLines.length === 0) files.delete(change.path);
-          else files.set(change.path, { lines: newLines, tags: newTags });
+          if (movedFrom) deletes.push(movedFrom); // a rename empties the old path
+          if (newLines.length === 0) deletes.push(change.path);
+          else sets.push([change.path, { lines: newLines, tags: newTags }]);
         }
+        // Deletes first, then sets — so a path a rename vacated but another change
+        // re-created in the same commit keeps the newly created file.
+        for (const path of deletes) files.delete(path);
+        for (const [path, tracked] of sets) files.set(path, tracked);
 
         scanned++;
         if (scanned % SURVIVAL_RECOMPUTE_EVERY === 0) report = reportFrom();

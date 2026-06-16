@@ -231,19 +231,22 @@ Following the established `hotspots.ts` / `co-change.ts` / `CoChangeState` patte
 
 Points raised in two rounds of automated review, and how the shipped walk handles each:
 
-| Concern                             | Resolution                                                                                                                        |
-| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| Capped Tier-1 snapshot truncation   | Dropped the capped tier — **one full-history walk** drives every chart, so no pre-window line is mis-bucketed.                    |
-| Merge/branch ordering               | Walk the **first-parent chain**; parents are **resolved on demand** (`resolveCommit`) when a provider omits them (Azure DevOps).  |
-| Removed line left in the live array | Tags are **rebuilt** from the diff ops, so a removed line is recorded dead **and** absent from the next snapshot.                 |
-| In-place moves reset age            | Reuse `movedLinePairs` (as blame does): a moved block carries its tag — no death, no rebirth.                                     |
-| Deleted files                       | No fetch for a removal (and a not-found blob is treated as empty), so the all-removes diff kills every remaining tag.             |
-| Half-life when median not observed  | `halfLifeDays` is **nullable**; the UI renders "not reached".                                                                     |
-| Censoring date                      | Survivors are censored at the **tip commit's time**, not wall-clock now.                                                          |
-| Blob fetch error ≠ deletion         | Only an expected `not-found` maps to empty; rate-limit/network errors **re-throw** so the walk fails loudly, not corruptly.       |
-| `getCommitFiles` failure swallowed  | No longer caught — a provider failure mid-walk **surfaces as an error** (with the partial report) instead of a stale "ready".     |
-| Copied files inherit age            | A `copied` change is **new births** at the copy commit; only a rename carries the source's tags (and removes the source).         |
-| 10-year survival extrapolated       | `maxObservedAgeDays` gates it — a history shorter than 10 yr shows **"unobserved"** rather than a flattering extrapolated number. |
+| Concern                              | Resolution                                                                                                                                 |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Capped Tier-1 snapshot truncation    | Dropped the capped tier — **one full-history walk** drives every chart, so no pre-window line is mis-bucketed.                             |
+| Merge/branch ordering                | Walk the **first-parent chain**; parents are **resolved on demand** (`resolveCommit`) when a provider omits them (Azure DevOps).           |
+| Removed line left in the live array  | Tags are **rebuilt** from the diff ops, so a removed line is recorded dead **and** absent from the next snapshot.                          |
+| In-place moves reset age             | Reuse `movedLinePairs` (as blame does): a moved block carries its tag — no death, no rebirth.                                              |
+| Deleted files                        | No fetch for a removal (and a not-found blob is treated as empty), so the all-removes diff kills every remaining tag.                      |
+| Half-life when median not observed   | `halfLifeDays` is **nullable**; the UI renders "not reached".                                                                              |
+| Censoring date                       | Survivors are censored at the **tip commit's time**, not wall-clock now.                                                                   |
+| Blob fetch error ≠ deletion          | Only an expected `not-found` maps to empty; rate-limit/network errors **re-throw** so the walk fails loudly, not corruptly.                |
+| `getCommitFiles` failure swallowed   | No longer caught — a provider failure mid-walk **surfaces as an error** (with the partial report) instead of a stale "ready".              |
+| Copied files inherit age             | A `copied` change is **new births** at the copy commit; only a rename carries the source's tags (and removes the source).                  |
+| 10-year survival extrapolated        | `maxObservedAgeDays` gates it — a history shorter than 10 yr shows **"unobserved"** rather than a flattering extrapolated number.          |
+| Non-monotonic commit dates           | Commit times are **clamped monotonically** along the chain, so a rebased/backdated commit can't record `diedAt < bornAt`.                  |
+| Same-commit rename + recreate        | Each commit is computed against a **pre-commit snapshot** with staged writes (deletes before sets), so `a→b` plus a new `a` stay distinct. |
+| Size-guarded blobs counted as deaths | A `too-large`/binary blob stops tracking the file **without** recording deaths (no false mass-deaths for big vendored files).              |
 
 ## Open questions / future work
 
@@ -251,6 +254,12 @@ Points raised in two rounds of automated review, and how the shipped walk handle
   refinement.
 - **Authorship over time** — shipped as the current-snapshot 100%-stacked bar; a time-series stack
   could be added if it earns the screen space.
+- **`getCommitFiles` pagination** — GitHub's commit endpoint caps the `files` array at 300 and
+  paginates beyond it, while the provider reads only the first page. A commit touching >300 files
+  (mass imports/vendoring) is rare, but for full fidelity `getCommitFiles` should exhaust
+  pagination or signal truncation; this is a **pre-existing, cross-cutting** provider concern
+  (co-change and rename detection share it), so it is tracked as a follow-up rather than folded in
+  here.
 - **Web Worker** offload (roadmap item 21) and **carrying cohorts across renames** via the existing
   candidate search remain the natural follow-ups.
 

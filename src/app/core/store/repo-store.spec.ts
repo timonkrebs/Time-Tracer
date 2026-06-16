@@ -1944,5 +1944,140 @@ describe('RepoStore', () => {
       expect(report.curve.deaths).toBe(2);
       expect(provider.getCommitCalls).toContain('c3'); // parents were resolved on demand
     });
+
+    it('clamps backdated commits so a death is never recorded before its birth', async () => {
+      const mk = (sha: string, authoredAt: string, parents: string[]): CommitInfo => ({
+        sha,
+        message: sha,
+        summary: sha,
+        authorName: 'Ada',
+        authorEmail: null,
+        authoredAt,
+        htmlUrl: `https://github.com/acme/rocket/commit/${sha}`,
+        parentShas: parents,
+      });
+      // base.txt (2020) spreads the time axis; a.txt is added in c1 (Jun 2024) and
+      // removed in c2 — a child of c1 but **backdated** to Jan 2024.
+      provider.listCommitsResult = () =>
+        Promise.resolve([
+          mk('c2', '2024-01-01T00:00:00Z', ['c1']),
+          mk('c1', '2024-06-01T00:00:00Z', ['c0']),
+          mk('c0', '2020-01-01T00:00:00Z', []),
+        ]);
+      provider.commitFilesResult = (sha) =>
+        Promise.resolve(
+          sha === 'c0'
+            ? [{ path: 'base.txt', status: 'added' }]
+            : sha === 'c1'
+              ? [{ path: 'a.txt', status: 'added' }]
+              : [{ path: 'a.txt', status: 'removed' }],
+        );
+      const blobs: Record<string, string> = { 'base.txt@c0': 'B\n', 'a.txt@c1': 'L\n' };
+      provider.fileAtRefResult = (path, ref) => {
+        const text = blobs[`${path}@${ref}`];
+        return text === undefined
+          ? Promise.reject(new RepoProviderError('absent', 'not-found'))
+          : Promise.resolve({ kind: 'text', path, sha: `${path}-${ref}`, size: text.length, text });
+      };
+      await store.loadRepo(slug);
+
+      await store.computeSurvival();
+
+      const report = store.survival()!.report;
+      expect(report.curve.deaths).toBe(1); // a.txt's line died (clamped to its birth time)
+      expect(report.aliveLines).toBe(1); // base.txt survives
+      // The clamp keeps every cohort count non-negative (diedAt ≥ bornAt throughout).
+      const allNonNegative = report.cohorts.bands.every((band) =>
+        report.cohorts.counts.get(band)!.every((count) => count >= 0),
+      );
+      expect(allNonNegative).toBe(true);
+    });
+
+    it('keeps a rename and a same-commit re-creation of the source path distinct', async () => {
+      const mk = (
+        sha: string,
+        authorName: string,
+        authoredAt: string,
+        parents: string[],
+      ): CommitInfo => ({
+        sha,
+        message: sha,
+        summary: sha,
+        authorName,
+        authorEmail: null,
+        authoredAt,
+        htmlUrl: `https://github.com/acme/rocket/commit/${sha}`,
+        parentShas: parents,
+      });
+      provider.listCommitsResult = () =>
+        Promise.resolve([
+          mk('c2', 'Bob', '2024-06-01T00:00:00Z', ['c1']),
+          mk('c1', 'Ada', '2024-01-01T00:00:00Z', []),
+        ]);
+      // c2 renames a.txt → b.txt AND adds a fresh a.txt (the new file listed first).
+      provider.commitFilesResult = (sha) =>
+        Promise.resolve(
+          sha === 'c1'
+            ? [{ path: 'a.txt', status: 'added' }]
+            : [
+                { path: 'a.txt', status: 'added' },
+                { path: 'b.txt', status: 'renamed', previousPath: 'a.txt' },
+              ],
+        );
+      const blobs: Record<string, string> = {
+        'a.txt@c1': 'A1\nA2\n',
+        'b.txt@c2': 'A1\nA2\n', // the renamed content
+        'a.txt@c2': 'X\n', // the new file at the old path
+      };
+      provider.fileAtRefResult = (path, ref) => {
+        const text = blobs[`${path}@${ref}`];
+        return text === undefined
+          ? Promise.reject(new RepoProviderError('absent', 'not-found'))
+          : Promise.resolve({ kind: 'text', path, sha: `${path}-${ref}`, size: text.length, text });
+      };
+      await store.loadRepo(slug);
+
+      await store.computeSurvival();
+
+      const report = store.survival()!.report;
+      expect(report.curve.deaths).toBe(0); // the rename carried A1/A2; nothing died
+      expect(report.aliveLines).toBe(3); // A1, A2 (now in b.txt) + X (new a.txt)
+      expect(report.authors).toEqual([
+        { author: 'Ada', lines: 2, share: 2 / 3 }, // A1, A2 keep Ada's authorship
+        { author: 'Bob', lines: 1, share: 1 / 3 }, // X is Bob's new line
+      ]);
+    });
+
+    it('does not record deaths when a tracked file grows past the size guard', async () => {
+      const mk = (sha: string, authoredAt: string, parents: string[]): CommitInfo => ({
+        sha,
+        message: sha,
+        summary: sha,
+        authorName: 'Ada',
+        authorEmail: null,
+        authoredAt,
+        htmlUrl: `https://github.com/acme/rocket/commit/${sha}`,
+        parentShas: parents,
+      });
+      provider.listCommitsResult = () =>
+        Promise.resolve([
+          mk('c2', '2024-06-01T00:00:00Z', ['c1']),
+          mk('c1', '2024-01-01T00:00:00Z', []),
+        ]);
+      provider.commitFilesResult = () => Promise.resolve([{ path: 'a.txt', status: 'modified' }]);
+      // a.txt is text at c1, then exceeds the size guard at c2 (unreadable, not deleted).
+      provider.fileAtRefResult = (path, ref) =>
+        ref === 'c1'
+          ? Promise.resolve({ kind: 'text', path, sha: 'a1', size: 6, text: 'L1\nL2\n' })
+          : Promise.resolve({ kind: 'too-large', path, sha: 'a2', size: 9_000_000 });
+      await store.loadRepo(slug);
+
+      await store.computeSurvival();
+
+      // No deletion was observed — the client just couldn't load the blob — so the
+      // file's lines must not be counted as deaths (which would be false mass-deaths).
+      expect(store.survival()?.status).toBe('ready');
+      expect(store.survival()!.report.curve.deaths).toBe(0);
+    });
   });
 });
