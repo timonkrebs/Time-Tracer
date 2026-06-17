@@ -1200,6 +1200,18 @@ interface Quadrant {
                   <dt class="font-medium text-zinc-500">holders</dt>
                   <dd>contributors by authored-knowledge share; redder = more gone</dd>
                 </dl>
+                <p class="mt-2 text-[11px] leading-5 text-zinc-600">
+                  <span class="font-medium text-zinc-500">How orphaned is calculated.</span>
+                  Each contributor's recent commits to a file — weighted by recency, with a 90-day
+                  half-life so a commit a quarter ago counts half as much as one today — give them a
+                  share of its know-how. Each contributor also carries a departure factor that ramps
+                  from 0 to 1 the longer they stay silent across the whole repo (120-day half-life —
+                  about ½ after four quiet months, never a sudden cliff). A file's orphaned share is
+                  the sum over its contributors of share × departure: the fraction of recent
+                  authorship now held by people who've gone quiet, independent of file size.
+                  Example: someone who wrote 70% of a file and left ~4 months ago, with the other
+                  30% fresh, reads ≈ 35% orphaned.
+                </p>
                 @if (s.knowledge.partial) {
                   <p class="mt-2 text-[11px] text-zinc-600">
                     From the analysed commits only — Load all commits for a complete turnover
