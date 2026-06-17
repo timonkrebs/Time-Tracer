@@ -12,7 +12,7 @@ import { CoChangeState } from '../../core/store/repo-store';
 import { CoChangeCluster, clusterCoChange, relatedFiles } from '../../core/util/co-change';
 import { ForceEdge, Point, forceLayout } from '../../core/util/force-layout';
 import { HEAT_THRESHOLDS, Hotspot } from '../../core/util/hotspots';
-import { KnowledgeRisk, RISK_THRESHOLDS } from '../../core/util/knowledge';
+import { AuthorPresence, KnowledgeRisk, RISK_THRESHOLDS } from '../../core/util/knowledge';
 import { disambiguateLabels } from '../../core/util/path-label';
 import { relativeTime } from '../../core/util/relative-time';
 import {
@@ -30,6 +30,8 @@ const MAX_PAIRS = 60;
 const MAX_RELATED = 100;
 const MAX_HOTSPOTS = 45;
 const MAX_RISK = 45;
+/** Contributors listed in the Knowledge "holders" breakdown. */
+const MAX_HOLDERS = 10;
 const MAX_CLUSTERS = 10;
 /** Cluster-size range bounds: the floor can dip to 2 (a bare pair) on demand. */
 const CLUSTER_SIZE_FLOOR = 2;
@@ -123,6 +125,14 @@ function formatBytes(bytes: number): string {
   return `${Math.round(bytes)} B`;
 }
 
+/** Median of a numeric list (0 for empty). */
+function median(values: readonly number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
 interface GraphNode {
   readonly path: string;
   readonly label: string;
@@ -176,6 +186,26 @@ interface TeamEdge {
 interface TeamLayout {
   readonly nodes: readonly TeamNode[];
   readonly edges: readonly TeamEdge[];
+}
+
+/** One file plotted in the knowledge-risk quadrant. */
+interface QuadrantPoint {
+  readonly path: string;
+  readonly cx: number;
+  readonly cy: number;
+  readonly r: number;
+  readonly fill: string;
+  readonly orphaned: number;
+}
+/** The knowledge-risk scatter: bubbles plus the median crosshair and plot box. */
+interface Quadrant {
+  readonly points: readonly QuadrantPoint[];
+  readonly midX: number;
+  readonly midY: number;
+  readonly x0: number;
+  readonly x1: number;
+  readonly y0: number;
+  readonly y1: number;
 }
 
 /**
@@ -944,39 +974,80 @@ interface TeamLayout {
                   <span class="w-16 text-right tabular-nums text-zinc-400">{{ sizeLabel() }}</span>
                 }
               </div>
-              @if (riskTiles().length) {
+              @if (riskList().length) {
+                <p class="mb-2 text-xs leading-5 text-zinc-400">
+                  <span class="font-medium text-zinc-200">{{ departedKnowledgePct() }}%</span> of
+                  authored knowledge has gone quiet.
+                  @if (busFactorOne() > 0) {
+                    <span class="text-zinc-500"
+                      >{{ busFactorOne() }}
+                      {{ busFactorOne() === 1 ? 'file is' : 'files are' }} known to only one
+                      person{{
+                        busFactorOneGone() > 0 ? ' (' + busFactorOneGone() + ' already gone)' : ''
+                      }}.</span
+                    >
+                  }
+                </p>
                 <svg
-                  class="aspect-[16/9] w-full rounded border border-zinc-800"
+                  class="aspect-[16/9] w-full rounded border border-zinc-800 bg-zinc-900/30"
                   [attr.viewBox]="'0 0 ' + treemapW + ' ' + treemapH"
                   preserveAspectRatio="xMidYMid meet"
                 >
-                  @for (tile of riskTiles(); track tile.value.path) {
-                    <g class="cursor-pointer" (click)="openFile.emit(tile.value.path)">
-                      <title>
-                        {{ tile.value.path }} — {{ pct(tile.value.orphanedShare) }}% orphaned
-                      </title>
-                      <rect
-                        [attr.x]="tile.x"
-                        [attr.y]="tile.y"
-                        [attr.width]="tile.w"
-                        [attr.height]="tile.h"
-                        [attr.fill]="riskFill(tile.value)"
-                        stroke="#18181b"
-                        stroke-width="2"
-                        class="transition-opacity hover:opacity-80"
-                      />
-                      @if (tile.w > 120 && tile.h > 40) {
-                        <text
-                          [attr.x]="tile.x + 6"
-                          [attr.y]="tile.y + 22"
-                          fill="#fafafa"
-                          font-size="15"
-                          class="pointer-events-none font-mono"
-                        >
-                          {{ label(tile.value.path) }}
-                        </text>
-                      }
-                    </g>
+                  @if (quadrant(); as q) {
+                    <line
+                      [attr.x1]="q.midX"
+                      [attr.y1]="q.y1"
+                      [attr.x2]="q.midX"
+                      [attr.y2]="q.y0"
+                      stroke="#3f3f46"
+                      stroke-width="1.5"
+                      stroke-dasharray="6 7"
+                    />
+                    <line
+                      [attr.x1]="q.x0"
+                      [attr.y1]="q.midY"
+                      [attr.x2]="q.x1"
+                      [attr.y2]="q.midY"
+                      stroke="#3f3f46"
+                      stroke-width="1.5"
+                      stroke-dasharray="6 7"
+                    />
+                    <text
+                      [attr.x]="q.x1"
+                      [attr.y]="q.y0 + 40"
+                      text-anchor="end"
+                      fill="#71717a"
+                      font-size="22"
+                    >
+                      larger files →
+                    </text>
+                    <text [attr.x]="q.x0 - 6" [attr.y]="q.y1 - 16" fill="#71717a" font-size="22">
+                      ↑ more orphaned
+                    </text>
+                    <text
+                      [attr.x]="q.x1"
+                      [attr.y]="q.y1 - 16"
+                      text-anchor="end"
+                      fill="#a1a1aa"
+                      font-size="22"
+                    >
+                      most at risk ↗
+                    </text>
+                    @for (p of q.points; track p.path) {
+                      <g class="cursor-pointer" (click)="openFile.emit(p.path)">
+                        <title>{{ p.path }} — {{ pct(p.orphaned) }}% orphaned</title>
+                        <circle
+                          [attr.cx]="p.cx"
+                          [attr.cy]="p.cy"
+                          [attr.r]="p.r"
+                          [attr.fill]="p.fill"
+                          fill-opacity="0.7"
+                          stroke="#18181b"
+                          stroke-width="2"
+                          class="transition-opacity hover:opacity-100"
+                        />
+                      </g>
+                    }
                   }
                 </svg>
                 <div
@@ -1031,15 +1102,49 @@ interface TeamLayout {
                     </li>
                   }
                 </ul>
+                <div class="mt-4 border-t border-zinc-800/70 pt-3">
+                  <p class="mb-1.5 text-[11px] font-medium tracking-wide text-zinc-500 uppercase">
+                    Knowledge holders
+                  </p>
+                  <ul class="space-y-1.5">
+                    @for (a of knowledgeHolders(); track a.name) {
+                      <li>
+                        <div class="flex items-baseline gap-2 text-xs">
+                          <span class="min-w-0 flex-1 truncate text-zinc-200" [title]="a.name">{{
+                            a.name
+                          }}</span>
+                          @if (!a.active && a.lastActiveAt) {
+                            <span class="shrink-0 text-[11px] text-amber-500/80"
+                              >gone {{ when(a.lastActiveAt) }}</span
+                            >
+                          }
+                          <span class="shrink-0 tabular-nums text-zinc-500"
+                            >{{ holderShare(a) }}%</span
+                          >
+                        </div>
+                        <div class="mt-0.5 h-1.5 overflow-hidden rounded-full bg-zinc-800">
+                          <div
+                            class="h-full rounded-full"
+                            [style.width.%]="holderShare(a)"
+                            [style.background]="holderFill(a)"
+                          ></div>
+                        </div>
+                      </li>
+                    }
+                  </ul>
+                </div>
                 <dl
                   class="mt-3 grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 border-t border-zinc-800/70 pt-2 text-[11px] text-zinc-600"
                 >
-                  <dt class="font-medium text-zinc-500">risk</dt>
-                  <dd>the bar: file size × orphaned share — the ranking, highest first</dd>
+                  <dt class="font-medium text-zinc-500">dot</dt>
+                  <dd>
+                    a file — right = larger, up = more orphaned; size &amp; colour = risk (size ×
+                    orphaned), so the top-right is most at risk
+                  </dd>
                   <dt class="font-medium text-zinc-500">orphaned</dt>
                   <dd>share of recent authorship held by contributors who've gone quiet</dd>
-                  <dt class="font-medium text-zinc-500">expert</dt>
-                  <dd>the file's top author; “gone” = inactive for months</dd>
+                  <dt class="font-medium text-zinc-500">holders</dt>
+                  <dd>contributors by authored-knowledge share; redder = more gone</dd>
                 </dl>
                 @if (s.knowledge.partial) {
                   <p class="mt-2 text-[11px] text-zinc-600">
@@ -1238,14 +1343,66 @@ export class InsightsView {
   protected readonly maxRisk = computed(() =>
     this.riskList().reduce((max, risk) => Math.max(max, risk.riskScore), 0),
   );
-  protected readonly riskTiles = computed<TreemapTile<KnowledgeRisk>[]>(() =>
-    squarify(
-      // Same clamp as the hotspot treemap: a file absent from the current tree
-      // has size 0, which squarify would drop — keep it as a tiny tile.
-      this.knowledgeFiles().map((risk) => ({ weight: Math.max(risk.size, 1), value: risk })),
-      TREEMAP_W,
-      TREEMAP_H,
-    ),
+  // Risk quadrant: x = file size (log), y = orphaned share, bubble area = riskScore.
+  protected readonly quadrant = computed<Quadrant>(() => {
+    const files = this.riskList();
+    const x0 = 64;
+    const x1 = TREEMAP_W - 48;
+    const y0 = TREEMAP_H - 64;
+    const y1 = 48;
+    const logs = files.map((f) => Math.log(Math.max(f.size, 1)));
+    const loMin = logs.length ? Math.min(...logs) : 0;
+    const span = (logs.length ? Math.max(...logs) : 1) - loMin || 1;
+    const maxRisk = this.maxRisk() || 1;
+    const xOf = (size: number): number =>
+      x0 + ((Math.log(Math.max(size, 1)) - loMin) / span) * (x1 - x0);
+    const yOf = (orphaned: number): number => y0 + orphaned * (y1 - y0);
+    return {
+      points: files.map((f) => ({
+        path: f.path,
+        cx: xOf(f.size),
+        cy: yOf(f.orphanedShare),
+        r: 10 + Math.sqrt(f.riskScore / maxRisk) * 40,
+        fill: heatColor(f.orphanedShare, RISK_THRESHOLDS),
+        orphaned: f.orphanedShare,
+      })),
+      midX: xOf(median(files.map((f) => Math.max(f.size, 1)))),
+      midY: yOf(median(files.map((f) => f.orphanedShare))),
+      x0,
+      x1,
+      y0,
+      y1,
+    };
+  });
+
+  /** Contributors holding the most authored knowledge (departed ones flagged). */
+  protected readonly knowledgeHolders = computed(() =>
+    (this.state()?.knowledge.authors ?? []).slice(0, MAX_HOLDERS),
+  );
+  protected readonly totalKnowledge = computed(
+    () => (this.state()?.knowledge.authors ?? []).reduce((sum, a) => sum + a.knowledge, 0) || 1,
+  );
+  /** Share of authored knowledge held by contributors who've gone quiet, 0–100. */
+  protected readonly departedKnowledgePct = computed(() => {
+    const authors = this.state()?.knowledge.authors ?? [];
+    let total = 0;
+    let gone = 0;
+    for (const a of authors) {
+      total += a.knowledge;
+      gone += a.knowledge * a.departed;
+    }
+    return total > 0 ? Math.round((gone / total) * 100) : 0;
+  });
+  /** Files only one contributor knows — a single point of failure. */
+  protected readonly busFactorOne = computed(
+    () => (this.state()?.knowledge.files ?? []).filter((f) => f.busFactor === 1).length,
+  );
+  /** …of those, the ones whose sole owner has already gone quiet. */
+  protected readonly busFactorOneGone = computed(
+    () =>
+      (this.state()?.knowledge.files ?? []).filter(
+        (f) => f.busFactor === 1 && f.primaryExpert && !f.primaryExpert.active,
+      ).length,
   );
 
   /** Display labels for every file shown, full-path when basenames collide. */
@@ -1562,6 +1719,16 @@ export class InsightsView {
 
   protected riskFill(risk: KnowledgeRisk): string {
     return heatColor(risk.orphanedShare, RISK_THRESHOLDS);
+  }
+
+  /** Bar colour for a knowledge holder: heat by how departed they are. */
+  protected holderFill(author: AuthorPresence): string {
+    return heatColor(author.departed, RISK_THRESHOLDS);
+  }
+
+  /** A holder's share of the repo's authored knowledge, 0–100. */
+  protected holderShare(author: AuthorPresence): number {
+    return Math.round((author.knowledge / this.totalKnowledge()) * 100);
   }
 
   /**

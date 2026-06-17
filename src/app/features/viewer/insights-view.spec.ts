@@ -374,18 +374,22 @@ describe('InsightsView', () => {
     expect(button('Knowledge')).toBeTruthy();
   });
 
-  it('maps knowledge risk (treemap + list), flags the departed expert, and opens a file', async () => {
+  it('maps knowledge risk (quadrant + list), flags the departed expert, and opens a file', async () => {
     await setState(KNOWLEDGE);
     button('Knowledge')!.click();
     await fixture.whenStable();
 
-    expect(fixture.nativeElement.querySelector('svg rect')).not.toBeNull();
+    // The risk quadrant plots each file as a bubble.
+    expect(fixture.nativeElement.querySelector('svg circle')).not.toBeNull();
     const t = text();
     expect(t).toContain('legacy.ts');
     expect(t).toContain('Gone'); // the departed primary expert, named
     expect(t).toContain('gone'); // the "gone <when>" badge
     expect(t).toContain('complete turnover picture'); // partial-walk hint
     expect(t).toContain('orphaned'); // the ranked-list column header
+    expect(t).toContain('authored knowledge has gone quiet'); // departed-knowledge headline
+    expect(t).toContain('known to only one person'); // bus-factor callout (legacy.ts)
+    expect(t).toContain('Knowledge holders'); // the contributor breakdown
 
     clickContaining('legacy.ts'); // the list row
     expect(opened).toContain('src/legacy.ts');
