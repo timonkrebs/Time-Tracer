@@ -1541,7 +1541,7 @@ describe('RepoStore', () => {
       provider.listCommitsResult = () => Promise.resolve([commit('c1'), commit('c2')]);
       provider.commitFilesResult = () =>
         Promise.resolve([
-          { path: 'src/app.ts', status: 'modified' },
+          { path: 'src/deep/main.ts', status: 'modified' }, // a real, in-tree source file
           { path: 'package-lock.json', status: 'modified' },
           { path: 'dist/bundle.js', status: 'modified' },
         ]);
@@ -1551,8 +1551,8 @@ describe('RepoStore', () => {
       const state = store.coChange();
       expect(state?.status).toBe('ready');
       // Only the authored source file survives into the metrics…
-      expect(state?.hotspots.map((h) => h.path)).toEqual(['src/app.ts']);
-      expect(state?.knowledge.files.map((f) => f.path)).toEqual(['src/app.ts']);
+      expect(state?.hotspots.map((h) => h.path)).toEqual(['src/deep/main.ts']);
+      expect(state?.knowledge.files.map((f) => f.path)).toEqual(['src/deep/main.ts']);
       // …and the two generated files are reported as held out.
       expect(state?.excludedFiles).toBe(2);
     });
@@ -1617,6 +1617,22 @@ describe('RepoStore', () => {
       expect(state?.status).toBe('ready');
       expect(state?.scanned).toBe(75);
       expect(state?.knowledge.partial).toBe(true);
+    });
+
+    it('drops files deleted from the current tree from the knowledge risk', async () => {
+      // src/deep/main.ts is in the tree; src/gone.ts is not (deleted in this branch).
+      provider.listCommitsResult = () => Promise.resolve([commit('c1'), commit('c2')]);
+      provider.commitFilesResult = () =>
+        Promise.resolve([
+          { path: 'src/deep/main.ts', status: 'modified' },
+          { path: 'src/gone.ts', status: 'modified' },
+        ]);
+
+      await store.computeCoChange();
+
+      const paths = store.coChange()?.knowledge.files.map((f) => f.path);
+      expect(paths).toContain('src/deep/main.ts');
+      expect(paths).not.toContain('src/gone.ts');
     });
 
     it('surfaces related files for the selected file', async () => {

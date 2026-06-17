@@ -1396,6 +1396,16 @@ export class RepoStore {
           return false;
         }),
       }));
+      // Knowledge-loss risk only makes sense for files that still exist, so drop
+      // any touched in history but since deleted from the current tree — their
+      // path is absent from `sizes`, which is built from the current tree.
+      const knowledgeModel = options.focus
+        ? computeKnowledgeRisk([], EMPTY_SIZES)
+        : computeKnowledgeRisk(filtered, sizes, { partial });
+      const knowledge: KnowledgeModel = {
+        ...knowledgeModel,
+        files: knowledgeModel.files.filter((file) => sizes.has(file.path)),
+      };
       return {
         status,
         focus: options.focus,
@@ -1406,9 +1416,7 @@ export class RepoStore {
         // file's walk doesn't have them.
         hotspots: options.focus ? [] : computeHotspots(filtered, sizes),
         teamGraph: options.focus ? EMPTY_TEAM_GRAPH : computeTeamGraph(filtered),
-        knowledge: options.focus
-          ? computeKnowledgeRisk([], EMPTY_SIZES)
-          : computeKnowledgeRisk(filtered, sizes, { partial }),
+        knowledge,
         excludedFiles: excluded.size || undefined,
         message,
       };
