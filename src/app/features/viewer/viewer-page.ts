@@ -545,6 +545,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
                 <app-ownership-panel
                   [path]="store.selectedPath()"
                   [fileSummary]="store.selectedOwnership()"
+                  [fileRisk]="store.selectedFileRisk()"
                   [blameUnavailable]="fileBlameUnavailable()"
                   [folderPath]="selectedFolder()"
                   [folder]="folderOwnershipView()"

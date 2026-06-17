@@ -4,8 +4,15 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { CoChangeState } from '../../core/store/repo-store';
 import { computeCoChange } from '../../core/util/co-change';
 import { computeHotspots } from '../../core/util/hotspots';
+import { computeKnowledgeRisk } from '../../core/util/knowledge';
 import { EMPTY_TEAM_GRAPH, computeTeamGraph } from '../../core/util/team-graph';
 import { InsightsView } from './insights-view';
+
+const DAY_MS = 86_400_000;
+const NOW = Date.parse('2026-06-14T00:00:00Z');
+const iso = (daysAgo: number): string => new Date(NOW - daysAgo * DAY_MS).toISOString();
+/** An empty knowledge model, for fixtures whose tests don't touch the tab. */
+const EMPTY_KNOWLEDGE = computeKnowledgeRisk([], new Map());
 
 const COMMITS = [
   { sha: 'c1', files: ['src/auth.ts', 'src/session.ts'] },
@@ -27,6 +34,7 @@ const OVERVIEW: CoChangeState = {
   result: computeCoChange(COMMITS),
   hotspots: HOTSPOTS,
   teamGraph: EMPTY_TEAM_GRAPH,
+  knowledge: EMPTY_KNOWLEDGE,
 };
 // A hotspot whose file is absent from the current tree → size 0. squarify
 // drops non-positive weights, so without the clamp it would list but not tile.
@@ -44,6 +52,36 @@ const ZERO_SIZED: CoChangeState = {
     { now: Date.parse('2026-06-14T00:00:00Z') },
   ),
   teamGraph: EMPTY_TEAM_GRAPH,
+  knowledge: EMPTY_KNOWLEDGE,
+};
+// Three differently-sized hotspots, to exercise the size-filter slider.
+const SIZED: CoChangeState = {
+  status: 'ready',
+  target: 75,
+  scanned: 2,
+  result: computeCoChange([]),
+  hotspots: computeHotspots(
+    [
+      {
+        authorName: 'Ada',
+        authoredAt: '2026-06-13T00:00:00Z',
+        files: ['src/tiny.ts', 'src/mid.ts', 'src/huge.ts'],
+      },
+      {
+        authorName: 'Ada',
+        authoredAt: '2026-06-12T00:00:00Z',
+        files: ['src/tiny.ts', 'src/mid.ts', 'src/huge.ts'],
+      },
+    ],
+    new Map([
+      ['src/tiny.ts', 100],
+      ['src/mid.ts', 3000],
+      ['src/huge.ts', 80000],
+    ]),
+    { now: NOW },
+  ),
+  teamGraph: EMPTY_TEAM_GRAPH,
+  knowledge: EMPTY_KNOWLEDGE,
 };
 // A single file's full-history coupling — driven through the `focus` input.
 const FOCUSED: CoChangeState = {
@@ -54,6 +92,7 @@ const FOCUSED: CoChangeState = {
   result: computeCoChange(COMMITS, { minSupport: 1 }),
   hotspots: [],
   teamGraph: EMPTY_TEAM_GRAPH,
+  knowledge: EMPTY_KNOWLEDGE,
 };
 const COLLIDING: CoChangeState = {
   status: 'ready',
@@ -65,6 +104,7 @@ const COLLIDING: CoChangeState = {
   ]),
   hotspots: [],
   teamGraph: EMPTY_TEAM_GRAPH,
+  knowledge: EMPTY_KNOWLEDGE,
 };
 // A 4-file clique → forms a cluster (≥ 3 files) for the graph.
 const CLUSTERED: CoChangeState = {
@@ -77,6 +117,7 @@ const CLUSTERED: CoChangeState = {
   ]),
   hotspots: [],
   teamGraph: EMPTY_TEAM_GRAPH,
+  knowledge: EMPTY_KNOWLEDGE,
 };
 // Ada & Bo share auth.ts/session.ts (a connected pair); Cy only ever touches
 // db.ts alone — a silo. Drives the Team tab.
@@ -93,6 +134,30 @@ const TEAM: CoChangeState = {
     { authorName: 'Cy', files: ['src/db.ts'] },
     { authorName: 'Cy', files: ['src/db.ts'] },
   ]),
+  knowledge: EMPTY_KNOWLEDGE,
+};
+
+// Two files: one orphaned (sole author long gone), one freshly co-owned.
+const KNOWLEDGE: CoChangeState = {
+  status: 'ready',
+  scanned: 4,
+  target: 75,
+  result: computeCoChange([]),
+  hotspots: [],
+  teamGraph: EMPTY_TEAM_GRAPH,
+  knowledge: computeKnowledgeRisk(
+    [
+      { authorName: 'Gone', authoredAt: iso(220), files: ['src/legacy.ts'] },
+      { authorName: 'Gone', authoredAt: iso(240), files: ['src/legacy.ts'] },
+      { authorName: 'Ada', authoredAt: iso(2), files: ['src/fresh.ts'] },
+      { authorName: 'Linus', authoredAt: iso(4), files: ['src/fresh.ts'] },
+    ],
+    new Map([
+      ['src/legacy.ts', 800],
+      ['src/fresh.ts', 400],
+    ]),
+    { now: NOW, partial: true },
+  ),
 };
 
 describe('InsightsView', () => {
@@ -175,6 +240,7 @@ describe('InsightsView', () => {
       result: computeCoChange([]),
       hotspots: [],
       teamGraph: EMPTY_TEAM_GRAPH,
+      knowledge: EMPTY_KNOWLEDGE,
     });
     expect(text()).toContain('10/50');
 
@@ -185,6 +251,7 @@ describe('InsightsView', () => {
       result: computeCoChange([]),
       hotspots: [],
       teamGraph: EMPTY_TEAM_GRAPH,
+      knowledge: EMPTY_KNOWLEDGE,
       message: 'No commit history found.',
     });
     expect(text()).toContain('No commit history found.');
@@ -206,6 +273,41 @@ describe('InsightsView', () => {
     // treemap and the ranked list stay consistent.
     expect(fixture.nativeElement.querySelector('svg rect')).not.toBeNull();
     expect(text()).toContain('gone.ts');
+  });
+
+  it('filters the hotspot treemap by file size', async () => {
+    await setState(SIZED);
+    // No limit by default: every file is shown.
+    let t = text();
+    expect(t).toContain('tiny.ts');
+    expect(t).toContain('mid.ts');
+    expect(t).toContain('huge.ts');
+
+    // Lowering the max-size handle drops the larger files, keeping the small one.
+    drag('Maximum file size', 50);
+    await fixture.whenStable();
+    t = text();
+    expect(t).toContain('tiny.ts');
+    expect(t).not.toContain('huge.ts');
+
+    // Dragging it to the bottom filters everything out — a distinct empty state.
+    drag('Maximum file size', 0);
+    await fixture.whenStable();
+    t = text();
+    expect(t).not.toContain('tiny.ts');
+    expect(t).toContain('No files within the selected size range.');
+  });
+
+  it('ignores a stale size filter once the control is hidden', async () => {
+    await setState(SIZED);
+    drag('Maximum file size', 0); // filter everything out
+    await fixture.whenStable();
+
+    // A later result with too few files to filter hides the slider — the stale
+    // limit must not keep dropping the lone file with no control to restore it.
+    await setState(OVERVIEW);
+    expect(fixture.nativeElement.querySelector('input[aria-label="Maximum file size"]')).toBeNull();
+    expect(text()).toContain('hot.ts');
   });
 
   it('switches to coupling and focuses a file when a pair is clicked', async () => {
@@ -264,11 +366,39 @@ describe('InsightsView', () => {
     expect(text()).toContain('src/b/index.ts');
   });
 
-  it('keeps both tabs available once anything is analysed', async () => {
+  it('keeps all three tabs available once anything is analysed', async () => {
     // Even with only a file filter (no repo-wide overview), the tabs show.
     await setFocus(FOCUSED);
     expect(button('Hotspots')).toBeTruthy();
     expect(button('Coupling')).toBeTruthy();
+    expect(button('Knowledge')).toBeTruthy();
+  });
+
+  it('maps knowledge risk (treemap + list), flags the departed expert, and opens a file', async () => {
+    await setState(KNOWLEDGE);
+    button('Knowledge')!.click();
+    await fixture.whenStable();
+
+    expect(fixture.nativeElement.querySelector('svg rect')).not.toBeNull();
+    const t = text();
+    expect(t).toContain('legacy.ts');
+    expect(t).toContain('Gone'); // the departed primary expert, named
+    expect(t).toContain('gone'); // the "gone <when>" badge
+    expect(t).toContain('complete turnover picture'); // partial-walk hint
+    expect(t).toContain('orphaned'); // the ranked-list column header
+
+    clickContaining('legacy.ts'); // the list row
+    expect(opened).toContain('src/legacy.ts');
+  });
+
+  it('prompts to analyze on the knowledge tab when only a focus filter is set', async () => {
+    await setFocus(FOCUSED); // focus auto-selects coupling…
+    button('Knowledge')!.click(); // …switch to knowledge, which has no repo-wide state
+    await fixture.whenStable();
+
+    expect(text()).toContain('Analyze the history to map knowledge risk');
+    button('Analyze recent history')!.click();
+    expect(analyzed).toBe(1);
   });
 
   it('filters coupling to one file, drills on click, and opens/clears from the banner', async () => {

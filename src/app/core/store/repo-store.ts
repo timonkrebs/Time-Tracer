@@ -22,6 +22,8 @@ import {
 } from '../util/co-change';
 import { FileDiff, computeFileDiff, diffLines, lineSimilarity, splitLines } from '../util/diff';
 import { FileMetric, Hotspot, computeFileMetric, computeHotspots } from '../util/hotspots';
+import { isGeneratedFile } from '../util/ignore';
+import { KnowledgeModel, computeKnowledgeRisk } from '../util/knowledge';
 import { EMPTY_TEAM_GRAPH, TeamGraph, computeTeamGraph } from '../util/team-graph';
 import {
   LineRange,
@@ -31,7 +33,13 @@ import {
   regionTouchesRange,
 } from '../util/line-range';
 import { findBlockOrigin, fuzzyLineSimilarity } from '../util/similarity';
-import { OwnershipSummary, selectOwnershipFiles, summarizeOwnership } from '../util/ownership';
+import {
+  FileRisk,
+  OwnershipSummary,
+  computeOwnershipRisk,
+  selectOwnershipFiles,
+  summarizeOwnership,
+} from '../util/ownership';
 import { ancestorsOf, buildTree } from '../util/tree';
 import { RecentRepos } from './recent-repos';
 
@@ -51,6 +59,9 @@ export const CO_CHANGE_COMMIT_CAP = 75;
 
 /** Safety cap for a single file's full-history co-change walk. */
 export const FILE_COCHANGE_COMMIT_CAP = 400;
+
+/** Shared empty size map for the knowledge model on a single-file focus walk. */
+const EMPTY_SIZES: ReadonlyMap<string, number> = new Map();
 
 /** Lifecycle of the per-file commit history panel. */
 export type HistoryStatus = 'idle' | 'loading' | 'loading-more' | 'ready' | 'error';
@@ -210,6 +221,8 @@ export interface FolderOwnershipState {
   readonly path: string;
   /** Aggregated authorship of the files scanned so far. */
   readonly summary: OwnershipSummary;
+  /** Files scanned so far, ranked by knowledge-loss risk (orphaned lines). */
+  readonly riskFiles?: readonly FileRisk[];
   /** Files to scan (after the cap) and how many are done. */
   readonly filesTotal: number;
   readonly filesScanned: number;
@@ -250,6 +263,10 @@ export interface CoChangeState {
    * shared file authorship (repo-wide only; the empty graph for a focus).
    */
   readonly teamGraph: TeamGraph;
+  /** Knowledge-loss / turnover risk per file (repo-wide only; empty for a focus). */
+  readonly knowledge: KnowledgeModel;
+  /** Distinct generated/vendored files held out of the metrics, if any. */
+  readonly excludedFiles?: number;
   readonly message?: string;
 }
 
@@ -442,6 +459,19 @@ export class RepoStore {
     const blame = this.selectedBlame();
     if (!blame || (blame.status !== 'ready' && blame.status !== 'computing')) return null;
     return summarizeOwnership(blame.lines);
+  });
+
+  /**
+   * Knowledge-loss risk of the selected file, folded from its blame: how many of
+   * its lines are owned by contributors who have gone quiet. Null until blame
+   * has begun. (Departure is judged from this file's own history; a folder scan
+   * widens that view across its files.)
+   */
+  readonly selectedFileRisk = computed<FileRisk | null>(() => {
+    const path = this._selectedPath();
+    const blame = this.selectedBlame();
+    if (!path || !blame || (blame.status !== 'ready' && blame.status !== 'computing')) return null;
+    return computeOwnershipRisk([{ path, lines: blame.lines }])[0] ?? null;
   });
 
   /**
@@ -1169,15 +1199,18 @@ export class RepoStore {
     if (files.length === 0) return null;
     const blames = this._blames();
     const owners: BlameOwner[] = [];
+    const perFile: { path: string; lines: readonly BlameOwner[] }[] = [];
     for (const entry of files) {
       const blame = blames.get(fileKey(entry.path, null));
       if (!blame || blame.status !== 'ready') return null;
       owners.push(...blame.lines);
+      perFile.push({ path: entry.path, lines: blame.lines });
     }
     return {
       status: 'ready',
       path: folderPath,
       summary: summarizeOwnership(owners),
+      riskFiles: computeOwnershipRisk(perFile),
       filesTotal: files.length,
       filesScanned: files.length,
       matchedTotal: total,
@@ -1205,12 +1238,14 @@ export class RepoStore {
     const live = (): boolean => seq === this.loadSeq && run === this.folderRun;
 
     const owners: BlameOwner[] = [];
+    const perFile: { path: string; lines: readonly BlameOwner[] }[] = [];
     let scanned = 0;
     const publish = (status: FolderOwnershipState['status'], message?: string): void =>
       this._folderOwnership.set({
         status,
         path: folderPath,
         summary: summarizeOwnership(owners),
+        riskFiles: computeOwnershipRisk(perFile),
         filesTotal: files.length,
         filesScanned: scanned,
         matchedTotal: total,
@@ -1251,6 +1286,7 @@ export class RepoStore {
       const blame = this._blames().get(fileKey(entry.path, null));
       if (blame && (blame.status === 'ready' || blame.status === 'computing')) {
         owners.push(...blame.lines);
+        perFile.push({ path: entry.path, lines: blame.lines });
       }
       scanned++;
       publish('computing');
@@ -1338,19 +1374,47 @@ export class RepoStore {
       authorName: string;
       authorEmail: string | null;
     })[] = [];
-    const publish = (status: CoChangeState['status'], message?: string): void =>
-      sink.set({
+    // Generated/vendored files are held out of every metric, but a file the
+    // analysis is focused on is always kept (the user chose it explicitly).
+    const keepFile = (path: string): boolean => path === options.focus || !isGeneratedFile(path);
+    // Set once the provider runs out of history, so a walk that ends exactly at
+    // the cap is reported complete rather than partial.
+    let exhausted = false;
+
+    const compose = (status: CoChangeState['status'], message?: string): CoChangeState => {
+      // Partial while still streaming or errored, or when a capped walk stopped
+      // with older history still unread — but not when history simply ran out.
+      const partial = status !== 'ready' || (!exhausted && collected.length >= options.cap);
+      // Drop generated files before aggregating, so a commit that is mostly
+      // build output still contributes the real files it also touched.
+      const excluded = new Set<string>();
+      const filtered = collected.map((commit) => ({
+        ...commit,
+        files: commit.files.filter((path) => {
+          if (keepFile(path)) return true;
+          excluded.add(path);
+          return false;
+        }),
+      }));
+      return {
         status,
         focus: options.focus,
         scanned: collected.length,
         target: options.cap,
-        result: computeCoChange(collected, { minSupport: options.minSupport }),
-        // Hotspots and the team graph are repo-wide metrics; a single file's
-        // walk doesn't have them.
-        hotspots: options.focus ? [] : computeHotspots(collected, sizes),
-        teamGraph: options.focus ? EMPTY_TEAM_GRAPH : computeTeamGraph(collected),
+        result: computeCoChange(filtered, { minSupport: options.minSupport }),
+        // Hotspots, the team graph and knowledge are repo-wide metrics; a single
+        // file's walk doesn't have them.
+        hotspots: options.focus ? [] : computeHotspots(filtered, sizes),
+        teamGraph: options.focus ? EMPTY_TEAM_GRAPH : computeTeamGraph(filtered),
+        knowledge: options.focus
+          ? computeKnowledgeRisk([], EMPTY_SIZES)
+          : computeKnowledgeRisk(filtered, sizes, { partial }),
+        excludedFiles: excluded.size || undefined,
         message,
-      });
+      };
+    };
+    const publish = (status: CoChangeState['status'], message?: string): void =>
+      sink.set(compose(status, message));
 
     publish('computing');
     try {
@@ -1362,8 +1426,12 @@ export class RepoStore {
           page,
         });
         if (!live()) return;
-        if (commits.length === 0) break;
+        if (commits.length === 0) {
+          exhausted = true;
+          break;
+        }
         this.cacheCommits(commits);
+        const before = collected.length;
         for (const commit of commits) {
           if (collected.length >= options.cap) break;
           const files = await this.commitFilesFor(slug, commit.sha);
@@ -1377,22 +1445,19 @@ export class RepoStore {
           });
           if (collected.length % 5 === 0) publish('computing');
         }
-        if (commits.length < HISTORY_PAGE_SIZE) break; // reached the end of history
+        // A short page is the end of history — but only when the cap didn't
+        // stop us partway through it. If we broke at the cap mid-page, older
+        // commits from this same page are still unread: the walk is partial.
+        if (collected.length - before === commits.length && commits.length < HISTORY_PAGE_SIZE) {
+          exhausted = true;
+          break;
+        }
       }
       const empty = options.path ? 'No history found for this file.' : 'No commit history found.';
       publish('ready', collected.length === 0 ? empty : undefined);
     } catch (error) {
       if (!live()) return; // a cleared/superseded walk must not resurrect state
-      sink.set({
-        status: 'error',
-        focus: options.focus,
-        scanned: collected.length,
-        target: options.cap,
-        result: computeCoChange(collected, { minSupport: options.minSupport }),
-        hotspots: options.focus ? [] : computeHotspots(collected, sizes),
-        teamGraph: options.focus ? EMPTY_TEAM_GRAPH : computeTeamGraph(collected),
-        message: toRepoProviderError(error).message,
-      });
+      sink.set(compose('error', toRepoProviderError(error).message));
     }
   }
 

@@ -1,7 +1,7 @@
-import { ChangeDetectionStrategy, Component, computed, input, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, input, output, signal } from '@angular/core';
 
 import { FolderOwnershipState } from '../../core/store/repo-store';
-import { OwnershipSummary } from '../../core/util/ownership';
+import { FileRisk, OwnershipSummary } from '../../core/util/ownership';
 import { relativeTime, shortDate } from '../../core/util/relative-time';
 
 /** Top authors shown before collapsing the rest into a "+N more" line. */
@@ -157,6 +157,20 @@ export class OwnershipSummaryView {
           </p>
           @if (fileSummary(); as s) {
             <app-ownership-summary [summary]="s" />
+            @if (fileRisk(); as r) {
+              @if (r.attributedLines > 0) {
+                <p class="mt-2 text-[11px] leading-4 text-zinc-500">
+                  <span class="text-zinc-300">{{ percent(r.staleShare) }}% stale</span> —
+                  age-weighted across {{ r.attributedLines }} attributed lines (older edits weigh
+                  more).
+                </p>
+                @if (r.owner; as o) {
+                  <p class="mt-0.5 text-[11px] text-zinc-600">
+                    Mostly {{ o.name }}, last here {{ rel(o.lastAuthoredAt) }}.
+                  </p>
+                }
+              }
+            }
           } @else if (blameUnavailable(); as reason) {
             <p class="text-xs text-zinc-600">{{ reason }}</p>
           } @else {
@@ -184,7 +198,77 @@ export class OwnershipSummaryView {
             @if (fo.message) {
               <p class="mb-2 text-xs text-zinc-600">{{ fo.message }}</p>
             }
-            <app-ownership-summary [summary]="fo.summary" />
+            <div class="mb-2 flex gap-3 text-[11px]">
+              <button
+                type="button"
+                class="border-b pb-0.5 transition"
+                [class]="
+                  folderTab() === 'authors'
+                    ? 'border-indigo-400 text-zinc-200'
+                    : 'border-transparent text-zinc-500 hover:text-zinc-300'
+                "
+                (click)="folderTab.set('authors')"
+              >
+                Authors
+              </button>
+              <button
+                type="button"
+                class="border-b pb-0.5 transition"
+                [class]="
+                  folderTab() === 'risk'
+                    ? 'border-indigo-400 text-zinc-200'
+                    : 'border-transparent text-zinc-500 hover:text-zinc-300'
+                "
+                (click)="folderTab.set('risk')"
+              >
+                Risk
+              </button>
+            </div>
+            @if (folderTab() === 'authors') {
+              <app-ownership-summary [summary]="fo.summary" />
+            } @else if (folderRisk().length) {
+              <ul class="space-y-1.5">
+                @for (f of folderRisk(); track f.path) {
+                  <li>
+                    <div class="flex items-baseline gap-2 text-xs">
+                      <span
+                        class="min-w-0 flex-1 truncate font-mono text-zinc-200"
+                        [title]="f.path"
+                        >{{ base(f.path) }}</span
+                      >
+                      <span class="shrink-0 tabular-nums text-zinc-500"
+                        >{{ percent(f.staleShare) }}%</span
+                      >
+                    </div>
+                    <div class="mt-0.5 flex items-center gap-2">
+                      <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-zinc-800">
+                        <div
+                          class="h-full rounded-full bg-indigo-500"
+                          [style.width.%]="riskBar(f)"
+                        ></div>
+                      </div>
+                      <span
+                        class="w-24 shrink-0 truncate text-right text-[10px] text-zinc-600"
+                        [title]="f.owner ? 'mostly ' + f.owner.name : ''"
+                      >
+                        @if (f.owner) {
+                          {{ f.owner.name }}
+                        } @else {
+                          {{ round(f.staleLines) }} lines
+                        }
+                      </span>
+                    </div>
+                  </li>
+                }
+              </ul>
+              <p class="mt-2 text-[10px] leading-4 text-zinc-600">
+                Ranked by staleness × √lines — each line ages on a ~2-year half-life (older edits
+                weigh more), averaged per file, then scaled by √(line count) so size counts without
+                dominating.
+              </p>
+            } @else {
+              <p class="text-xs text-zinc-600">No files at risk — the code here is recent.</p>
+            }
             @if (fo.capped || !fo.fromCache) {
               <div class="mt-3 flex flex-wrap items-center gap-2">
                 @if (fo.capped) {
@@ -245,6 +329,8 @@ export class OwnershipPanel {
   /** Selected file path; null when nothing is selected. */
   readonly path = input<string | null>(null);
   readonly fileSummary = input<OwnershipSummary | null>(null);
+  /** Knowledge-loss risk of the selected file (orphaned lines), or null. */
+  readonly fileRisk = input<FileRisk | null>(null);
   /** Reason the file's authorship can't be shown (binary/too-large/error), or null. */
   readonly blameUnavailable = input<string | null>(null);
   /** Parent folder of the selected file ('' for the repository root). */
@@ -260,9 +346,36 @@ export class OwnershipPanel {
   readonly scanAll = output<void>();
   readonly clearFolder = output<void>();
 
+  /** Authors vs. Risk view of the scanned folder. */
+  protected readonly folderTab = signal<'authors' | 'risk'>('authors');
+
   /** Newline-joined file list for the "files scanned" tooltip. */
   protected tooltip(files: readonly string[]): string {
     return files.join('\n');
+  }
+
+  protected percent(share: number): number {
+    return Math.round(share * 100);
+  }
+
+  protected round(value: number): number {
+    return Math.round(value);
+  }
+
+  protected rel(iso: string): string {
+    return relativeTime(iso);
+  }
+
+  protected base(path: string): string {
+    const slash = path.lastIndexOf('/');
+    return slash >= 0 ? path.slice(slash + 1) : path;
+  }
+
+  /** Width (%) of a file's risk bar, relative to the riskiest in the folder. */
+  protected riskBar(file: FileRisk): number {
+    const max = this.folderRiskMax();
+    if (max <= 0 || file.riskScore <= 0) return 0;
+    return Math.max(3, (file.riskScore / max) * 100);
   }
 
   protected readonly baseName = computed(() => {
@@ -283,4 +396,13 @@ export class OwnershipPanel {
     const folder = this.folder();
     return folder && folder.path === this.folderPath() ? folder : null;
   });
+
+  /** Files of the current folder ranked by risk (empty until scanned). */
+  protected readonly folderRisk = computed<readonly FileRisk[]>(
+    () => this.currentFolder()?.riskFiles ?? [],
+  );
+  /** Largest risk score in the folder, for scaling the risk bars. */
+  protected readonly folderRiskMax = computed(() =>
+    this.folderRisk().reduce((max, file) => Math.max(max, file.riskScore), 0),
+  );
 }

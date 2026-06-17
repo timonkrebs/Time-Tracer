@@ -1,5 +1,10 @@
 import { TreeEntry } from '../models';
-import { OwnedLine, selectOwnershipFiles, summarizeOwnership } from './ownership';
+import {
+  OwnedLine,
+  computeOwnershipRisk,
+  selectOwnershipFiles,
+  summarizeOwnership,
+} from './ownership';
 
 function line(authorName: string, authoredAt: string, sha = authorName + authoredAt): OwnedLine {
   return { commit: { sha, authorName, authoredAt } };
@@ -126,5 +131,86 @@ describe('selectOwnershipFiles', () => {
       file('b.ts', 1),
     ];
     expect(selectOwnershipFiles(mixed, '', 100).files.map((f) => f.path)).toEqual(['b.ts', 'a.ts']);
+  });
+});
+
+describe('computeOwnershipRisk', () => {
+  const DAY = 86_400_000;
+  const YEAR = 365;
+  const NOW = Date.parse('2026-06-14T00:00:00Z');
+  const ago = (days: number): string => new Date(NOW - days * DAY).toISOString();
+  const ln = (author: string, days: number): OwnedLine => line(author, ago(days));
+  const lines = (author: string, days: number, count: number): OwnedLine[] =>
+    Array.from({ length: count }, () => ln(author, days));
+
+  it('ranks a small file of ancient code above a big file of recent code', () => {
+    const risks = computeOwnershipRisk(
+      [
+        { path: 'src/big-recent.ts', lines: lines('Ada', YEAR, 50) },
+        { path: 'src/small-ancient.ts', lines: lines('Gone', 10 * YEAR, 10) },
+      ],
+      { now: NOW },
+    );
+
+    // Age beats size: the decade-old 10-line file outranks the year-old 50-line one.
+    expect(risks[0].path).toBe('src/small-ancient.ts');
+    const ancient = risks.find((r) => r.path === 'src/small-ancient.ts')!;
+    const recent = risks.find((r) => r.path === 'src/big-recent.ts')!;
+    expect(ancient.staleShare).toBeGreaterThan(0.9);
+    expect(recent.staleShare).toBeLessThan(0.4);
+  });
+
+  it('counterbalances size sub-linearly: 4× the lines is ~2× the risk', () => {
+    const risks = computeOwnershipRisk(
+      [
+        { path: 'big.ts', lines: lines('Gone', 1000, 400) },
+        { path: 'small.ts', lines: lines('Gone', 1000, 100) },
+      ],
+      { now: NOW },
+    );
+    const big = risks.find((r) => r.path === 'big.ts')!;
+    const small = risks.find((r) => r.path === 'small.ts')!;
+    expect(big.staleShare).toBeCloseTo(small.staleShare, 5); // same age
+    expect(big.riskScore / small.riskScore).toBeCloseTo(2, 1); // √(400/100) = 2
+  });
+
+  it('scores freshly-edited code near zero', () => {
+    const risks = computeOwnershipRisk([{ path: 'fresh.ts', lines: lines('Ada', 5, 3) }], {
+      now: NOW,
+    });
+    expect(risks[0].staleShare).toBeLessThan(0.02);
+  });
+
+  it('names the primary line owner and when they last touched it', () => {
+    const risks = computeOwnershipRisk(
+      [{ path: 'x.ts', lines: [ln('Gone', 3000), ln('Gone', 3200), ln('Other', 3100)] }],
+      { now: NOW },
+    );
+    expect(risks[0].owner?.name).toBe('Gone'); // 2 lines vs Other's 1
+    expect(risks[0].owner?.lastAuthoredAt).toBe(ago(3000)); // their most recent line
+  });
+
+  it('ignores older and pending lines', () => {
+    const risks = computeOwnershipRisk(
+      [{ path: 'x.ts', lines: [ln('Gone', 3650), 'older', null] }],
+      {
+        now: NOW,
+      },
+    );
+    expect(risks[0].attributedLines).toBe(1);
+  });
+
+  it('skips undated blame lines instead of scoring them as ancient', () => {
+    const risks = computeOwnershipRisk(
+      [{ path: 'mixed.ts', lines: [ln('Ada', 5), line('Ghost', '')] }],
+      {
+        now: NOW,
+      },
+    );
+    // The undated line is dropped, not treated as epoch-old…
+    expect(risks[0].attributedLines).toBe(1);
+    // …so a fresh file isn't dragged toward 100% stale by it.
+    expect(risks[0].staleShare).toBeLessThan(0.02);
+    expect(risks[0].owner?.name).toBe('Ada');
   });
 });

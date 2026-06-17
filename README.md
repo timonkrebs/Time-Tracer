@@ -70,8 +70,8 @@ renames — see the feature list and roadmap below for what's done and what's ne
   repositories** the whole history is on disk, so the scan is free and runs automatically.
 - **Insights — a metrics view** (the chart toggle in the header), from one walk of recent
   commits — capped by default, or **"Load all commits"** to walk the whole history — in the spirit
-  of Tornhill's _Your Code as a Crime Scene_. **Hotspots**, **Coupling** and **Team** are always a
-  tab-switch apart:
+  of Tornhill's _Your Code as a Crime Scene_. **Hotspots**, **Coupling**, **Team** and
+  **Knowledge** are always a tab-switch apart:
   - **Hotspots** — files ranked by **recency-weighted churn** (`core/util/hotspots.ts`), shown as
     a **treemap** (rectangle = size/LOC, colour = heat) _and_ a ranked list; click a file to open
     it.
@@ -101,8 +101,18 @@ renames — see the feature list and roadmap below for what's done and what's ne
     the silos — developers whose files nobody else touches (left out of the graph, since they have
     nothing to connect to). Reveals cross-team collaboration and silos from git alone, no review API
     required.
+  - **Knowledge loss / turnover risk** (`core/util/knowledge.ts`) — files ranked by how much of
+    their **authored knowledge** has left the project. Each file's recent authorship is folded into
+    a recency-weighted share per contributor, weighted by how long each has since gone quiet, and
+    shown as a **risk treemap** (rectangle = size, colour = orphaned share) _and_ a ranked list that
+    names every file's primary expert and when they were last active. "Gone" is inferred only from
+    commit silence (never asserted) and automated/bot authors are filtered out, so a capped walk is
+    marked partial — **Load all commits** for a complete turnover picture.
 
-  Mega-commits are filtered out as churn noise; the walk streams as it goes.
+  Mega-commits are filtered out as churn noise, and **generated/vendored files** (lockfiles,
+  `dist/`/`build/` output, minified assets and the like — gitignore-style patterns in
+  `core/util/ignore.ts`) are held out of all three metrics so they don't drown the signal; the
+  count of hidden files is shown in the header. The walk streams as it goes.
 
 - **Time travel**: pick any commit to see the file exactly as it was, with a banner showing where
   in time you are and a one-click way back to the tip. The ← Older / Newer → steppers are always
@@ -304,6 +314,7 @@ npm run build      # production build into dist/
     interface.
 22. **Repository Insights** — a metrics view over the history. ✅ **Change coupling**
     (`core/util/co-change.ts`), a **hotspot treemap + list** (`core/util/hotspots.ts`,
-    `core/util/treemap.ts`) and a **team collaboration / social graph** (`core/util/team-graph.ts`)
-    — who works with whom, by shared file authorship — all from the same commit walk; next: a
-    contributor leaderboard and a bus-factor/knowledge map, and a hierarchically zoomable treemap.
+    `core/util/treemap.ts`), a **team collaboration / social graph** (`core/util/team-graph.ts`) —
+    who works with whom, by shared file authorship — and a **knowledge-loss / turnover risk map**
+    (`core/util/knowledge.ts`), all from the same commit walk; next: a contributor leaderboard with
+    a bus-factor "what if they left?" simulation, and a hierarchically zoomable treemap.

@@ -11,7 +11,8 @@ import {
 import { CoChangeState } from '../../core/store/repo-store';
 import { CoChangeCluster, clusterCoChange, relatedFiles } from '../../core/util/co-change';
 import { ForceEdge, Point, forceLayout } from '../../core/util/force-layout';
-import { Hotspot, heatLevel } from '../../core/util/hotspots';
+import { HEAT_THRESHOLDS, Hotspot } from '../../core/util/hotspots';
+import { KnowledgeRisk, RISK_THRESHOLDS } from '../../core/util/knowledge';
 import { disambiguateLabels } from '../../core/util/path-label';
 import { relativeTime } from '../../core/util/relative-time';
 import {
@@ -28,6 +29,7 @@ import { TreemapTile, squarify } from '../../core/util/treemap';
 const MAX_PAIRS = 60;
 const MAX_RELATED = 100;
 const MAX_HOTSPOTS = 45;
+const MAX_RISK = 45;
 const MAX_CLUSTERS = 10;
 /** Cluster-size range bounds: the floor can dip to 2 (a bare pair) on demand. */
 const CLUSTER_SIZE_FLOOR = 2;
@@ -48,7 +50,7 @@ const CLUSTER_H = 220;
  * itself stays horizontal and readable.
  */
 const CLUSTER_ROTATION = (20 * Math.PI) / 180;
-/** Cold → hot fills, indexed by heat level. */
+/** Cold → hot fills, anchored at the five heat/risk thresholds. */
 const HEAT_FILLS = ['#3f3f46', '#854d0e', '#b45309', '#ea580c', '#ef4444'];
 
 /** Most active developers drawn in the team graph (the rest stay in the data). */
@@ -81,6 +83,45 @@ const SILO_FILL = '#52525b';
 const DEFAULT_TEMPORAL_WEIGHT = 0.5;
 /** Edge pull (< 1) for the team layout — loosens tight clusters so labels stay legible. */
 const TEAM_ATTRACTION = 0.3;
+
+/** Linear interpolation between two `#rrggbb` colours, `t` clamped to [0,1]. */
+function lerpHex(from: string, to: string, t: number): string {
+  const c = Math.max(0, Math.min(1, t));
+  const f = parseInt(from.slice(1), 16);
+  const g = parseInt(to.slice(1), 16);
+  const mix = (shift: number): number => {
+    const a = (f >> shift) & 255;
+    const b = (g >> shift) & 255;
+    return Math.round(a + (b - a) * c);
+  };
+  return `#${((1 << 24) | (mix(16) << 16) | (mix(8) << 8) | mix(0)).toString(16).slice(1)}`;
+}
+
+/**
+ * Cold → hot fill for `value`, interpolated *continuously* between the
+ * {@link HEAT_FILLS} stops anchored at `thresholds` (the same absolute scale the
+ * file-tree heat badges use, so a colour means the same thing across the app).
+ * Unlike a hard five-bucket mapping, a low-but-nonzero value reads as a faint
+ * warm tint rather than the same flat grey as zero — which is what lets the
+ * treemap actually show variation when most scores sit below the first bucket.
+ */
+function heatColor(value: number, thresholds: readonly number[]): string {
+  if (value <= thresholds[0]) return HEAT_FILLS[0];
+  for (let i = 1; i < thresholds.length; i++) {
+    if (value < thresholds[i]) {
+      const span = thresholds[i] - thresholds[i - 1] || 1;
+      return lerpHex(HEAT_FILLS[i - 1], HEAT_FILLS[i], (value - thresholds[i - 1]) / span);
+    }
+  }
+  return HEAT_FILLS[HEAT_FILLS.length - 1];
+}
+
+/** Human-readable byte size for the size-filter readout. */
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${Math.round(bytes)} B`;
+}
 
 interface GraphNode {
   readonly path: string;
@@ -146,6 +187,8 @@ interface TeamLayout {
  * graphs) + the pair list, and filterable to one file's full-history coupling.
  * **Team**: a developer social graph — who works with whom, inferred from
  * shared file authorship, surfacing collaborators, connectors and silos.
+ * **Knowledge**: files at risk of knowledge loss — authored knowledge whose
+ * contributors have gone quiet — as a risk treemap + ranked list.
  */
 @Component({
   selector: 'app-insights-view',
@@ -266,6 +309,18 @@ interface TeamLayout {
           >
             Team
           </button>
+          <button
+            type="button"
+            class="border-b-2 pb-1 font-medium transition"
+            [class]="
+              tab() === 'knowledge'
+                ? 'border-indigo-400 text-zinc-100'
+                : 'border-transparent text-zinc-500 hover:text-zinc-300'
+            "
+            (click)="tab.set('knowledge')"
+          >
+            Knowledge
+          </button>
           <span class="flex-1"></span>
           @if (state(); as s) {
             <span class="text-zinc-600">
@@ -273,6 +328,16 @@ interface TeamLayout {
                 {{ s.scanned }}{{ s.target === Infinity ? '' : '/' + s.target }} commits…
               } @else {
                 {{ s.result.commitsUsed }} commits
+              }
+              @if (s.excludedFiles) {
+                <span
+                  class="text-zinc-700"
+                  [title]="
+                    s.excludedFiles +
+                    ' generated/vendored files (lockfiles, build output, minified assets) are excluded from these metrics'
+                  "
+                  >· {{ s.excludedFiles }} generated hidden</span
+                >
               }
             </span>
           }
@@ -285,9 +350,36 @@ interface TeamLayout {
             } @else if (s.message) {
               <p class="text-sm text-zinc-500">{{ s.message }}</p>
             } @else {
-              <p class="mb-2 text-xs text-zinc-500">
-                Hottest files by recent churn — click a file to open it.
-              </p>
+              <div class="mb-2 flex items-center gap-3 text-xs text-zinc-500">
+                <span>Hottest files by recent churn — click a file to open it.</span>
+                @if (canFilterBySize()) {
+                  <span class="flex-1"></span>
+                  <span class="text-zinc-600">max size</span>
+                  <span
+                    class="dual-range relative h-3 w-28"
+                    role="group"
+                    aria-label="Maximum file size"
+                  >
+                    <span
+                      class="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded bg-zinc-700"
+                    ></span>
+                    <span
+                      class="pointer-events-none absolute top-1/2 left-0 h-1 -translate-y-1/2 rounded bg-indigo-400"
+                      [style.right.%]="100 - maxFileSizePct()"
+                    ></span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="1"
+                      [value]="maxFileSizePct()"
+                      (input)="onMaxFileSize($event)"
+                      aria-label="Maximum file size"
+                    />
+                  </span>
+                  <span class="w-16 text-right tabular-nums text-zinc-400">{{ sizeLabel() }}</span>
+                }
+              </div>
               @if (tiles().length) {
                 <svg
                   class="aspect-[16/9] w-full rounded border border-zinc-800"
@@ -351,7 +443,11 @@ interface TeamLayout {
                   }
                 </ul>
               } @else if (s.status === 'ready') {
-                <p class="text-sm text-zinc-500">No file activity in the analysed commits.</p>
+                @if (anyHotspots()) {
+                  <p class="text-sm text-zinc-500">No files within the selected size range.</p>
+                } @else {
+                  <p class="text-sm text-zinc-500">No file activity in the analysed commits.</p>
+                }
               } @else {
                 <p class="text-sm text-zinc-500">Crunching hotspots…</p>
               }
@@ -573,7 +669,7 @@ interface TeamLayout {
               Pick a file in the tree to filter, or analyze the history.
             </p>
           }
-        } @else {
+        } @else if (tab() === 'team') {
           <!-- Team tab -->
           @if (state(); as s) {
             @if (s.status === 'error') {
@@ -811,6 +907,182 @@ interface TeamLayout {
               </button>
             </div>
           }
+        } @else {
+          <!-- Knowledge tab -->
+          @if (state(); as s) {
+            @if (s.status === 'error') {
+              <p class="text-sm text-rose-400">{{ s.message }}</p>
+            } @else if (s.message) {
+              <p class="text-sm text-zinc-500">{{ s.message }}</p>
+            } @else {
+              <div class="mb-2 flex items-center gap-3 text-xs text-zinc-500">
+                <span>Files at risk of knowledge loss.</span>
+                @if (canFilterBySize()) {
+                  <span class="flex-1"></span>
+                  <span class="text-zinc-600">max size</span>
+                  <span
+                    class="dual-range relative h-3 w-28"
+                    role="group"
+                    aria-label="Maximum file size"
+                  >
+                    <span
+                      class="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded bg-zinc-700"
+                    ></span>
+                    <span
+                      class="pointer-events-none absolute top-1/2 left-0 h-1 -translate-y-1/2 rounded bg-indigo-400"
+                      [style.right.%]="100 - maxFileSizePct()"
+                    ></span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="1"
+                      [value]="maxFileSizePct()"
+                      (input)="onMaxFileSize($event)"
+                      aria-label="Maximum file size"
+                    />
+                  </span>
+                  <span class="w-16 text-right tabular-nums text-zinc-400">{{ sizeLabel() }}</span>
+                }
+              </div>
+              @if (riskTiles().length) {
+                <svg
+                  class="aspect-[16/9] w-full rounded border border-zinc-800"
+                  [attr.viewBox]="'0 0 ' + treemapW + ' ' + treemapH"
+                  preserveAspectRatio="xMidYMid meet"
+                >
+                  @for (tile of riskTiles(); track tile.value.path) {
+                    <g class="cursor-pointer" (click)="openFile.emit(tile.value.path)">
+                      <title>
+                        {{ tile.value.path }} — {{ pct(tile.value.orphanedShare) }}% orphaned
+                      </title>
+                      <rect
+                        [attr.x]="tile.x"
+                        [attr.y]="tile.y"
+                        [attr.width]="tile.w"
+                        [attr.height]="tile.h"
+                        [attr.fill]="riskFill(tile.value)"
+                        stroke="#18181b"
+                        stroke-width="2"
+                        class="transition-opacity hover:opacity-80"
+                      />
+                      @if (tile.w > 120 && tile.h > 40) {
+                        <text
+                          [attr.x]="tile.x + 6"
+                          [attr.y]="tile.y + 22"
+                          fill="#fafafa"
+                          font-size="15"
+                          class="pointer-events-none font-mono"
+                        >
+                          {{ label(tile.value.path) }}
+                        </text>
+                      }
+                    </g>
+                  }
+                </svg>
+                <div
+                  class="mt-3 flex items-center gap-2 px-2 text-[10px] font-medium tracking-wide text-zinc-600 uppercase"
+                >
+                  <span class="w-12 shrink-0">risk</span>
+                  <span class="min-w-0 flex-1">file</span>
+                  <span class="shrink-0">expert</span>
+                  <span class="w-16 shrink-0 text-right">orphaned</span>
+                </div>
+                <ul class="mt-1 space-y-0.5">
+                  @for (risk of riskList(); track risk.path) {
+                    <li>
+                      <button
+                        type="button"
+                        class="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm transition hover:bg-white/[0.03]"
+                        [title]="risk.path + ' — ' + pct(risk.orphanedShare) + '% orphaned'"
+                        (click)="openFile.emit(risk.path)"
+                      >
+                        <span
+                          class="h-1.5 w-12 shrink-0 overflow-hidden rounded-sm bg-zinc-800"
+                          title="risk = file size × orphaned share (the list's sort key)"
+                        >
+                          <span
+                            class="block h-full rounded-sm bg-indigo-400"
+                            [style.width.%]="riskBar(risk)"
+                          ></span>
+                        </span>
+                        <span class="min-w-0 flex-1 truncate font-mono text-xs text-zinc-200">{{
+                          label(risk.path)
+                        }}</span>
+                        @if (risk.primaryExpert; as ex) {
+                          <span class="shrink-0 truncate text-[11px] text-zinc-500">{{
+                            ex.name
+                          }}</span>
+                          @if (!ex.active && ex.lastActiveAt) {
+                            <span class="shrink-0 text-[11px] text-amber-500/80"
+                              >gone {{ when(ex.lastActiveAt) }}</span
+                            >
+                          }
+                        }
+                        <span
+                          class="flex w-16 shrink-0 items-center justify-end gap-1.5 text-[11px] tabular-nums text-zinc-400"
+                        >
+                          <span
+                            class="size-2 shrink-0 rounded-sm"
+                            [style.background]="riskFill(risk)"
+                          ></span>
+                          {{ pct(risk.orphanedShare) }}%
+                        </span>
+                      </button>
+                    </li>
+                  }
+                </ul>
+                <dl
+                  class="mt-3 grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 border-t border-zinc-800/70 pt-2 text-[11px] text-zinc-600"
+                >
+                  <dt class="font-medium text-zinc-500">risk</dt>
+                  <dd>the bar: file size × orphaned share — the ranking, highest first</dd>
+                  <dt class="font-medium text-zinc-500">orphaned</dt>
+                  <dd>share of recent authorship held by contributors who've gone quiet</dd>
+                  <dt class="font-medium text-zinc-500">expert</dt>
+                  <dd>the file's top author; “gone” = inactive for months</dd>
+                </dl>
+                @if (s.knowledge.partial) {
+                  <p class="mt-2 text-[11px] text-zinc-600">
+                    From the analysed commits only — Load all commits for a complete turnover
+                    picture.
+                  </p>
+                }
+              } @else if (s.status === 'ready') {
+                @if (anyRisk()) {
+                  <p class="text-sm text-zinc-500">No files within the selected size range.</p>
+                } @else {
+                  <p class="text-sm text-zinc-500">No authored activity in the analysed commits.</p>
+                  @if (s.knowledge.partial) {
+                    <p class="mt-2 text-[11px] text-zinc-600">
+                      From the analysed commits only — Load all commits for a complete turnover
+                      picture.
+                    </p>
+                  }
+                }
+              } @else {
+                <p class="text-sm text-zinc-500">Mapping knowledge…</p>
+              }
+            }
+          } @else {
+            <p class="mb-3 text-sm text-zinc-500">Analyze the history to map knowledge risk.</p>
+            <div class="flex flex-wrap gap-2">
+              <button
+                type="button"
+                class="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-400"
+                (click)="analyze.emit()"
+              >
+                Analyze recent history
+              </button>
+              <button
+                type="button"
+                class="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100"
+                (click)="loadAll.emit()"
+              >
+                Load all commits
+              </button>
+            </div>
+          }
         }
       } @else {
         <div class="mx-auto max-w-md py-10 text-center">
@@ -867,7 +1139,7 @@ export class InsightsView {
   protected readonly teamW = TEAM_W;
   protected readonly teamH = TEAM_H;
   protected readonly maxDevelopers = MAX_DEVELOPERS;
-  protected readonly tab = signal<'hotspots' | 'coupling' | 'team'>('hotspots');
+  protected readonly tab = signal<'hotspots' | 'coupling' | 'team' | 'knowledge'>('hotspots');
   protected readonly floor = CLUSTER_SIZE_FLOOR;
   protected readonly ceil = CLUSTER_SIZE_CEIL;
   protected readonly minClusterSize = signal(DEFAULT_MIN_CLUSTER_FILES);
@@ -877,6 +1149,8 @@ export class InsightsView {
   /** Slider 0..1: blend ties from all-time (0) toward recent collaboration (1). */
   protected readonly temporalWeight = signal(DEFAULT_TEMPORAL_WEIGHT);
   protected readonly temporalWeightPct = computed(() => Math.round(this.temporalWeight() * 100));
+  /** Treemap size filter as a 0–100 slider position (100 = no limit). */
+  protected readonly maxFileSizePct = signal(100);
 
   /** The selected band as track percentages, for the slider's filled segment. */
   protected readonly rangePercent = computed(() => {
@@ -886,6 +1160,39 @@ export class InsightsView {
       right: ((this.ceil - this.maxClusterSize()) / span) * 100,
     };
   });
+
+  /** Largest analysed file size (bytes) — the top of the size-filter slider. */
+  protected readonly sizeCeil = computed(() => {
+    const s = this.state();
+    let max = 0;
+    for (const hot of s?.hotspots ?? []) max = Math.max(max, hot.size);
+    for (const risk of s?.knowledge.files ?? []) max = Math.max(max, risk.size);
+    return max;
+  });
+
+  /** Only worth offering the size filter when there is a spread to filter. */
+  protected readonly canFilterBySize = computed(() => {
+    const s = this.state();
+    const files = (s?.hotspots.length ?? 0) + (s?.knowledge.files.length ?? 0);
+    return files > 1 && this.sizeCeil() > 0;
+  });
+
+  /**
+   * Selected upper size bound, in bytes. The slider position maps on a log2
+   * scale (file sizes span orders of magnitude, so a linear handle would bunch
+   * everything at the low end). 100 — or a result too small to show the control
+   * ({@link canFilterBySize}) — means "no limit", so a stale value can't keep
+   * silently filtering once the slider is hidden.
+   */
+  protected readonly maxFileBytes = computed(() => {
+    const pct = this.maxFileSizePct();
+    if (pct >= 100 || !this.canFilterBySize()) return Number.POSITIVE_INFINITY;
+    return 2 ** (Math.log2(Math.max(this.sizeCeil(), 1)) * (pct / 100));
+  });
+
+  /** File counts before the size filter, for the empty-state copy. */
+  protected readonly anyHotspots = computed(() => (this.state()?.hotspots.length ?? 0) > 0);
+  protected readonly anyRisk = computed(() => (this.state()?.knowledge.files.length ?? 0) > 0);
 
   protected readonly pairs = computed(() => (this.state()?.result.pairs ?? []).slice(0, MAX_PAIRS));
   protected readonly more = computed(() =>
@@ -905,7 +1212,10 @@ export class InsightsView {
   );
   protected readonly clusterGraphs = computed(() => this.clusters().map((c) => this.layout(c)));
 
-  private readonly hotspots = computed(() => (this.state()?.hotspots ?? []).slice(0, MAX_HOTSPOTS));
+  private readonly hotspots = computed(() => {
+    const max = this.maxFileBytes();
+    return (this.state()?.hotspots ?? []).filter((hot) => hot.size <= max).slice(0, MAX_HOTSPOTS);
+  });
   protected readonly list = computed(() => this.hotspots());
   protected readonly tiles = computed<TreemapTile<Hotspot>[]>(() =>
     squarify(
@@ -913,6 +1223,27 @@ export class InsightsView {
       // non-positive weights, so clamp to keep it a (tiny) tile — otherwise it
       // would show in the ranked list but never in the treemap.
       this.hotspots().map((hot) => ({ weight: Math.max(hot.size, 1), value: hot })),
+      TREEMAP_W,
+      TREEMAP_H,
+    ),
+  );
+
+  private readonly knowledgeFiles = computed(() => {
+    const max = this.maxFileBytes();
+    return (this.state()?.knowledge.files ?? [])
+      .filter((risk) => risk.size <= max)
+      .slice(0, MAX_RISK);
+  });
+  protected readonly riskList = computed(() => this.knowledgeFiles());
+  /** Largest riskScore among the files shown — scales the importance bars. */
+  protected readonly maxRisk = computed(() =>
+    this.riskList().reduce((max, risk) => Math.max(max, risk.riskScore), 0),
+  );
+  protected readonly riskTiles = computed<TreemapTile<KnowledgeRisk>[]>(() =>
+    squarify(
+      // Same clamp as the hotspot treemap: a file absent from the current tree
+      // has size 0, which squarify would drop — keep it as a tiny tile.
+      this.knowledgeFiles().map((risk) => ({ weight: Math.max(risk.size, 1), value: risk })),
       TREEMAP_W,
       TREEMAP_H,
     ),
@@ -929,6 +1260,7 @@ export class InsightsView {
       paths.add(pair.b);
     }
     for (const hot of this.hotspots()) paths.add(hot.path);
+    for (const risk of this.knowledgeFiles()) paths.add(risk.path);
     for (const cluster of this.clusters()) for (const file of cluster.files) paths.add(file);
     return disambiguateLabels(paths);
   });
@@ -1226,7 +1558,32 @@ export class InsightsView {
   }
 
   protected fill(hot: Hotspot): string {
-    return HEAT_FILLS[heatLevel(hot.metric.score)];
+    return heatColor(hot.metric.score, HEAT_THRESHOLDS);
+  }
+
+  protected riskFill(risk: KnowledgeRisk): string {
+    return heatColor(risk.orphanedShare, RISK_THRESHOLDS);
+  }
+
+  /**
+   * Importance-bar width (%) for a row: the file's riskScore (size ×
+   * orphanedShare — the list's sort key) relative to the riskiest file shown, so
+   * the bars shrink down the list and the ordering is visible. A small floor
+   * keeps a non-zero risk from rendering as nothing.
+   */
+  protected riskBar(risk: KnowledgeRisk): number {
+    const max = this.maxRisk();
+    if (max <= 0 || risk.riskScore <= 0) return 0;
+    return Math.max(3, (risk.riskScore / max) * 100);
+  }
+
+  protected onMaxFileSize(event: Event): void {
+    this.maxFileSizePct.set(Number((event.target as HTMLInputElement).value));
+  }
+
+  /** Readout for the size filter: the upper bound, or "All sizes" when off. */
+  protected sizeLabel(): string {
+    return this.maxFileSizePct() >= 100 ? 'All sizes' : '≤ ' + formatBytes(this.maxFileBytes());
   }
 
   protected score(hot: Hotspot): string {
