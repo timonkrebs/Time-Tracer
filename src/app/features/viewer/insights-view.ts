@@ -1368,9 +1368,7 @@ interface Quadrant {
             }
             @if (report()?.trackedLines) {
               <p class="mb-2 text-xs text-zinc-500">
-                @if (sv.status === 'reading' || sv.status === 'computing') {
-                  Walking the full history… {{ sv.scanned }}/{{ sv.total }} commits.
-                } @else if (sv.status === 'error') {
+                @if (sv.status === 'error') {
                   Partial result — {{ report()!.aliveLines }} lines alive before the walk stopped.
                 } @else {
                   How long code lives — {{ report()!.aliveLines }} lines alive across
