@@ -35,9 +35,7 @@ import { CopyButton } from './copy-button';
   host: { class: 'flex h-full min-h-0 flex-col' },
   imports: [CopyButton],
   template: `
-    <header
-      class="flex h-10 shrink-0 items-center gap-2 border-b border-zinc-800 bg-zinc-900/60 px-3"
-    >
+    <header class="flex h-10 shrink-0 items-center gap-2 border-b border-zinc-800 bg-zinc-900 px-3">
       <svg
         class="size-3.5 shrink-0 text-indigo-300"
         viewBox="0 0 24 24"

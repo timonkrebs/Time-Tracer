@@ -84,7 +84,7 @@ function traceFields(run: ChangeRun | undefined): {
   template: `
     @if (state(); as s) {
       <header
-        class="flex h-10 shrink-0 items-center gap-3 border-b border-zinc-800 bg-zinc-900/60 px-4"
+        class="flex h-10 shrink-0 items-center gap-3 border-b border-zinc-800 bg-zinc-900 px-4"
       >
         <span class="truncate font-mono text-xs text-zinc-300">{{ path() }}</span>
         @if (s.status === 'ready') {

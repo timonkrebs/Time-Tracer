@@ -274,9 +274,7 @@ interface Quadrant {
     }
   `,
   template: `
-    <header
-      class="flex h-10 shrink-0 items-center gap-2 border-b border-zinc-800 bg-zinc-900/60 px-4"
-    >
+    <header class="flex h-10 shrink-0 items-center gap-2 border-b border-zinc-800 bg-zinc-900 px-4">
       <svg
         class="size-4 text-indigo-300"
         viewBox="0 0 24 24"
