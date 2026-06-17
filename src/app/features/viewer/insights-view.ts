@@ -1,8 +1,10 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  ElementRef,
   computed,
   effect,
+  inject,
   input,
   output,
   signal,
@@ -1053,10 +1055,20 @@ interface Quadrant {
                     @for (p of q.points; track p.file.path) {
                       <g
                         class="cursor-pointer"
-                        (click)="openFile.emit(p.file.path)"
+                        (click)="selectFromChart(p.file.path)"
                         (mouseenter)="hovered.set(p)"
                         (mouseleave)="hovered.set(null)"
                       >
+                        @if (selectedRisk() === p.file.path) {
+                          <circle
+                            [attr.cx]="p.cx"
+                            [attr.cy]="p.cy"
+                            [attr.r]="p.r + 7"
+                            fill="none"
+                            stroke="#818cf8"
+                            stroke-width="3"
+                          />
+                        }
                         <circle
                           [attr.cx]="p.cx"
                           [attr.cy]="p.cy"
@@ -1129,12 +1141,24 @@ interface Quadrant {
                 </div>
                 <ul class="mt-1 space-y-0.5">
                   @for (risk of riskList(); track risk.path) {
-                    <li>
+                    <li
+                      [attr.data-risk-path]="risk.path"
+                      class="flex items-center gap-1 rounded transition"
+                      [style.background-color]="
+                        selectedRisk() === risk.path ? 'rgb(99 102 241 / 0.12)' : ''
+                      "
+                    >
                       <button
                         type="button"
-                        class="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm transition hover:bg-white/[0.03]"
-                        [title]="risk.path + ' — ' + pct(risk.orphanedShare) + '% orphaned'"
-                        (click)="openFile.emit(risk.path)"
+                        class="flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1 text-left text-sm transition hover:bg-white/[0.03]"
+                        [attr.aria-pressed]="selectedRisk() === risk.path"
+                        [title]="
+                          label(risk.path) +
+                          ' — ' +
+                          pct(risk.orphanedShare) +
+                          '% orphaned · click to highlight on the chart'
+                        "
+                        (click)="toggleRisk(risk.path)"
                       >
                         <span
                           class="h-1.5 w-12 shrink-0 overflow-hidden rounded-sm bg-zinc-800"
@@ -1167,6 +1191,29 @@ interface Quadrant {
                           ></span>
                           {{ pct(risk.orphanedShare) }}%
                         </span>
+                      </button>
+                      <button
+                        type="button"
+                        class="shrink-0 rounded p-1.5 text-zinc-500 transition hover:bg-white/[0.06] hover:text-indigo-300"
+                        [attr.aria-label]="'Open ' + risk.path"
+                        [title]="'Open ' + label(risk.path)"
+                        (click)="openFile.emit(risk.path)"
+                      >
+                        <svg
+                          width="14"
+                          height="14"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          aria-hidden="true"
+                        >
+                          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                          <polyline points="15 3 21 3 21 9" />
+                          <line x1="10" y1="14" x2="21" y2="3" />
+                        </svg>
                       </button>
                     </li>
                   }
@@ -1214,6 +1261,11 @@ interface Quadrant {
                   <dd>share of recent authorship held by contributors who've gone quiet</dd>
                   <dt class="font-medium text-zinc-500">holders</dt>
                   <dd>contributors by authored-knowledge share; redder = more gone</dd>
+                  <dt class="font-medium text-zinc-500">select</dt>
+                  <dd>
+                    click a dot or a list row to highlight it in the other; the ↗ icon opens the
+                    file
+                  </dd>
                 </dl>
                 <p class="mt-2 text-[11px] leading-5 text-zinc-600">
                   <span class="font-medium text-zinc-500">How orphaned is calculated.</span>
@@ -1299,6 +1351,8 @@ interface Quadrant {
   `,
 })
 export class InsightsView {
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+
   /** Repo-wide analysis (hotspots + coupling overview). */
   readonly state = input<CoChangeState | null>(null);
   /** Active "filter coupling by file" result, or null. */
@@ -1328,6 +1382,8 @@ export class InsightsView {
   protected readonly quadTipH = QUAD_TIP_H;
   /** The risk-quadrant bubble under the pointer, or null — drives the tooltip. */
   protected readonly hovered = signal<QuadrantPoint | null>(null);
+  /** File selected in the Knowledge list/quadrant — cross-highlights both, or null. */
+  protected readonly selectedRisk = signal<string | null>(null);
   protected readonly tab = signal<'hotspots' | 'coupling' | 'team' | 'knowledge'>('hotspots');
   protected readonly floor = CLUSTER_SIZE_FLOOR;
   protected readonly ceil = CLUSTER_SIZE_CEIL;
@@ -1825,6 +1881,28 @@ export class InsightsView {
     const max = this.maxRisk();
     if (max <= 0 || risk.riskScore <= 0) return 0;
     return Math.max(3, (risk.riskScore / max) * 100);
+  }
+
+  /** Toggle the cross-highlight selection for a file (click the same one again to clear). */
+  protected toggleRisk(path: string): void {
+    this.selectedRisk.update((cur) => (cur === path ? null : path));
+  }
+
+  /** Select from a quadrant bubble, then bring its list row into view. */
+  protected selectFromChart(path: string): void {
+    this.toggleRisk(path);
+    if (this.selectedRisk() === path) this.scrollRowIntoView(path);
+  }
+
+  /** Best-effort scroll of a file's list row into view (no-op without layout, e.g. jsdom). */
+  private scrollRowIntoView(path: string): void {
+    const rows = this.host.nativeElement.querySelectorAll<HTMLElement>('[data-risk-path]');
+    const row = Array.from(rows).find((el) => el.dataset['riskPath'] === path);
+    try {
+      row?.scrollIntoView({ block: 'nearest' });
+    } catch {
+      // Layout-less environments don't implement scrollIntoView; the highlight still applies.
+    }
   }
 
   /** Left edge of the hover tooltip — placed beside the bubble, flipped/clamped to stay in view. */

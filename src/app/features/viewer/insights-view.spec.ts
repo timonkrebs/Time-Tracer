@@ -169,6 +169,10 @@ describe('InsightsView', () => {
   let opened: string[];
 
   beforeEach(async () => {
+    // jsdom has no layout, so scrollIntoView logs a "not implemented" error;
+    // stub it so selecting a quadrant dot (which scrolls its row into view) is quiet.
+    Element.prototype.scrollIntoView = () => {};
+
     await TestBed.configureTestingModule({
       imports: [InsightsView],
       providers: [provideZonelessChangeDetection()],
@@ -391,8 +395,48 @@ describe('InsightsView', () => {
     expect(t).toContain('known to only one person'); // bus-factor callout (legacy.ts)
     expect(t).toContain('Knowledge holders'); // the contributor breakdown
 
-    clickContaining('legacy.ts'); // the list row
+    // The row now selects/cross-highlights; the ↗ icon is the explicit "open file".
+    const open = fixture.nativeElement.querySelector(
+      'button[aria-label="Open src/legacy.ts"]',
+    ) as HTMLButtonElement;
+    open.click();
     expect(opened).toContain('src/legacy.ts');
+  });
+
+  it('cross-highlights the list row and the quadrant dot, both directions', async () => {
+    await setState(KNOWLEDGE);
+    button('Knowledge')!.click();
+    await fixture.whenStable();
+
+    const selectRow = (name: string): HTMLButtonElement =>
+      Array.from(
+        fixture.nativeElement.querySelectorAll('button[aria-pressed]') as HTMLButtonElement[],
+      ).find((b) => (b.textContent ?? '').includes(name))!;
+    const selectionRing = (): Element | null =>
+      fixture.nativeElement.querySelector('svg circle[stroke="#818cf8"]');
+
+    // Nothing selected: no ring on the chart, row not pressed.
+    expect(selectionRing()).toBeNull();
+    expect(selectRow('legacy.ts').getAttribute('aria-pressed')).toBe('false');
+
+    // List → chart: clicking the row highlights its dot (and opens nothing).
+    selectRow('legacy.ts').click();
+    await fixture.whenStable();
+    expect(selectRow('legacy.ts').getAttribute('aria-pressed')).toBe('true');
+    expect(selectionRing()).not.toBeNull();
+    expect(opened).toEqual([]);
+
+    // Clicking the same row again clears the selection.
+    selectRow('legacy.ts').click();
+    await fixture.whenStable();
+    expect(selectionRing()).toBeNull();
+
+    // Chart → list: clicking the dot marks the matching row selected.
+    const dot = fixture.nativeElement.querySelector('svg g.cursor-pointer') as SVGGElement;
+    dot.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await fixture.whenStable();
+    expect(selectRow('legacy.ts').getAttribute('aria-pressed')).toBe('true');
+    expect(opened).toEqual([]);
   });
 
   it('reveals a hover tooltip with the file name and metrics over a quadrant bubble', async () => {
