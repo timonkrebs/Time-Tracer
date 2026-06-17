@@ -32,6 +32,9 @@ const MAX_HOTSPOTS = 45;
 const MAX_RISK = 45;
 /** Contributors listed in the Knowledge "holders" breakdown. */
 const MAX_HOLDERS = 10;
+/** Risk-quadrant hover tooltip box, in treemap viewBox units. */
+const QUAD_TIP_W = 640;
+const QUAD_TIP_H = 150;
 const MAX_CLUSTERS = 10;
 /** Cluster-size range bounds: the floor can dip to 2 (a bare pair) on demand. */
 const CLUSTER_SIZE_FLOOR = 2;
@@ -190,12 +193,11 @@ interface TeamLayout {
 
 /** One file plotted in the knowledge-risk quadrant. */
 interface QuadrantPoint {
-  readonly path: string;
+  readonly file: KnowledgeRisk;
   readonly cx: number;
   readonly cy: number;
   readonly r: number;
   readonly fill: string;
-  readonly orphaned: number;
 }
 /** The knowledge-risk scatter: bubbles plus the median crosshair and plot box. */
 interface Quadrant {
@@ -1033,9 +1035,13 @@ interface Quadrant {
                     >
                       most at risk ↗
                     </text>
-                    @for (p of q.points; track p.path) {
-                      <g class="cursor-pointer" (click)="openFile.emit(p.path)">
-                        <title>{{ p.path }} — {{ pct(p.orphaned) }}% orphaned</title>
+                    @for (p of q.points; track p.file.path) {
+                      <g
+                        class="cursor-pointer"
+                        (click)="openFile.emit(p.file.path)"
+                        (mouseenter)="hovered.set(p)"
+                        (mouseleave)="hovered.set(null)"
+                      >
                         <circle
                           [attr.cx]="p.cx"
                           [attr.cy]="p.cy"
@@ -1046,6 +1052,54 @@ interface Quadrant {
                           stroke-width="2"
                           class="transition-opacity hover:opacity-100"
                         />
+                      </g>
+                    }
+                    @if (hovered(); as h) {
+                      <g class="pointer-events-none">
+                        <circle
+                          [attr.cx]="h.cx"
+                          [attr.cy]="h.cy"
+                          [attr.r]="h.r"
+                          fill="none"
+                          stroke="#fafafa"
+                          stroke-width="2.5"
+                        />
+                        <rect
+                          [attr.x]="tipX(h)"
+                          [attr.y]="tipY(h)"
+                          [attr.width]="quadTipW"
+                          [attr.height]="quadTipH"
+                          rx="12"
+                          fill="#09090b"
+                          fill-opacity="0.95"
+                          stroke="#3f3f46"
+                          stroke-width="1.5"
+                        />
+                        <text
+                          [attr.x]="tipX(h) + 24"
+                          [attr.y]="tipY(h) + 46"
+                          fill="#fafafa"
+                          font-size="26"
+                          font-weight="600"
+                        >
+                          {{ label(h.file.path) }}
+                        </text>
+                        <text
+                          [attr.x]="tipX(h) + 24"
+                          [attr.y]="tipY(h) + 86"
+                          fill="#a1a1aa"
+                          font-size="23"
+                        >
+                          {{ pct(h.file.orphanedShare) }}% orphaned · {{ sizeOf(h.file.size) }}
+                        </text>
+                        <text
+                          [attr.x]="tipX(h) + 24"
+                          [attr.y]="tipY(h) + 124"
+                          fill="#a1a1aa"
+                          font-size="23"
+                        >
+                          {{ expertLine(h.file) }}
+                        </text>
                       </g>
                     }
                   }
@@ -1243,6 +1297,10 @@ export class InsightsView {
   protected readonly teamW = TEAM_W;
   protected readonly teamH = TEAM_H;
   protected readonly maxDevelopers = MAX_DEVELOPERS;
+  protected readonly quadTipW = QUAD_TIP_W;
+  protected readonly quadTipH = QUAD_TIP_H;
+  /** The risk-quadrant bubble under the pointer, or null — drives the tooltip. */
+  protected readonly hovered = signal<QuadrantPoint | null>(null);
   protected readonly tab = signal<'hotspots' | 'coupling' | 'team' | 'knowledge'>('hotspots');
   protected readonly floor = CLUSTER_SIZE_FLOOR;
   protected readonly ceil = CLUSTER_SIZE_CEIL;
@@ -1359,12 +1417,11 @@ export class InsightsView {
     const yOf = (orphaned: number): number => y0 + orphaned * (y1 - y0);
     return {
       points: files.map((f) => ({
-        path: f.path,
+        file: f,
         cx: xOf(f.size),
         cy: yOf(f.orphanedShare),
         r: 10 + Math.sqrt(f.riskScore / maxRisk) * 40,
         fill: heatColor(f.orphanedShare, RISK_THRESHOLDS),
-        orphaned: f.orphanedShare,
       })),
       midX: xOf(median(files.map((f) => Math.max(f.size, 1)))),
       midY: yOf(median(files.map((f) => f.orphanedShare))),
@@ -1741,6 +1798,30 @@ export class InsightsView {
     const max = this.maxRisk();
     if (max <= 0 || risk.riskScore <= 0) return 0;
     return Math.max(3, (risk.riskScore / max) * 100);
+  }
+
+  /** Left edge of the hover tooltip — placed beside the bubble, flipped/clamped to stay in view. */
+  protected tipX(p: QuadrantPoint): number {
+    const right = p.cx + p.r + 16;
+    if (right + QUAD_TIP_W <= TREEMAP_W) return right;
+    return Math.max(0, p.cx - p.r - 16 - QUAD_TIP_W);
+  }
+
+  /** Top edge of the hover tooltip — centred on the bubble, clamped to stay in view. */
+  protected tipY(p: QuadrantPoint): number {
+    return Math.max(0, Math.min(TREEMAP_H - QUAD_TIP_H, p.cy - QUAD_TIP_H / 2));
+  }
+
+  /** Human-readable size for the hover tooltip. */
+  protected sizeOf(bytes: number): string {
+    return formatBytes(bytes);
+  }
+
+  /** "bus factor N · Expert (gone)" summary line for the hover tooltip. */
+  protected expertLine(file: KnowledgeRisk): string {
+    const bus = `bus factor ${file.busFactor}`;
+    const ex = file.primaryExpert;
+    return ex ? `${bus} · ${ex.name}${ex.active ? '' : ' (gone)'}` : bus;
   }
 
   protected onMaxFileSize(event: Event): void {

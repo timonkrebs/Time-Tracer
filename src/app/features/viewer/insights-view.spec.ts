@@ -395,6 +395,28 @@ describe('InsightsView', () => {
     expect(opened).toContain('src/legacy.ts');
   });
 
+  it('reveals a hover tooltip with the file name and metrics over a quadrant bubble', async () => {
+    await setState(KNOWLEDGE);
+    button('Knowledge')!.click();
+    await fixture.whenStable();
+
+    // Nothing tooltip-specific until a bubble is hovered.
+    expect(text()).not.toContain('bus factor');
+
+    // The riskiest file (legacy.ts, 800 B) sorts first, so it's the first bubble.
+    const bubble = fixture.nativeElement.querySelector('svg g.cursor-pointer') as SVGGElement;
+    bubble.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+    await fixture.whenStable();
+
+    const t = text();
+    expect(t).toContain('bus factor'); // the expert / bus-factor line
+    expect(t).toContain('800 B'); // the size, shown only in the tooltip
+
+    bubble.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }));
+    await fixture.whenStable();
+    expect(text()).not.toContain('bus factor');
+  });
+
   it('prompts to analyze on the knowledge tab when only a focus filter is set', async () => {
     await setFocus(FOCUSED); // focus auto-selects coupling…
     button('Knowledge')!.click(); // …switch to knowledge, which has no repo-wide state
