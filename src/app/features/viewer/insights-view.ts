@@ -682,7 +682,7 @@ interface TeamLayout {
                 to trace their collaborators; people who share no files are listed below.
               </p>
               <div
-                class="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-zinc-600"
+                class="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-600"
               >
                 <span class="tabular-nums">{{ graph().developers.length }} developers</span>
                 <span>·</span>
@@ -694,31 +694,30 @@ interface TeamLayout {
                 @if (moreDevelopers() > 0) {
                   <span class="text-zinc-700">· showing the {{ maxDevelopers }} most active</span>
                 }
-              </div>
-
-              @if (graph().collaborations.length) {
-                <div
-                  class="mb-3 flex items-center gap-2 text-[11px] text-zinc-500"
-                  title="Weight ties toward co-edits that happened close together in time — handoffs and recent pairing — instead of any shared file ever."
-                >
-                  <span class="shrink-0">Timing</span>
-                  <span class="shrink-0 text-zinc-600">all-time</span>
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    step="1"
-                    [value]="temporalWeightPct()"
-                    (input)="onTemporalWeight($event)"
-                    class="h-1 min-w-0 flex-1 cursor-pointer accent-indigo-400"
-                    aria-label="Temporal weighting"
-                  />
-                  <span class="shrink-0 text-zinc-600">recent</span>
-                  <span class="w-8 shrink-0 text-right tabular-nums text-zinc-400">
-                    {{ temporalWeightPct() }}%
+                @if (graph().collaborations.length) {
+                  <span
+                    class="flex min-w-0 flex-1 items-center gap-2 text-zinc-500"
+                    title="Weight ties toward co-edits that happened close together in time — handoffs and recent pairing — instead of any shared file ever."
+                  >
+                    <span class="shrink-0">Timing</span>
+                    <span class="shrink-0 text-zinc-600">all-time</span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="1"
+                      [value]="temporalWeightPct()"
+                      (input)="onTemporalWeight($event)"
+                      class="h-1 min-w-0 flex-1 cursor-pointer accent-indigo-400"
+                      aria-label="Temporal weighting"
+                    />
+                    <span class="shrink-0 text-zinc-600">recent</span>
+                    <span class="w-8 shrink-0 text-right tabular-nums text-zinc-400">
+                      {{ temporalWeightPct() }}%
+                    </span>
                   </span>
-                </div>
-              }
+                }
+              </div>
 
               @if (teamLayout().nodes.length) {
                 <svg
