@@ -343,7 +343,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
 
           @if (insightsMode()) {
             <app-insights-view
-              class="min-h-0 flex-1"
+              class="min-h-0 min-w-0 flex-1"
               [state]="store.coChange()"
               [focus]="store.coupleFocus()"
               [commitCap]="commitCap"

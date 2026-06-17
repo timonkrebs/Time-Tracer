@@ -370,6 +370,17 @@ describe('InsightsView', () => {
     expect(text()).toContain('src/b/index.ts');
   });
 
+  it('truncates long cluster-graph node labels with a middle ellipsis', () => {
+    const view = fixture.componentInstance as unknown as { nodeLabel(s: string): string };
+    // Short labels pass through untouched.
+    expect(view.nodeLabel('src/a/index.ts')).toBe('src/a/index.ts');
+    // Long ones keep the head and the filename tail so both stay readable,
+    // capped so the cluster graph can't push the layout past the viewport.
+    expect(view.nodeLabel('compiler/rustc_expand/src/mbe/diagnostics.rs')).toBe(
+      'compiler/rus…gnostics.rs',
+    );
+  });
+
   it('keeps all three tabs available once anything is analysed', async () => {
     // Even with only a file filter (no repo-wide overview), the tabs show.
     await setFocus(FOCUSED);

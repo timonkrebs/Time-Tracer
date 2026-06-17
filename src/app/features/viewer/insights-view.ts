@@ -617,7 +617,7 @@ interface Quadrant {
                     <div class="rounded border border-zinc-800 bg-zinc-900/30 p-1">
                       <svg
                         [attr.viewBox]="'0 0 ' + clusterW + ' ' + clusterH"
-                        class="w-full"
+                        class="w-full overflow-hidden"
                         role="img"
                       >
                         @for (edge of graph.edges; track $index) {
@@ -643,7 +643,7 @@ interface Quadrant {
                               fill="#e4e4e7"
                               class="pointer-events-none font-mono"
                             >
-                              {{ node.label }}
+                              {{ nodeLabel(node.label) }}
                             </text>
                           </g>
                         }
@@ -1946,6 +1946,19 @@ export class InsightsView {
 
   protected label(path: string): string {
     return this.labels().get(path) ?? path.slice(path.lastIndexOf('/') + 1);
+  }
+
+  /**
+   * A cluster-graph node label trimmed to fit the small graph (with a middle
+   * ellipsis so both the start and the filename stay visible); the full path is
+   * still in the node's `<title>` and one click away via "filter by file".
+   */
+  protected nodeLabel(label: string): string {
+    const max = 24;
+    if (label.length <= max) return label;
+    const keep = max - 1;
+    const head = Math.ceil(keep / 2);
+    return label.slice(0, head) + '…' + label.slice(label.length - (keep - head));
   }
 
   protected when(iso: string): string {
