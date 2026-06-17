@@ -226,48 +226,54 @@ export class OwnershipSummaryView {
             </div>
             @if (folderTab() === 'authors') {
               <app-ownership-summary [summary]="fo.summary" />
-            } @else if (folderRisk().length) {
-              <ul class="space-y-1.5">
-                @for (f of folderRisk(); track f.path) {
-                  <li>
-                    <div class="flex items-baseline gap-2 text-xs">
-                      <span
-                        class="min-w-0 flex-1 truncate font-mono text-zinc-200"
-                        [title]="f.path"
-                        >{{ base(f.path) }}</span
-                      >
-                      <span class="shrink-0 tabular-nums text-zinc-500"
-                        >{{ percent(f.staleShare) }}%</span
-                      >
-                    </div>
-                    <div class="mt-0.5 flex items-center gap-2">
-                      <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-zinc-800">
-                        <div
-                          class="h-full rounded-full bg-indigo-500"
-                          [style.width.%]="riskBar(f)"
-                        ></div>
-                      </div>
-                      <span
-                        class="w-24 shrink-0 truncate text-right text-[10px] text-zinc-600"
-                        [title]="f.owner ? 'mostly ' + f.owner.name : ''"
-                      >
-                        @if (f.owner) {
-                          {{ f.owner.name }}
-                        } @else {
-                          {{ round(f.staleLines) }} lines
-                        }
-                      </span>
-                    </div>
-                  </li>
-                }
-              </ul>
-              <p class="mt-2 text-[10px] leading-4 text-zinc-600">
-                Ranked by staleness × √lines — each line ages on a ~2-year half-life (older edits
-                weigh more), averaged per file, then scaled by √(line count) so size counts without
-                dominating.
-              </p>
             } @else {
-              <p class="text-xs text-zinc-600">No files at risk — the code here is recent.</p>
+              <p class="mb-2 text-[11px] leading-4 text-zinc-500">
+                Files most at risk of knowledge loss — those whose code has gone stale (old,
+                rarely-touched lines whose original authors have likely moved on).
+              </p>
+              @if (folderRisk().length) {
+                <ul class="space-y-1.5">
+                  @for (f of folderRisk(); track f.path) {
+                    <li>
+                      <div class="flex items-baseline gap-2 text-xs">
+                        <span
+                          class="min-w-0 flex-1 truncate font-mono text-zinc-200"
+                          [title]="f.path"
+                          >{{ base(f.path) }}</span
+                        >
+                        <span class="shrink-0 tabular-nums text-zinc-500"
+                          >{{ percent(f.staleShare) }}%</span
+                        >
+                      </div>
+                      <div class="mt-0.5 flex items-center gap-2">
+                        <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-zinc-800">
+                          <div
+                            class="h-full rounded-full bg-indigo-500"
+                            [style.width.%]="riskBar(f)"
+                          ></div>
+                        </div>
+                        <span
+                          class="w-24 shrink-0 truncate text-right text-[10px] text-zinc-600"
+                          [title]="f.owner ? 'mostly ' + f.owner.name : ''"
+                        >
+                          @if (f.owner) {
+                            {{ f.owner.name }}
+                          } @else {
+                            {{ round(f.staleLines) }} lines
+                          }
+                        </span>
+                      </div>
+                    </li>
+                  }
+                </ul>
+                <p class="mt-2 text-[10px] leading-4 text-zinc-600">
+                  Ranked by staleness × √lines — each line ages on a ~2-year half-life (older edits
+                  weigh more), averaged per file, then scaled by √(line count) so size counts
+                  without dominating.
+                </p>
+              } @else {
+                <p class="text-xs text-zinc-600">No files at risk — the code here is recent.</p>
+              }
             }
             @if (fo.capped || !fo.fromCache) {
               <div class="mt-3 flex flex-wrap items-center gap-2">
