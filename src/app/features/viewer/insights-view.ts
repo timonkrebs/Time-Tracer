@@ -680,7 +680,16 @@ interface Quadrant {
                         {{ label(pair.b) }}
                       </button>
                     </span>
-                    <span class="shrink-0 text-[11px] text-zinc-500 tabular-nums">
+                    <span
+                      class="shrink-0 text-[11px] text-zinc-500 tabular-nums"
+                      [title]="
+                        'co-changed in ' +
+                        pair.support +
+                        ' commits · coupled ' +
+                        pct(pair.degree) +
+                        '% of the time either file changes'
+                      "
+                    >
                       {{ pair.support }}× · {{ pct(pair.degree) }}%
                     </span>
                   </li>
@@ -689,6 +698,12 @@ interface Quadrant {
               @if (more() > 0) {
                 <p class="mt-2 text-[11px] text-zinc-600">+{{ more() }} more pairs</p>
               }
+              <p class="mt-3 border-t border-zinc-800/70 pt-2 text-[11px] leading-5 text-zinc-600">
+                <span class="font-medium text-zinc-500">N× · M%</span> — co-changed in N commits and
+                coupled M% of the time either file changes (their share of shared changes). Ranked
+                by coupling strength: the % weighted by how much evidence backs it, so a high % from
+                only a couple of commits doesn't outrank a well-supported one.
+              </p>
             } @else if (s.status === 'ready') {
               <p class="text-sm text-zinc-500">
                 No files changed together often enough in the analysed commits.

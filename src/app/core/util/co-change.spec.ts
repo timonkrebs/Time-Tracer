@@ -1,4 +1,10 @@
-import { CommitFiles, clusterCoChange, computeCoChange, relatedFiles } from './co-change';
+import {
+  CommitFiles,
+  clusterCoChange,
+  computeCoChange,
+  couplingConfidence,
+  relatedFiles,
+} from './co-change';
 
 const COMMITS: CommitFiles[] = [
   { sha: 'c1', files: ['a', 'b'] },
@@ -49,6 +55,53 @@ describe('computeCoChange', () => {
     expect(result.commitsUsed).toBe(0);
     expect(result.changes.size).toBe(0);
     expect(result.pairs).toEqual([]);
+  });
+
+  it('ranks a strong, well-evidenced pair above a weaker one with more co-changes', () => {
+    // p1↔p2 always change together (3 commits, 100%). q1↔q2 co-change more often
+    // (4 commits) but q1 churns alone a lot, so their coupling is only ~31%.
+    const commits: CommitFiles[] = [
+      { sha: 'p-a', files: ['p1', 'p2'] },
+      { sha: 'p-b', files: ['p1', 'p2'] },
+      { sha: 'p-c', files: ['p1', 'p2'] },
+      { sha: 'q-a', files: ['q1', 'q2'] },
+      { sha: 'q-b', files: ['q1', 'q2'] },
+      { sha: 'q-c', files: ['q1', 'q2'] },
+      { sha: 'q-d', files: ['q1', 'q2'] },
+    ];
+    // q1 also changes alone with a different file each time (those pairs stay below minSupport).
+    for (let i = 0; i < 9; i++) commits.push({ sha: `solo-${i}`, files: ['q1', `other${i}`] });
+
+    const result = computeCoChange(commits);
+    const order = result.pairs.map((p) => `${p.a}-${p.b}`);
+    // Only the two qualifying pairs remain, and the tighter p-pair ranks first —
+    // even though q1↔q2 has the higher raw co-change count (4 vs 3).
+    expect(order).toEqual(['p1-p2', 'q1-q2']);
+    expect(result.pairs[0].support).toBe(3);
+    expect(result.pairs[1].support).toBe(4);
+  });
+});
+
+describe('couplingConfidence', () => {
+  it('rewards more evidence at the same coupling ratio', () => {
+    // Both are 50% coupling, but 20-of-40 is far better evidenced than 2-of-4.
+    expect(couplingConfidence(20, 40)).toBeGreaterThan(couplingConfidence(2, 4));
+  });
+
+  it('rewards a higher ratio at equal evidence', () => {
+    expect(couplingConfidence(8, 10)).toBeGreaterThan(couplingConfidence(5, 10));
+  });
+
+  it('ranks a solid pair above a flimsy "perfect" one', () => {
+    // 4-of-4 (100%, more evidence) beats 2-of-2 (100%, thin); both beat a low ratio.
+    expect(couplingConfidence(4, 4)).toBeGreaterThan(couplingConfidence(2, 2));
+    expect(couplingConfidence(4, 4)).toBeGreaterThan(couplingConfidence(5, 16));
+  });
+
+  it('stays within [0, 1] and is 0 for an empty union', () => {
+    expect(couplingConfidence(0, 0)).toBe(0);
+    expect(couplingConfidence(10, 10)).toBeGreaterThan(0);
+    expect(couplingConfidence(10, 10)).toBeLessThanOrEqual(1);
   });
 });
 
