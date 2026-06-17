@@ -9,6 +9,15 @@
 
 import type { TreeEntry } from '../models';
 
+const DAY_MS = 86_400_000;
+/**
+ * Half-life for line staleness (~2 years): a line last edited two years ago is
+ * 50% stale, one year ≈ 29%, ten years ≈ 97%. Long enough that "edited last
+ * year" and "edited a decade ago" land far apart (a short half-life would
+ * saturate both near 1).
+ */
+const STALE_HALF_LIFE_DAYS = 730;
+
 /** A blame line, reduced to the fields the summary needs. */
 export type OwnedLine =
   | {
@@ -153,4 +162,99 @@ export function selectOwnershipFiles(
     .filter((e) => e.kind === 'file' && e.path.startsWith(prefix))
     .sort((a, b) => (b.size ?? 0) - (a.size ?? 0) || a.path.localeCompare(b.path));
   return { files: matching.slice(0, cap), capped: matching.length > cap, total: matching.length };
+}
+
+/** One file ranked by how much of its code has gone stale (old, untended knowledge). */
+export interface FileRisk {
+  readonly path: string;
+  /** Lines with a known owning commit. */
+  readonly attributedLines: number;
+  /**
+   * Σ over attributed lines of each line's staleness (0..1, an age ramp on when
+   * the line was last edited) — a soft count of "aged" lines.
+   */
+  readonly staleLines: number;
+  /** {@link staleLines} / {@link attributedLines}, 0..1 — how old the code is on average. */
+  readonly staleShare: number;
+  /**
+   * Ranking key: {@link staleShare} × √{@link attributedLines}. Size counts, but
+   * sub-linearly, so a small file of ancient code can outrank a big file of
+   * recent code instead of sheer line count winning.
+   */
+  readonly riskScore: number;
+  /** The author owning the most lines, and when they last touched them. */
+  readonly owner: { readonly name: string; readonly lastAuthoredAt: string } | null;
+}
+
+/** A file plus its blame lines, the input to {@link computeOwnershipRisk}. */
+export interface FileBlame {
+  readonly path: string;
+  readonly lines: Iterable<OwnedLine>;
+}
+
+/**
+ * Ranks files by knowledge-loss risk straight from per-line blame. Each line is
+ * weighted by its **staleness** — a 0..1 ramp on how long ago it was last edited
+ * (½ at one {@link STALE_HALF_LIFE_DAYS} half-life) — so a line last touched a
+ * decade ago weighs far more than one touched last year, and fresh code weighs
+ * almost nothing. A file's {@link FileRisk.riskScore} is its *average* staleness
+ * scaled by √(lines): size still matters, but sub-linearly, so a small file of
+ * ancient code can outrank a large file of recent code rather than the biggest
+ * file always winning. Pure and deterministic given `now`.
+ */
+export function computeOwnershipRisk(
+  files: Iterable<FileBlame>,
+  options: { now?: number; staleHalfLifeDays?: number } = {},
+): readonly FileRisk[] {
+  const now = options.now ?? Date.now();
+  const halfLife = options.staleHalfLifeDays ?? STALE_HALF_LIFE_DAYS;
+
+  const risks: FileRisk[] = [];
+  for (const file of files) {
+    let attributed = 0;
+    let staleLines = 0;
+    // Lines per author, to name the file's primary owner and when they last touched it.
+    const byAuthor = new Map<string, { lines: number; lastTime: number; lastIso: string }>();
+    for (const line of file.lines) {
+      if (line === null || line === 'older') continue;
+      const { authorName, authoredAt } = line.commit;
+      const time = Date.parse(authoredAt);
+      if (Number.isNaN(time)) continue; // undated blame: no basis to score staleness
+      attributed++;
+      const ageDays = Math.max(0, (now - time) / DAY_MS);
+      staleLines += 1 - 2 ** (-ageDays / halfLife);
+      const acc = byAuthor.get(authorName);
+      if (acc) {
+        acc.lines++;
+        if (time > acc.lastTime) {
+          acc.lastTime = time;
+          acc.lastIso = authoredAt;
+        }
+      } else {
+        byAuthor.set(authorName, { lines: 1, lastTime: time, lastIso: authoredAt });
+      }
+    }
+    let owner: FileRisk['owner'] = null;
+    let mostLines = 0;
+    for (const [name, acc] of byAuthor) {
+      if (acc.lines > mostLines) {
+        mostLines = acc.lines;
+        owner = { name, lastAuthoredAt: acc.lastIso };
+      }
+    }
+    const staleShare = attributed > 0 ? staleLines / attributed : 0;
+    risks.push({
+      path: file.path,
+      attributedLines: attributed,
+      staleLines,
+      staleShare,
+      riskScore: staleShare * Math.sqrt(attributed),
+      owner,
+    });
+  }
+
+  return risks.sort(
+    (a, b) =>
+      b.riskScore - a.riskScore || b.staleShare - a.staleShare || a.path.localeCompare(b.path),
+  );
 }

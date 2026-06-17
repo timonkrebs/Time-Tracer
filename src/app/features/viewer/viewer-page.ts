@@ -67,7 +67,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
   template: `
     <div class="flex h-full flex-col" [class.select-none]="dragging()">
       <header
-        class="flex h-12 shrink-0 items-center gap-3 border-b border-zinc-800 bg-zinc-900/60 px-4"
+        class="flex h-12 shrink-0 items-center gap-3 border-b border-zinc-800 bg-zinc-900 px-4"
       >
         @if (store.phase() === 'ready') {
           <button
@@ -164,7 +164,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
           }
           @if (store.ref(); as currentRef) {
             <span
-              class="flex shrink-0 items-center gap-1 rounded-full border border-zinc-700 bg-zinc-800/60 px-2 py-0.5 font-mono text-[11px] text-zinc-400"
+              class="flex shrink-0 items-center gap-1 rounded-full border border-zinc-700 bg-zinc-800 px-2 py-0.5 font-mono text-[11px] text-zinc-400"
             >
               <svg
                 class="size-3"
@@ -343,7 +343,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
 
           @if (insightsMode()) {
             <app-insights-view
-              class="min-h-0 flex-1"
+              class="min-h-0 min-w-0 flex-1"
               [state]="store.coChange()"
               [focus]="store.coupleFocus()"
               [commitCap]="commitCap"
@@ -545,6 +545,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
                 <app-ownership-panel
                   [path]="store.selectedPath()"
                   [fileSummary]="store.selectedOwnership()"
+                  [fileRisk]="store.selectedFileRisk()"
                   [blameUnavailable]="fileBlameUnavailable()"
                   [folderPath]="selectedFolder()"
                   [folder]="folderOwnershipView()"

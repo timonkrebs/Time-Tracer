@@ -5,10 +5,12 @@
  *
  * Two files are coupled when they tend to change in the same commit. We count
  * how often each file changes and how often each pair changes together, then
- * score pairs by a Jaccard "degree" and answer "what's related to X?" by the
- * share of X's commits that also touched the other file. Commits that touch a
- * great many files (sweeping refactors, merges, formatters) are dropped, since
- * they couple everything to everything.
+ * rank pairs by a confidence-weighted coupling strength — a Wilson lower bound
+ * on the Jaccard "degree", so a high ratio backed by little evidence (e.g. 100%
+ * from two commits) is discounted below a well-supported one — and answer
+ * "what's related to X?" by the share of X's commits that also touched the other
+ * file. Commits that touch a great many files (sweeping refactors, merges,
+ * formatters) are dropped, since they couple everything to everything.
  *
  * Pure and deterministic, so it stays decoupled from the store and is easy to
  * test; the store feeds it commits it has already walked.
@@ -43,7 +45,7 @@ export interface CoChangeResult {
   readonly commitsUsed: number;
   /** Per-file change counts across the counted commits. */
   readonly changes: ReadonlyMap<string, number>;
-  /** Coupled pairs with support ≥ `minSupport`, strongest first. */
+  /** Coupled pairs with support ≥ `minSupport`, by confidence-weighted strength (strongest first). */
   readonly pairs: readonly CoChangePair[];
 }
 
@@ -61,6 +63,23 @@ interface PairAccum {
   a: string;
   b: string;
   support: number;
+}
+
+/**
+ * Confidence-weighted coupling strength: the Wilson score lower bound of the
+ * coupling proportion — of the `union` commits that touched either file,
+ * `support` touched both. It rewards a high coupling ratio but discounts it when
+ * the evidence is thin, so a perfect "100% from two commits" pair ranks below a
+ * well-supported 65% one. `z` is the confidence multiplier (1.96 ≈ 95%); a wider
+ * `z` penalises small samples harder. Returns 0 for an empty union. Pure.
+ */
+export function couplingConfidence(support: number, union: number, z = 1.96): number {
+  if (union <= 0) return 0;
+  const p = support / union;
+  const z2 = z * z;
+  const centre = p + z2 / (2 * union);
+  const margin = z * Math.sqrt((p * (1 - p) + z2 / (4 * union)) / union);
+  return (centre - margin) / (1 + z2 / union);
 }
 
 /** Aggregates commit file-sets into change counts and ranked coupled pairs. */
@@ -92,21 +111,27 @@ export function computeCoChange(
     }
   }
 
-  const pairs: CoChangePair[] = [];
+  const scored: { pair: CoChangePair; strength: number }[] = [];
   for (const { a, b, support } of pairCounts.values()) {
     if (support < minSupport) continue;
     const union = (changes.get(a) ?? 0) + (changes.get(b) ?? 0) - support;
-    pairs.push({ a, b, support, degree: union > 0 ? support / union : 0 });
+    scored.push({
+      pair: { a, b, support, degree: union > 0 ? support / union : 0 },
+      strength: couplingConfidence(support, union),
+    });
   }
-  pairs.sort(
+  // Rank by confidence-weighted strength so a strong-but-flimsy pair (a high %
+  // backed by few commits) sits below a well-evidenced one, then by raw support,
+  // then by name for a stable order.
+  scored.sort(
     (x, y) =>
-      y.support - x.support ||
-      y.degree - x.degree ||
-      x.a.localeCompare(y.a) ||
-      x.b.localeCompare(y.b),
+      y.strength - x.strength ||
+      y.pair.support - x.pair.support ||
+      x.pair.a.localeCompare(y.pair.a) ||
+      x.pair.b.localeCompare(y.pair.b),
   );
 
-  return { commitsUsed, changes, pairs };
+  return { commitsUsed, changes, pairs: scored.map((s) => s.pair) };
 }
 
 /** Files most coupled to `path`, by how often they rode along with its changes. */

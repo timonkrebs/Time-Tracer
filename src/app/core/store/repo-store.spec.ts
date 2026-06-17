@@ -1537,6 +1537,104 @@ describe('RepoStore', () => {
       expect(state?.hotspots[0]?.metric.revisions).toBe(3);
     });
 
+    it('excludes generated/vendored files from the metrics', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c1'), commit('c2')]);
+      provider.commitFilesResult = () =>
+        Promise.resolve([
+          { path: 'src/deep/main.ts', status: 'modified' }, // a real, in-tree source file
+          { path: 'package-lock.json', status: 'modified' },
+          { path: 'dist/bundle.js', status: 'modified' },
+        ]);
+
+      await store.computeCoChange();
+
+      const state = store.coChange();
+      expect(state?.status).toBe('ready');
+      // Only the authored source file survives into the metrics…
+      expect(state?.hotspots.map((h) => h.path)).toEqual(['src/deep/main.ts']);
+      expect(state?.knowledge.files.map((f) => f.path)).toEqual(['src/deep/main.ts']);
+      // …and the two generated files are reported as held out.
+      expect(state?.excludedFiles).toBe(2);
+    });
+
+    it('reports a walk complete when history is exhausted exactly at the cap', async () => {
+      // 75 commits (= CO_CHANGE_COMMIT_CAP) delivered as 30 + 30 + 15; the short
+      // final page marks the end of history, so the result must not be partial.
+      const pages = [
+        Array.from({ length: 30 }, (_, i) => commit(`a${i}`)),
+        Array.from({ length: 30 }, (_, i) => commit(`b${i}`)),
+        Array.from({ length: 15 }, (_, i) => commit(`c${i}`)),
+      ];
+      let call = 0;
+      provider.listCommitsResult = () => Promise.resolve(pages[call++] ?? []);
+      provider.commitFilesResult = () =>
+        Promise.resolve([{ path: 'src/app.ts', status: 'modified' }]);
+
+      await store.computeCoChange();
+
+      const state = store.coChange();
+      expect(state?.status).toBe('ready');
+      expect(state?.scanned).toBe(75);
+      expect(state?.knowledge.partial).toBe(false);
+    });
+
+    it('stays partial when the cap stops partway through a short final page', async () => {
+      // 80 commits as 30 + 30 + 20, cap 75: the final page is short, but the cap
+      // halts the walk after only 15 of its 20 commits — 5 remain unread, so the
+      // result is still partial despite the short page.
+      const pages = [
+        Array.from({ length: 30 }, (_, i) => commit(`a${i}`)),
+        Array.from({ length: 30 }, (_, i) => commit(`b${i}`)),
+        Array.from({ length: 20 }, (_, i) => commit(`c${i}`)),
+      ];
+      let call = 0;
+      provider.listCommitsResult = () => Promise.resolve(pages[call++] ?? []);
+      provider.commitFilesResult = () =>
+        Promise.resolve([{ path: 'src/app.ts', status: 'modified' }]);
+
+      await store.computeCoChange();
+
+      const state = store.coChange();
+      expect(state?.status).toBe('ready');
+      expect(state?.scanned).toBe(75);
+      expect(state?.knowledge.partial).toBe(true);
+    });
+
+    it('reports a walk partial when it stops at the cap with history remaining', async () => {
+      // Every page is full, so the walk fills the cap without ever seeing the end.
+      let call = 0;
+      provider.listCommitsResult = () => {
+        const page = Array.from({ length: 30 }, (_, i) => commit(`p${call}c${i}`));
+        call++;
+        return Promise.resolve(page);
+      };
+      provider.commitFilesResult = () =>
+        Promise.resolve([{ path: 'src/app.ts', status: 'modified' }]);
+
+      await store.computeCoChange();
+
+      const state = store.coChange();
+      expect(state?.status).toBe('ready');
+      expect(state?.scanned).toBe(75);
+      expect(state?.knowledge.partial).toBe(true);
+    });
+
+    it('drops files deleted from the current tree from the knowledge risk', async () => {
+      // src/deep/main.ts is in the tree; src/gone.ts is not (deleted in this branch).
+      provider.listCommitsResult = () => Promise.resolve([commit('c1'), commit('c2')]);
+      provider.commitFilesResult = () =>
+        Promise.resolve([
+          { path: 'src/deep/main.ts', status: 'modified' },
+          { path: 'src/gone.ts', status: 'modified' },
+        ]);
+
+      await store.computeCoChange();
+
+      const paths = store.coChange()?.knowledge.files.map((f) => f.path);
+      expect(paths).toContain('src/deep/main.ts');
+      expect(paths).not.toContain('src/gone.ts');
+    });
+
     it('surfaces related files for the selected file', async () => {
       provider.listCommitsResult = () => Promise.resolve([commit('c1'), commit('c2')]);
       provider.commitFilesResult = () =>
