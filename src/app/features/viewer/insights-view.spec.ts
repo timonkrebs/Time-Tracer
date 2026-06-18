@@ -764,14 +764,20 @@ describe('InsightsView', () => {
       commitTimes: ['2024-01-03T14:00:00Z', '2024-01-03T14:20:00Z', '2024-01-01T09:00:00Z'],
     };
 
-    it('renders the weekday grid from commit timestamps', async () => {
+    it('renders the grid with an insight line, marginals and a year toggle', async () => {
       await setState(PUNCH);
       button('Punch card')!.click();
       await fixture.whenStable();
       expect(text()).toContain('3 commits');
-      expect(text()).toContain('busiest hour has 2');
+      expect(text()).toContain('Wed 14:00'); // busiest slot
+      expect(text()).toContain('weekends');
       expect(text()).toContain('Mon');
       expect(text()).toContain('Sun');
+
+      // Toggle to the year × weekday view.
+      button('Year × weekday')!.click();
+      await fixture.whenStable();
+      expect(text()).toContain('2024');
     });
   });
 

@@ -23,7 +23,7 @@ import {
   surprisingCouplings,
 } from '../../core/util/co-change';
 import { ForceEdge, Point, forceLayout } from '../../core/util/force-layout';
-import { PunchCard, punchCard } from '../../core/util/punch-card';
+import { PunchCard, punchCard, punchInsights, yearWeekday } from '../../core/util/punch-card';
 import { HEAT_THRESHOLDS, Hotspot } from '../../core/util/hotspots';
 import { AuthorPresence, KnowledgeRisk, RISK_THRESHOLDS } from '../../core/util/knowledge';
 import { disambiguateLabels } from '../../core/util/path-label';
@@ -156,6 +156,28 @@ function median(values: readonly number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/** Weekday names by index (0 = Sunday). */
+const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+/** One row of the punch-card view model (a weekday in hour mode, a year in year mode). */
+interface PunchRow {
+  readonly label: string;
+  readonly cells: readonly number[];
+  readonly total: number;
+}
+/** The punch card rendered as a labelled grid with row + column marginals. */
+interface PunchView {
+  readonly rows: readonly PunchRow[];
+  /** Sparse axis labels for the columns ('' hides one). */
+  readonly colAxis: readonly string[];
+  /** Full column labels, used in the cell tooltips. */
+  readonly colFull: readonly string[];
+  readonly colTotals: readonly number[];
+  readonly max: number;
+  readonly maxRowTotal: number;
+  readonly maxColTotal: number;
 }
 
 /** Flattens a survival report into a JSON-friendly export payload. */
@@ -1647,44 +1669,114 @@ interface Quadrant {
             @if (s.status === 'error') {
               <p class="text-sm text-rose-400">{{ s.message }}</p>
             } @else if (punch().total > 0) {
-              <p class="mb-2 text-xs text-zinc-500">
-                When commits land — {{ punch().total }} commits, busiest hour has {{ punch().max }}.
-                <span class="text-zinc-600">Each commit counted at its own local time.</span>
-              </p>
+              <div class="mb-2 flex items-start justify-between gap-3">
+                @if (insights(); as ins) {
+                  <p class="min-w-0 text-xs text-zinc-500">
+                    {{ punch().total }} commits · busiest
+                    <span class="text-zinc-300"
+                      >{{ weekdayLabel(ins.peakDay) }} {{ ins.peakHour }}:00</span
+                    >
+                    · <span class="text-zinc-300">{{ pct(ins.afterHoursShare) }}%</span> after hours
+                    · <span class="text-zinc-300">{{ pct(ins.weekendShare) }}%</span> weekends ·
+                    active {{ ins.firstActiveHour }}:00–{{ ins.lastActiveHour }}:00
+                  </p>
+                }
+                <div
+                  class="flex shrink-0 overflow-hidden rounded border border-zinc-700 text-[11px]"
+                  role="group"
+                  aria-label="Punch card axes"
+                >
+                  <button
+                    type="button"
+                    class="px-2 py-0.5 transition"
+                    [class]="
+                      punchMode() === 'hour'
+                        ? 'bg-zinc-700/60 font-medium text-zinc-200'
+                        : 'text-zinc-400 hover:bg-white/10'
+                    "
+                    (click)="punchMode.set('hour')"
+                  >
+                    Weekday × hour
+                  </button>
+                  <button
+                    type="button"
+                    class="border-l border-zinc-700 px-2 py-0.5 transition"
+                    [class]="
+                      punchMode() === 'year'
+                        ? 'bg-zinc-700/60 font-medium text-zinc-200'
+                        : 'text-zinc-400 hover:bg-white/10'
+                    "
+                    (click)="punchMode.set('year')"
+                  >
+                    Year × weekday
+                  </button>
+                </div>
+              </div>
               <div class="overflow-x-auto">
                 <table class="border-separate" style="border-spacing: 2px">
                   <thead>
                     <tr>
                       <th></th>
-                      @for (h of hours; track h) {
+                      @for (label of punchView().colAxis; track $index) {
                         <th class="text-[9px] font-normal text-zinc-600 tabular-nums">
-                          {{ h % 6 === 0 ? h : '' }}
+                          {{ label }}
                         </th>
                       }
+                      <th class="pl-1 text-[9px] font-normal text-zinc-600">Σ</th>
                     </tr>
                   </thead>
                   <tbody>
-                    @for (day of punchDays; track day.idx) {
+                    @for (row of punchView().rows; track row.label) {
                       <tr>
-                        <td class="pr-1 text-right text-[10px] text-zinc-500">{{ day.label }}</td>
-                        @for (h of hours; track h) {
+                        <td class="pr-1 text-right text-[10px] text-zinc-500 tabular-nums">
+                          {{ row.label }}
+                        </td>
+                        @for (count of row.cells; track $index) {
                           <td>
                             <div
                               class="size-3 rounded-[2px]"
-                              [style.background]="punchColor(punch().grid[day.idx][h], punch().max)"
+                              [style.background]="punchColor(count, punchView().max)"
                               [title]="
-                                day.label +
+                                row.label +
                                 ' ' +
-                                h +
-                                ':00 — ' +
-                                punch().grid[day.idx][h] +
+                                punchView().colFull[$index] +
+                                ' — ' +
+                                count +
                                 ' commits'
                               "
                             ></div>
                           </td>
                         }
+                        <td class="pl-1">
+                          <div
+                            class="h-3 w-10 overflow-hidden rounded-sm bg-zinc-800"
+                            [title]="row.total + ' commits'"
+                          >
+                            <div
+                              class="h-full rounded-sm bg-indigo-400/70"
+                              [style.width.%]="barOf(row.total, punchView().maxRowTotal)"
+                            ></div>
+                          </div>
+                        </td>
                       </tr>
                     }
+                    <tr>
+                      <td></td>
+                      @for (total of punchView().colTotals; track $index) {
+                        <td class="align-bottom">
+                          <div
+                            class="flex h-6 items-end justify-center"
+                            [title]="total + ' commits'"
+                          >
+                            <div
+                              class="w-3 rounded-[1px] bg-indigo-400/70"
+                              [style.height.%]="barOf(total, punchView().maxColTotal)"
+                            ></div>
+                          </div>
+                        </td>
+                      }
+                      <td></td>
+                    </tr>
                   </tbody>
                 </table>
               </div>
@@ -2481,6 +2573,54 @@ export class InsightsView {
 
   /** Commit punch card from the walked commit timestamps. */
   protected readonly punch = computed<PunchCard>(() => punchCard(this.state()?.commitTimes ?? []));
+  /** Which axes the punch card shows: weekday × hour, or year × weekday. */
+  protected readonly punchMode = signal<'hour' | 'year'>('hour');
+  /** The coarser year × weekday histogram, for the toggle's "year" mode. */
+  protected readonly punchYear = computed(() => yearWeekday(this.state()?.commitTimes ?? []));
+  /** Work-rhythm headline (peak slot, off-hours/weekend share, active span). */
+  protected readonly insights = computed(() => punchInsights(this.punch()));
+
+  /**
+   * The punch card as a labelled grid with marginals — one shape for both
+   * modes, so a single template renders weekday × hour and year × weekday.
+   * Columns are always laid out Monday-first in hour mode (hours) / for the
+   * weekday axis in year mode.
+   */
+  protected readonly punchView = computed<PunchView>(() => {
+    if (this.punchMode() === 'year') {
+      const card = this.punchYear();
+      const rows: PunchRow[] = card.years.map((year, index) => ({
+        label: String(year),
+        cells: this.punchDays.map((day) => card.grid[index][day.idx]),
+        total: card.byYear[index],
+      }));
+      const colTotals = this.punchDays.map((day) => card.byWeekday[day.idx]);
+      return {
+        rows,
+        colAxis: this.punchDays.map((day) => day.label),
+        colFull: this.punchDays.map((day) => day.label),
+        colTotals,
+        max: card.max,
+        maxRowTotal: Math.max(1, ...card.byYear),
+        maxColTotal: Math.max(1, ...colTotals),
+      };
+    }
+    const card = this.punch();
+    const rows: PunchRow[] = this.punchDays.map((day) => ({
+      label: day.label,
+      cells: card.grid[day.idx],
+      total: card.byDay[day.idx],
+    }));
+    return {
+      rows,
+      colAxis: this.hours.map((hour) => (hour % 6 === 0 ? String(hour) : '')),
+      colFull: this.hours.map((hour) => `${hour}:00`),
+      colTotals: card.byHour,
+      max: card.max,
+      maxRowTotal: Math.max(1, ...card.byDay),
+      maxColTotal: Math.max(1, ...card.byHour),
+    };
+  });
 
   /** Strong couplings between files far apart in the tree (shown in Coupling). */
   protected readonly surprising = computed<SurprisingPair[]>(() =>
@@ -2509,6 +2649,13 @@ export class InsightsView {
   protected punchColor(count: number, max: number): string {
     if (count === 0 || max === 0) return 'var(--color-zinc-800)';
     return `rgba(99, 102, 241, ${(0.2 + 0.8 * (count / max)).toFixed(3)})`;
+  }
+  /** Marginal-bar length as a percentage of the largest marginal. */
+  protected barOf(value: number, max: number): number {
+    return max > 0 ? (value / max) * 100 : 0;
+  }
+  protected weekdayLabel(day: number): string {
+    return WEEKDAY_LABELS[day] ?? '';
   }
 
   protected startSurvival(): void {
