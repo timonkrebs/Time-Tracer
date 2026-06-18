@@ -1653,6 +1653,29 @@ export class RepoStore {
         // Resolve each change against the **pre-commit** snapshot (we don't mutate
         // `files` until the whole commit is computed). New content comes from the
         // inline patch when present, else a blob fetch.
+        // A tracked file can leave the analyzed set *without dying* — when it is
+        // renamed into a generated/ignored path (e.g. `git mv src/app.ts
+        // dist/app.js`). Those lines are **censored** (observed alive until now,
+        // then unobservable), never counted as deaths and never left tracked on
+        // the vacated source path.
+        const movedIntoIgnored: string[] = []; // source paths vacated into an ignored path
+        const ignoredAdds: CommitFileChange[] = []; // generated adds — possible move sinks
+        const linesEqual = (a: readonly string[], b: readonly string[]): boolean =>
+          a.length === b.length && a.every((line, i) => line === b[i]);
+        const censorIntoIgnored = (tags: readonly Tag[], sourcePath: string): void => {
+          for (const owner of tags) {
+            if (owner) {
+              dead.push({
+                bornAt: owner.bornAt,
+                author: owner.author,
+                diedAt: null,
+                censoredAt: commitTime,
+              });
+            }
+          }
+          movedIntoIgnored.push(sourcePath);
+        };
+
         const resolved: {
           change: CommitFileChange;
           movedFrom: string | null;
@@ -1665,7 +1688,23 @@ export class RepoStore {
           // Hold generated/vendored files (lockfiles, dist/, minified bundles …)
           // out of the lifetimes, exactly as the rest of Insights does, so they
           // don't dominate the cohort, half-life and authorship charts.
-          if (isGeneratedFile(change.path)) continue;
+          if (isGeneratedFile(change.path)) {
+            // A tracked file renamed straight into an ignored path: censor its
+            // lines and vacate the old path rather than record false deaths. A
+            // provider reports this as one rename (previousPath set); a local
+            // `git mv` splits it into this ignored add plus a separate removal we
+            // reconcile by content below. Plain generated adds/edits never enter
+            // the lifetimes at all.
+            const src =
+              change.previousPath && change.previousPath !== change.path
+                ? change.previousPath
+                : null;
+            const tracked = src ? files.get(src) : undefined;
+            if (tracked) censorIntoIgnored(tracked.tags, src!);
+            else if (!change.previousPath && /^add|copy/i.test(change.status))
+              ignoredAdds.push(change);
+            continue;
+          }
           // Only a **rename** carries the source's tracked snapshot; a **copy** or
           // a freshly **added** file starts from empty.
           const isCopy = /copy|copied/i.test(change.status);
@@ -1706,7 +1745,12 @@ export class RepoStore {
           !r.change.previousPath &&
           /modif|chang/i.test(r.change.status) &&
           r.newLines !== null &&
-          r.newLines.length > 0;
+          r.newLines.length > 0 &&
+          // The content must really have changed. A mode-only / no-op "modified"
+          // entry still holds its own lines, so pairing a deleted duplicate into
+          // it would wrongly retire that file's lines and swap its age/author for
+          // the deletion's.
+          !linesEqual(r.oldLines, r.newLines);
         const pairRename = (target: Resolved, source: Resolved): void => {
           // An overwritten (modified) target's own pre-commit lines die here; an
           // added target has none. The target then carries the source's snapshot,
@@ -1722,12 +1766,45 @@ export class RepoStore {
           source.skip = true; // its removal *is* the rename, not a deletion
         };
 
+        // A local `git mv` of a tracked file into an ignored path arrives as a
+        // removal plus the ignored add collected above (no previousPath linking
+        // them). Match the add's content to an unpaired removed source and censor
+        // it — those lines left the analyzed set, they did not die. Runs before
+        // the rename passes so a censored source can't also be paired as a normal
+        // move, and only when such a move is possible, so ordinary lockfile/dist
+        // churn (no coincident removal) still costs nothing.
+        if (ignoredAdds.length > 0) {
+          const removedSources = resolved.filter((r) => isRemovedSource(r) && !r.skip);
+          if (
+            removedSources.length > 0 &&
+            ignoredAdds.length * removedSources.length <= SURVIVAL_RENAME_PAIR_LIMIT
+          ) {
+            const byContent = new Map<string, Resolved[]>();
+            for (const r of removedSources) {
+              const key = r.oldLines.join('\n');
+              const queue = byContent.get(key);
+              if (queue) queue.push(r);
+              else byContent.set(key, [r]);
+            }
+            for (const add of ignoredAdds) {
+              const lines = await this.resolveNewLines(add, [], commit.sha);
+              if (!live()) return;
+              if (lines === null || lines.length === 0) continue;
+              const source = byContent.get(lines.join('\n'))?.shift();
+              if (source) {
+                source.skip = true; // its removal *is* the move into the ignored path
+                censorIntoIgnored(source.oldTags, source.change.path);
+              }
+            }
+          }
+        }
+
         // 1) Exact content (a pure `git mv`, incl. mass moves of identical files
         // and overwrite targets) — cheap, matched through a per-content **queue**
         // so several identical sources each pair with their own target.
         const removedByContent = new Map<string, Resolved[]>();
         for (const item of resolved) {
-          if (!isRemovedSource(item)) continue;
+          if (!isRemovedSource(item) || item.skip) continue; // a source censored into an ignored path is spent
           const key = item.oldLines.join('\n');
           const queue = removedByContent.get(key);
           if (queue) queue.push(item);
@@ -1778,7 +1855,7 @@ export class RepoStore {
         // Apply (staged): deletes before sets, so a path a rename vacated but
         // another change re-created in the same commit keeps the new file.
         const sets: [string, Tracked][] = [];
-        const deletes: string[] = [];
+        const deletes: string[] = [...movedIntoIgnored]; // paths vacated by a move into an ignored path
         for (const { change, movedFrom, oldLines, oldTags, newLines, skip } of resolved) {
           if (skip) continue;
           if (newLines === null) {

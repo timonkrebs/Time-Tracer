@@ -2445,5 +2445,95 @@ describe('RepoStore', () => {
       expect(report.aliveLines).toBe(2);
       expect(report.authors).toEqual([{ author: 'Ada', lines: 2, share: 1 }]);
     });
+
+    it('does not treat a content-less modification as an overwrite rename', async () => {
+      provider.listCommitsResult = () =>
+        Promise.resolve([
+          mkCommit('c3', 'Carol', '2024-09-01T00:00:00Z', ['c2']),
+          mkCommit('c2', 'Bob', '2024-06-01T00:00:00Z', ['c1']),
+          mkCommit('c1', 'Ada', '2024-01-01T00:00:00Z', []),
+        ]);
+      // c1 (Ada) adds b.txt; c2 (Bob) adds an identical a.txt; c3 (Carol) deletes
+      // a.txt and touches b.txt with no content change (e.g. a mode-only change).
+      provider.commitFilesResult = (sha) =>
+        Promise.resolve(
+          sha === 'c1'
+            ? [{ path: 'b.txt', status: 'added' }]
+            : sha === 'c2'
+              ? [{ path: 'a.txt', status: 'added' }]
+              : [
+                  { path: 'a.txt', status: 'removed' },
+                  { path: 'b.txt', status: 'modified', additions: 0, deletions: 0 },
+                ],
+        );
+      serveBlobs({ 'b.txt@c1': 'L1\nL2\n', 'a.txt@c2': 'L1\nL2\n', 'b.txt@c3': 'L1\nL2\n' });
+      await store.loadRepo(slug);
+
+      await store.computeSurvival();
+
+      const report = store.survival()!.report;
+      // a.txt (Bob) is genuinely deleted → its two lines die. b.txt is untouched,
+      // so Ada keeps it — the deletion must not steal b.txt's age/author.
+      expect(report.curve.deaths).toBe(2);
+      expect(report.aliveLines).toBe(2);
+      expect(report.authors).toEqual([{ author: 'Ada', lines: 2, share: 1 }]);
+    });
+
+    it('censors a tracked file moved into an ignored path (local split)', async () => {
+      provider.listCommitsResult = () =>
+        Promise.resolve([
+          mkCommit('c2', 'Bob', '2024-06-01T00:00:00Z', ['c1']),
+          mkCommit('c1', 'Ada', '2024-01-01T00:00:00Z', []),
+        ]);
+      // c2 is a local `git mv src/app.ts dist/app.js`: the reader reports a
+      // removal plus an ignored add, with no previousPath linking them.
+      provider.commitFilesResult = (sha) =>
+        Promise.resolve(
+          sha === 'c1'
+            ? [{ path: 'src/app.ts', status: 'added' }]
+            : [
+                { path: 'src/app.ts', status: 'removed' },
+                { path: 'dist/app.js', status: 'added' },
+              ],
+        );
+      serveBlobs({ 'src/app.ts@c1': 'L1\nL2\n', 'dist/app.js@c2': 'L1\nL2\n' });
+      await store.loadRepo(slug);
+
+      await store.computeSurvival();
+
+      const report = store.survival()!.report;
+      // The two lines left the analyzed set but did not die: censored, not deaths,
+      // and not counted among the alive tip lines.
+      expect(report.trackedLines).toBe(2);
+      expect(report.curve.deaths).toBe(0);
+      expect(report.aliveLines).toBe(0);
+    });
+
+    it('censors a provider rename of a tracked file into an ignored path', async () => {
+      provider.listCommitsResult = () =>
+        Promise.resolve([
+          mkCommit('c2', 'Bob', '2024-06-01T00:00:00Z', ['c1']),
+          mkCommit('c1', 'Ada', '2024-01-01T00:00:00Z', []),
+        ]);
+      // The provider reports one rename whose new path is ignored, previousPath
+      // pointing at the tracked source.
+      provider.commitFilesResult = (sha) =>
+        Promise.resolve(
+          sha === 'c1'
+            ? [{ path: 'app.ts', status: 'added' }]
+            : [{ path: 'dist/app.js', status: 'renamed', previousPath: 'app.ts' }],
+        );
+      serveBlobs({ 'app.ts@c1': 'L1\nL2\n' });
+      await store.loadRepo(slug);
+
+      await store.computeSurvival();
+
+      const report = store.survival()!.report;
+      // Source lines censored, old path vacated — not left alive at the tip, and
+      // not recorded as deaths.
+      expect(report.trackedLines).toBe(2);
+      expect(report.curve.deaths).toBe(0);
+      expect(report.aliveLines).toBe(0);
+    });
   });
 });
