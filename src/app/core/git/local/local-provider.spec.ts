@@ -205,6 +205,43 @@ describe('LocalGitProvider', () => {
     ]);
   });
 
+  it('skips gitlink (submodule) entries, reporting only tracked files', async () => {
+    // A gitlink can't be staged through the high-level API, so write the tree
+    // objects directly: one tracked file changes, and a submodule is added.
+    const enc = (text: string): Uint8Array => new TextEncoder().encode(text);
+    const v1 = await git.writeBlob({ fs, dir: '/', blob: enc('one\n') });
+    const v2 = await git.writeBlob({ fs, dir: '/', blob: enc('two\n') });
+    const parentTree = await git.writeTree({
+      fs,
+      dir: '/',
+      tree: [{ mode: '100644', path: 'keep.txt', oid: v1, type: 'blob' }],
+    });
+    const parent = await git.writeCommit({
+      fs,
+      dir: '/',
+      commit: { message: 'p', tree: parentTree, parent: [], author, committer: author },
+    });
+    const childTree = await git.writeTree({
+      fs,
+      dir: '/',
+      tree: [
+        { mode: '100644', path: 'keep.txt', oid: v2, type: 'blob' },
+        { mode: '160000', path: 'submodule', oid: parent, type: 'commit' }, // a gitlink
+      ],
+    });
+    const child = await git.writeCommit({
+      fs,
+      dir: '/',
+      commit: { message: 'c', tree: childTree, parent: [parent], author, committer: author },
+    });
+
+    // keep.txt is reported; the added gitlink is skipped (no blob to read), so
+    // downstream walks never try to fetch it.
+    expect(await provider.getCommitFiles(slug, child)).toEqual([
+      { path: 'keep.txt', status: 'modified' },
+    ]);
+  });
+
   it('fails with guidance when the folder is not connected', async () => {
     await expect(
       provider.getMetadata({ provider: 'local', owner: 'local', repo: 'ghost' }),

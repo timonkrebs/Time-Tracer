@@ -375,23 +375,28 @@ export class LocalGitProvider implements GitProvider {
       before.delete(e.path);
       if (e.type === 'tree') {
         // A blob replaced by a directory: the old blob is gone, its files are new.
-        if (prev && prev.type !== 'tree') out.push({ path, status: 'removed' });
+        if (prev?.type === 'blob') out.push({ path, status: 'removed' });
         await this.diffTrees(readTree, prev?.type === 'tree' ? prev.oid : null, e.oid, path, out);
-      } else if (!prev) {
-        out.push({ path, status: 'added' });
-      } else if (prev.type === 'tree') {
-        // A directory replaced by a blob: its files are gone, the blob is new.
-        await this.diffTrees(readTree, prev.oid, null, path, out);
-        out.push({ path, status: 'added' });
-      } else if (prev.oid !== e.oid) {
-        out.push({ path, status: 'modified' });
+      } else if (e.type === 'blob') {
+        if (prev?.type === 'tree') {
+          // A directory replaced by a blob: its files are gone, the blob is new.
+          await this.diffTrees(readTree, prev.oid, null, path, out);
+          out.push({ path, status: 'added' });
+        } else if (!prev || prev.type !== 'blob') {
+          out.push({ path, status: 'added' }); // new blob (or a gitlink turned into a file)
+        } else if (prev.oid !== e.oid) {
+          out.push({ path, status: 'modified' });
+        }
       }
+      // A `commit` entry is a gitlink (submodule): there is no blob to read, so
+      // it is not a tracked file — skip it, as the previous `git.walk` diff did.
     }
     // Whatever is left in `before` was removed by this commit.
     for (const e of before.values()) {
       const path = prefix ? `${prefix}/${e.path}` : e.path;
       if (e.type === 'tree') await this.diffTrees(readTree, e.oid, null, path, out);
-      else out.push({ path, status: 'removed' });
+      else if (e.type === 'blob') out.push({ path, status: 'removed' });
+      // a removed gitlink (submodule) is likewise skipped.
     }
   }
 

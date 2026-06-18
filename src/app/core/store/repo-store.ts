@@ -1502,20 +1502,22 @@ export class RepoStore {
         const before = collected.length;
         // Pipeline the per-commit changed-file fetches with bounded concurrency,
         // so the requests overlap instead of running strictly one at a time (the
-        // dominant cost of this walk). `commitFilesFor` is memoised, so the few
-        // fetches started past the cap are simply cached, never wasted twice.
-        const pending: (Promise<readonly string[]> | undefined)[] = new Array(commits.length);
+        // dominant cost of this walk). Bounded by the remaining cap as well as the
+        // window, so a partial last page never starts fetches it won't consume —
+        // those would be wasted provider quota on hosted repos.
+        const pageMax = Math.min(commits.length, options.cap - before);
+        const pending: (Promise<readonly string[]> | undefined)[] = new Array(pageMax);
         let started = 0;
         const fill = (limit: number): void => {
-          while (started < commits.length && started < limit) {
+          const max = Math.min(pageMax, limit);
+          while (started < max) {
             const promise = this.commitFilesFor(slug, commits[started].sha);
             void promise.catch(() => {}); // handled; the in-order await still surfaces the error
             pending[started++] = promise;
           }
         };
         fill(CO_CHANGE_PREFETCH);
-        for (let i = 0; i < commits.length; i++) {
-          if (collected.length >= options.cap) break;
+        for (let i = 0; i < pageMax; i++) {
           const files = await pending[i]!;
           pending[i] = undefined;
           if (!live()) return;
