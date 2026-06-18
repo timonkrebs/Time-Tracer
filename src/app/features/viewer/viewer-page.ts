@@ -74,7 +74,12 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
         @if (store.phase() === 'ready') {
           <button
             type="button"
-            class="-ml-1 shrink-0 rounded p-1.5 text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-100"
+            class="-ml-1 shrink-0 rounded p-1.5 transition"
+            [class]="
+              treeCollapsed()
+                ? 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100'
+                : 'bg-indigo-500/20 text-indigo-200'
+            "
             (click)="toggleTree()"
             [attr.aria-label]="treeCollapsed() ? 'Show file tree' : 'Hide file tree'"
             [attr.aria-pressed]="!treeCollapsed()"
