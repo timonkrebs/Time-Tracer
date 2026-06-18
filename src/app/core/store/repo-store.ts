@@ -1662,6 +1662,10 @@ export class RepoStore {
           skip: boolean;
         }[] = [];
         for (const change of changes) {
+          // Hold generated/vendored files (lockfiles, dist/, minified bundles …)
+          // out of the lifetimes, exactly as the rest of Insights does, so they
+          // don't dominate the cohort, half-life and authorship charts.
+          if (isGeneratedFile(change.path)) continue;
           // Only a **rename** carries the source's tracked snapshot; a **copy** or
           // a freshly **added** file starts from empty.
           const isCopy = /copy|copied/i.test(change.status);
@@ -1690,38 +1694,65 @@ export class RepoStore {
           r.newLines !== null &&
           r.newLines.length === 0 &&
           /remov|delet/i.test(r.change.status);
+        // A rename target the provider didn't flag: a freshly **added** file, or a
+        // **modified** file that a `git mv -f old existing` overwrote with the
+        // source's content (its own pre-commit lines are then retired).
         const isAddedTarget = (r: Resolved): boolean =>
           !r.change.previousPath &&
           /^add/i.test(r.change.status) &&
           r.newLines !== null &&
           r.newLines.length > 0;
-        const pairRename = (added: Resolved, source: Resolved): void => {
-          added.movedFrom = source.change.path; // treat the add as a rename of the removed file
-          added.oldLines = source.oldLines;
-          added.oldTags = source.oldTags;
+        const isOverwriteTarget = (r: Resolved): boolean =>
+          !r.change.previousPath &&
+          /modif|chang/i.test(r.change.status) &&
+          r.newLines !== null &&
+          r.newLines.length > 0;
+        const pairRename = (target: Resolved, source: Resolved): void => {
+          // An overwritten (modified) target's own pre-commit lines die here; an
+          // added target has none. The target then carries the source's snapshot,
+          // so its content keeps the moved lines' age and author.
+          for (const owner of target.oldTags) {
+            if (owner) {
+              dead.push({ bornAt: owner.bornAt, author: owner.author, diedAt: commitTime });
+            }
+          }
+          target.movedFrom = source.change.path; // the source path is vacated by the rename
+          target.oldLines = source.oldLines;
+          target.oldTags = source.oldTags;
           source.skip = true; // its removal *is* the rename, not a deletion
         };
 
-        // 1) Exact content (a pure `git mv`) — cheap, matched by hash.
-        const removedByContent = new Map<string, Resolved>();
+        // 1) Exact content (a pure `git mv`, incl. mass moves of identical files
+        // and overwrite targets) — cheap, matched through a per-content **queue**
+        // so several identical sources each pair with their own target.
+        const removedByContent = new Map<string, Resolved[]>();
         for (const item of resolved) {
-          if (isRemovedSource(item)) removedByContent.set(item.oldLines.join('\n'), item);
+          if (!isRemovedSource(item)) continue;
+          const key = item.oldLines.join('\n');
+          const queue = removedByContent.get(key);
+          if (queue) queue.push(item);
+          else removedByContent.set(key, [item]);
         }
         if (removedByContent.size > 0) {
           for (const item of resolved) {
-            if (!isAddedTarget(item) || item.movedFrom) continue;
-            const key = item.newLines!.join('\n');
-            const source = removedByContent.get(key);
-            if (source && source !== item && !source.skip) {
-              pairRename(item, source);
-              removedByContent.delete(key);
+            if (item.movedFrom || (!isAddedTarget(item) && !isOverwriteTarget(item))) continue;
+            const queue = removedByContent.get(item.newLines!.join('\n'));
+            if (!queue) continue;
+            let source: Resolved | undefined;
+            while (queue.length > 0) {
+              const candidate = queue.shift()!;
+              if (!candidate.skip && candidate !== item) {
+                source = candidate;
+                break;
+              }
             }
+            if (source) pairRename(item, source);
           }
         }
 
         // 2) Similarity (a rename that also edited the file) — bounded greedy
-        // best-match above a threshold, like git's own rename detection. Capped so
-        // a mass move can't blow up into an O(removed×added) diff storm.
+        // best-match above a threshold, like git's own rename detection. Only
+        // **added** targets, so a routine edit isn't mistaken for a move-overwrite.
         const looseRemoved = resolved.filter((r) => isRemovedSource(r) && !r.skip);
         const looseAdded = resolved.filter((r) => isAddedTarget(r) && !r.movedFrom);
         if (
@@ -1847,7 +1878,11 @@ export class RepoStore {
     sha: string,
   ): Promise<readonly string[] | null> {
     if (/remov|delet/i.test(change.status)) return [];
-    if (change.additions === 0 && change.deletions === 0) return oldLines; // unchanged content
+    // "No content change" carries the old lines — but a **copy** has no tracked
+    // old side (its `oldLines` is the empty target), so it must still fetch the
+    // copied content to record those lines as new births.
+    const isCopy = /copy|copied/i.test(change.status);
+    if (!isCopy && change.additions === 0 && change.deletions === 0) return oldLines;
     if (change.patch !== undefined) {
       const hunks = parsePatch(change.patch);
       const applied = applyPatch(oldLines, hunks);
