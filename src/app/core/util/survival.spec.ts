@@ -99,6 +99,36 @@ describe('cohortSeries', () => {
     expect(stack.bands).toEqual(['≤2022', '2023', '2024']);
   });
 
+  it('buckets cohorts by calendar month', () => {
+    const at = (year: number, month: number): number => Date.UTC(year, month - 1, 15);
+    const lines: LineLifetime[] = [
+      { bornAt: at(2024, 1), diedAt: null, author: 'Ada' },
+      { bornAt: at(2024, 1), diedAt: null, author: 'Ada' },
+      { bornAt: at(2024, 3), diedAt: null, author: 'Bob' },
+    ];
+    const stack = cohortSeries(lines, { now: Date.UTC(2024, 5, 1), bucket: 'month', samples: 12 });
+
+    expect(stack.bands).toEqual(['2024-01', '2024-03']);
+    const last = stack.times.length - 1;
+    expect(stack.counts.get('2024-01')![last]).toBe(2);
+    expect(stack.counts.get('2024-03')![last]).toBe(1);
+  });
+
+  it('buckets cohorts by week, labelled by the week-start (Monday) date', () => {
+    // 2024-03-04 is a Monday; the 6th is the same week, the 11th the next Monday.
+    const lines: LineLifetime[] = [
+      { bornAt: Date.UTC(2024, 2, 4), diedAt: null, author: 'Ada' },
+      { bornAt: Date.UTC(2024, 2, 6), diedAt: null, author: 'Ada' },
+      { bornAt: Date.UTC(2024, 2, 11), diedAt: null, author: 'Bob' },
+    ];
+    const stack = cohortSeries(lines, { now: Date.UTC(2024, 2, 20), bucket: 'week', samples: 12 });
+
+    expect(stack.bands).toEqual(['2024-03-04', '2024-03-11']);
+    const last = stack.times.length - 1;
+    expect(stack.counts.get('2024-03-04')![last]).toBe(2);
+    expect(stack.counts.get('2024-03-11')![last]).toBe(1);
+  });
+
   it('returns nothing for an empty population', () => {
     expect(cohortSeries([], { now: tip })).toEqual({ bands: [], times: [], counts: new Map() });
   });

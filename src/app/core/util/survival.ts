@@ -172,6 +172,50 @@ export interface CohortStack {
   readonly counts: ReadonlyMap<string, readonly number[]>;
 }
 
+/** How birth times are grouped into cohorts: by ISO week, calendar month, or year. */
+export type CohortBucket = 'year' | 'month' | 'week';
+
+/** Legend size per granularity — finer buckets keep more recent cohorts distinct. */
+const COHORT_MAX_BANDS: Record<CohortBucket, number> = { year: 8, month: 12, week: 16 };
+
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+// The Monday at/just before the epoch (1969-12-29 UTC), so week ordinals align
+// to week starts rather than to the Thursday the epoch falls on.
+const WEEK_EPOCH_MS = Date.UTC(1969, 11, 29);
+
+/**
+ * Maps a birth time to a sortable cohort **ordinal**, and an ordinal back to a
+ * display label, for the chosen granularity. Year → `2024`; month → `2024-03`;
+ * week → the week-start (Monday) date `2024-03-04`. All in UTC, so a cohort
+ * boundary is stable regardless of the viewer's timezone.
+ */
+function cohortBucketing(bucket: CohortBucket): {
+  ordinalOf: (ms: number) => number;
+  labelOf: (ordinal: number) => string;
+} {
+  if (bucket === 'week') {
+    return {
+      ordinalOf: (ms) => Math.floor((ms - WEEK_EPOCH_MS) / WEEK_MS),
+      labelOf: (o) => {
+        const d = new Date(WEEK_EPOCH_MS + o * WEEK_MS);
+        const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(d.getUTCDate()).padStart(2, '0');
+        return `${d.getUTCFullYear()}-${m}-${day}`;
+      },
+    };
+  }
+  if (bucket === 'month') {
+    return {
+      ordinalOf: (ms) => {
+        const d = new Date(ms);
+        return d.getUTCFullYear() * 12 + d.getUTCMonth();
+      },
+      labelOf: (o) => `${Math.floor(o / 12)}-${String((o % 12) + 1).padStart(2, '0')}`,
+    };
+  }
+  return { ordinalOf: (ms) => new Date(ms).getUTCFullYear(), labelOf: (o) => String(o) };
+}
+
 /** Index of the first sample `≥ t`, or `times.length` when `t` is past the end. */
 function firstAtOrAfter(times: readonly number[], t: number): number {
   let lo = 0;
@@ -194,7 +238,7 @@ function firstAtOrAfter(times: readonly number[], t: number): number {
  */
 export function cohortSeries(
   lifetimes: Iterable<LineLifetime>,
-  options: { now?: number; samples?: number; maxBands?: number } = {},
+  options: { now?: number; samples?: number; maxBands?: number; bucket?: CohortBucket } = {},
 ): CohortStack {
   const now = options.now ?? Date.now();
   const samples = Math.max(2, options.samples ?? 48);
@@ -209,18 +253,19 @@ export function cohortSeries(
   const times: number[] = [];
   for (let i = 0; i < samples; i++) times.push(start + ((end - start) * i) / (samples - 1));
 
-  const yearOf = (ms: number): number => new Date(ms).getUTCFullYear();
-  const years = [...new Set(list.map((line) => yearOf(line.bornAt)))].sort((a, b) => a - b);
-  // Keep the newest `maxBands - 1` years on their own; fold the rest into one band.
-  const foldBelow = years.length > maxBands ? years[years.length - maxBands + 1] : -Infinity;
-  const foldLabel = Number.isFinite(foldBelow) ? `≤${foldBelow - 1}` : null;
+  const { ordinalOf, labelOf } = cohortBucketing(options.bucket ?? 'year');
+  const ordinals = [...new Set(list.map((line) => ordinalOf(line.bornAt)))].sort((a, b) => a - b);
+  // Keep the newest `maxBands - 1` buckets on their own; fold the rest into one band.
+  const foldBelow =
+    ordinals.length > maxBands ? ordinals[ordinals.length - maxBands + 1] : -Infinity;
+  const foldLabel = Number.isFinite(foldBelow) ? `≤${labelOf(foldBelow - 1)}` : null;
   const bandKey = (ms: number): string => {
-    const year = yearOf(ms);
-    return foldLabel && year < foldBelow ? foldLabel : String(year);
+    const ord = ordinalOf(ms);
+    return foldLabel && ord < foldBelow ? foldLabel : labelOf(ord);
   };
   const bands = foldLabel
-    ? [foldLabel, ...years.filter((y) => y >= foldBelow).map(String)]
-    : years.map(String);
+    ? [foldLabel, ...ordinals.filter((o) => o >= foldBelow).map(labelOf)]
+    : ordinals.map(labelOf);
 
   const deltas = new Map<string, Float64Array>();
   for (const band of bands) deltas.set(band, new Float64Array(samples));
@@ -326,15 +371,27 @@ export interface SurvivalReport {
 /** Runs the three analyses over one lifetime table — the store's publish payload. */
 export function summarizeSurvival(
   lifetimes: Iterable<LineLifetime>,
-  options: { now?: number; samples?: number; maxBands?: number; authorLimit?: number } = {},
+  options: {
+    now?: number;
+    samples?: number;
+    maxBands?: number;
+    authorLimit?: number;
+    bucket?: CohortBucket;
+  } = {},
 ): SurvivalReport {
   const list = [...lifetimes];
   const now = options.now ?? Date.now();
+  const bucket = options.bucket ?? 'year';
   let alive = 0;
   for (const line of list) if (line.diedAt === null && line.censoredAt === undefined) alive++;
   return {
     curve: kaplanMeier(list, now),
-    cohorts: cohortSeries(list, { now, samples: options.samples, maxBands: options.maxBands }),
+    cohorts: cohortSeries(list, {
+      now,
+      samples: options.samples,
+      maxBands: options.maxBands ?? COHORT_MAX_BANDS[bucket],
+      bucket,
+    }),
     authors: authorShares(list, { limit: options.authorLimit ?? 8 }),
     aliveLines: alive,
     trackedLines: list.length,

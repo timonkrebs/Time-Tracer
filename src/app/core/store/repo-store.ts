@@ -41,7 +41,7 @@ import {
   summarizeOwnership,
 } from '../util/ownership';
 import { applyPatch, parsePatch, patchStatsMatch } from '../util/patch';
-import { LineLifetime, SurvivalReport, summarizeSurvival } from '../util/survival';
+import { CohortBucket, LineLifetime, SurvivalReport, summarizeSurvival } from '../util/survival';
 import { ancestorsOf, buildTree } from '../util/tree';
 import { RecentRepos } from './recent-repos';
 
@@ -395,6 +395,15 @@ export class RepoStore {
   private readonly commitFilesCache = new Map<string, Promise<readonly string[]>>();
   /** Repo-wide code-survival analysis (cohorts + Kaplan–Meier), when started. */
   private readonly _survival = signal<SurvivalState | null>(null);
+  /** Cohort-stack granularity for the Age tab (week / month / year). */
+  private readonly _cohortBucket = signal<CohortBucket>('year');
+  /**
+   * The finished walk's lifetimes + tip time, retained so the cohort granularity
+   * can be changed without re-walking history — only the cohort stack is rebuilt
+   * (O(lines)). Null until a survival run completes (or while one is in flight).
+   */
+  private survivalLifetimes: readonly LineLifetime[] | null = null;
+  private survivalNow = 0;
   /** Bumped to cancel a superseded or cleared survival walk. */
   private survivalRun = 0;
 
@@ -418,6 +427,8 @@ export class RepoStore {
   readonly coChange = this._coChange.asReadonly();
   readonly coupleFocus = this._coupleFocus.asReadonly();
   readonly survival = this._survival.asReadonly();
+  /** Cohort-stack granularity for the Age tab (week / month / year). */
+  readonly cohortBucket = this._cohortBucket.asReadonly();
   readonly fileMetrics = this._fileMetrics.asReadonly();
 
   /** Files coupled to the selected one (empty until co-change has been run). */
@@ -1366,6 +1377,23 @@ export class RepoStore {
   clearSurvival(): void {
     this.survivalRun++;
     this._survival.set(null);
+    this.survivalLifetimes = null;
+  }
+
+  /**
+   * Re-bucket the Age cohort stack (week / month / year) without re-walking
+   * history: only the finished report's cohort stack is rebuilt from the retained
+   * lifetimes (O(lines)). A no-op when nothing has been analysed yet; a walk in
+   * flight picks up the new granularity on its next streamed publish.
+   */
+  setCohortBucket(bucket: CohortBucket): void {
+    if (this._cohortBucket() === bucket) return;
+    this._cohortBucket.set(bucket);
+    const state = this._survival();
+    const lines = this.survivalLifetimes;
+    if (!state || state.status !== 'ready' || !lines) return;
+    const report = summarizeSurvival(lines, { now: this.survivalNow, bucket });
+    this._survival.set({ ...state, report });
   }
 
   /**
@@ -1599,7 +1627,16 @@ export class RepoStore {
     // Survivors are right-censored at the tip commit's time, not wall-clock now,
     // so an archived or old ref is not read as if its code survived until today.
     let now = Date.now();
-    const reportFrom = (): SurvivalReport => summarizeSurvival(lifetimes(), { now });
+    // Retain the lifetimes + tip time so the cohort granularity can be changed
+    // afterwards (setCohortBucket) without re-walking — only the report's cohort
+    // stack is rebuilt. Reads the current bucket so a change mid-walk takes hold
+    // on the next streamed publish too.
+    const reportFrom = (): SurvivalReport => {
+      const lines = lifetimes();
+      this.survivalLifetimes = lines;
+      this.survivalNow = now;
+      return summarizeSurvival(lines, { now, bucket: this._cohortBucket() });
+    };
     let report = reportFrom();
     const publish = (status: SurvivalState['status'], message?: string): void =>
       this._survival.set({ status, scanned, total, report, message });
