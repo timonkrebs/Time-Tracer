@@ -11,6 +11,9 @@ import {
 } from '@angular/core';
 
 import { CoChangeState, SurvivalState } from '../../core/store/repo-store';
+import { CSV_MIME, JSON_MIME, fileSlug, round, toCsv, toJson } from '../../core/util/data-export';
+import { downloadBlob, downloadText } from '../../core/util/download';
+import { composeStackedSvg, svgToPngBlob } from '../../core/util/image-export';
 import { CoChangeCluster, clusterCoChange, relatedFiles } from '../../core/util/co-change';
 import { ForceEdge, Point, forceLayout } from '../../core/util/force-layout';
 import { HEAT_THRESHOLDS, Hotspot } from '../../core/util/hotspots';
@@ -21,6 +24,7 @@ import {
   CODE_HALF_LIFE_BENCHMARK,
   CohortBucket,
   DAYS_PER_YEAR,
+  SurvivalReport,
   survivalAt,
 } from '../../core/util/survival';
 import {
@@ -142,6 +146,31 @@ function median(values: readonly number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/** Flattens a survival report into a JSON-friendly export payload. */
+function survivalJson(report: SurvivalReport, bucket: CohortBucket) {
+  return {
+    aliveLines: report.aliveLines,
+    trackedLines: report.trackedLines,
+    halfLifeDays: report.curve.halfLifeDays,
+    curve: report.curve.points.map((point) => ({
+      ageDays: round(point.ageDays, 1),
+      survival: round(point.survival, 4),
+      atRisk: point.atRisk,
+    })),
+    cohorts: {
+      bucket,
+      bands: report.cohorts.bands,
+      sampleTimes: report.cohorts.times.map((time) => new Date(time).toISOString()),
+      counts: Object.fromEntries(report.cohorts.counts),
+    },
+    authors: report.authors.map((author) => ({
+      author: author.author,
+      lines: author.lines,
+      share: round(author.share, 4),
+    })),
+  };
 }
 
 /** Coordinate spaces for the Age tab's SVG charts (scaled uniformly to fill). */
@@ -315,6 +344,19 @@ interface Quadrant {
       </svg>
       <h2 class="text-sm font-semibold tracking-tight text-zinc-100">Insights</h2>
       <span class="flex-1"></span>
+      @if (exportFormats().length) {
+        <span class="text-[11px] text-zinc-600">Export</span>
+        @for (format of exportFormats(); track format) {
+          <button
+            type="button"
+            class="rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100"
+            (click)="exportCurrent(format)"
+            [title]="exportHint(format)"
+          >
+            {{ format.toUpperCase() }}
+          </button>
+        }
+      }
       @if (state() || focus() || survival()) {
         <button
           type="button"
@@ -1391,6 +1433,7 @@ interface Quadrant {
                   class="w-full rounded border border-zinc-800 bg-zinc-900/30"
                   [attr.viewBox]="'0 0 ' + c.w + ' ' + c.h"
                   preserveAspectRatio="xMidYMid meet"
+                  data-chart-title="Survival curve (Kaplan–Meier)"
                 >
                   @for (yt of c.yticks; track yt.label) {
                     <line
@@ -1499,6 +1542,7 @@ interface Quadrant {
                   class="w-full rounded border border-zinc-800 bg-zinc-900/30"
                   [attr.viewBox]="'0 0 ' + c.w + ' ' + c.h"
                   preserveAspectRatio="none"
+                  [attr.data-chart-title]="'Surviving lines by ' + cohortBucket() + ' added'"
                 >
                   @for (band of c.bands; track band.key) {
                     <path
@@ -1526,7 +1570,12 @@ interface Quadrant {
                 <p class="mt-3 mb-1 text-[11px] font-medium tracking-wide text-zinc-500 uppercase">
                   % of surviving code by author
                 </p>
-                <svg class="w-full" viewBox="0 0 100 6" preserveAspectRatio="none">
+                <svg
+                  class="w-full"
+                  viewBox="0 0 100 6"
+                  preserveAspectRatio="none"
+                  data-chart-title="% of surviving code by author"
+                >
                   @for (seg of c.segments; track seg.author) {
                     <rect
                       [attr.x]="seg.x"
@@ -1640,6 +1689,8 @@ export class InsightsView {
   readonly commitCap = input<number>(75);
   /** Cohort-stack granularity for the Age tab (week / month / year). */
   readonly cohortBucket = input<CohortBucket>('year');
+  /** Repository display name — only used to name exported files. */
+  readonly repoName = input<string>('repository');
 
   readonly analyze = output<void>();
   readonly loadAll = output<void>();
@@ -2395,6 +2446,230 @@ export class InsightsView {
 
   protected pct(fraction: number): number {
     return Math.round(fraction * 100);
+  }
+
+  // ───────────────────────────── Exports ─────────────────────────────
+
+  /**
+   * Download formats offered for the active tab: the data tabs export their
+   * table as CSV/JSON; the Age tab exports the survival report as a PNG of its
+   * charts, or JSON.
+   */
+  protected readonly exportFormats = computed<readonly ('csv' | 'json' | 'png')[]>(() => {
+    if (this.tab() === 'age') return this.report()?.trackedLines ? ['png', 'json'] : [];
+    return this.hasTabData() ? ['csv', 'json'] : [];
+  });
+
+  /** Whether the active data tab has rows worth exporting. */
+  private readonly hasTabData = computed(() => {
+    const s = this.state();
+    if (!s) return false;
+    switch (this.tab()) {
+      case 'hotspots':
+        return s.hotspots.length > 0;
+      case 'coupling':
+        return s.result.pairs.length > 0;
+      case 'team':
+        return s.teamGraph.developers.length > 0;
+      case 'knowledge':
+        return s.knowledge.files.length > 0;
+      default:
+        return false;
+    }
+  });
+
+  protected exportHint(format: 'csv' | 'json' | 'png'): string {
+    const what = this.tab() === 'age' ? 'survival report' : `${this.tab()} table`;
+    return `Download the ${what} as ${format.toUpperCase()}`;
+  }
+
+  /** Saves the active tab's data in the chosen format. */
+  protected exportCurrent(format: 'csv' | 'json' | 'png'): void {
+    const slug = fileSlug(this.repoName());
+    if (this.tab() === 'age') {
+      const report = this.report();
+      if (!report) return;
+      if (format === 'png') {
+        void this.exportSurvivalPng(slug);
+      } else {
+        const json = toJson(survivalJson(report, this.cohortBucket()));
+        downloadText(`${slug}-code-survival.json`, JSON_MIME, json);
+      }
+      return;
+    }
+    const dataset = this.tabDataset();
+    if (!dataset) return;
+    const name = `${slug}-${this.tab()}`;
+    if (format === 'csv') {
+      downloadText(`${name}.csv`, CSV_MIME, toCsv(dataset.headers, dataset.rows));
+    } else {
+      downloadText(`${name}.json`, JSON_MIME, toJson(dataset.json));
+    }
+  }
+
+  /** Rasterizes the Age tab's three SVG charts into one PNG and downloads it. */
+  private async exportSurvivalPng(slug: string): Promise<void> {
+    const svgs = Array.from(
+      this.host.nativeElement.querySelectorAll<SVGSVGElement>('svg[data-chart-title]'),
+    );
+    if (svgs.length === 0) return;
+    const fragments = svgs.map((svg) => {
+      const box = (svg.getAttribute('viewBox') ?? '0 0 100 100')
+        .trim()
+        .split(/[\s,]+/)
+        .map(Number);
+      return {
+        title: svg.getAttribute('data-chart-title') ?? undefined,
+        viewBoxW: box[2] || 100,
+        viewBoxH: box[3] || 100,
+        inner: svg.innerHTML,
+      };
+    });
+    const header = `${this.repoName()} · code survival (${this.survival()?.total ?? 0} commits)`;
+    const { markup, width, height } = composeStackedSvg(fragments, { header });
+    try {
+      downloadBlob(`${slug}-code-survival.png`, await svgToPngBlob(markup, width, height, 2));
+    } catch {
+      // Rasterization unsupported in this browser — nothing to download.
+    }
+  }
+
+  /** CSV header + rows and the JSON payload for the active data tab, or null. */
+  private tabDataset(): { headers: string[]; rows: unknown[][]; json: unknown } | null {
+    const s = this.state();
+    if (!s) return null;
+    switch (this.tab()) {
+      case 'hotspots': {
+        if (!s.hotspots.length) return null;
+        return {
+          headers: [
+            'path',
+            'score',
+            'revisions',
+            'authors',
+            'lastChange',
+            'firstChange',
+            'sizeBytes',
+          ],
+          rows: s.hotspots.map((h) => [
+            h.path,
+            round(h.metric.score),
+            h.metric.revisions,
+            h.metric.authors,
+            h.metric.lastChange ?? '',
+            h.metric.firstChange ?? '',
+            h.size,
+          ]),
+          json: {
+            commitsUsed: s.result.commitsUsed,
+            hotspots: s.hotspots.map((h) => ({
+              path: h.path,
+              score: round(h.metric.score),
+              revisions: h.metric.revisions,
+              authors: h.metric.authors,
+              lastChange: h.metric.lastChange,
+              firstChange: h.metric.firstChange,
+              sizeBytes: h.size,
+            })),
+          },
+        };
+      }
+      case 'coupling': {
+        const pairs = s.result.pairs;
+        if (!pairs.length) return null;
+        return {
+          headers: ['fileA', 'fileB', 'coChanges', 'degree'],
+          rows: pairs.map((p) => [p.a, p.b, p.support, round(p.degree, 4)]),
+          json: {
+            commitsUsed: s.result.commitsUsed,
+            pairs: pairs.map((p) => ({
+              fileA: p.a,
+              fileB: p.b,
+              coChanges: p.support,
+              degree: round(p.degree, 4),
+            })),
+          },
+        };
+      }
+      case 'team': {
+        const g = s.teamGraph;
+        if (!g.developers.length) return null;
+        const nameById = new Map(g.developers.map((d) => [d.id, d.name]));
+        const named = (id: string): string => nameById.get(id) ?? id;
+        return {
+          headers: ['developerA', 'developerB', 'sharedFiles', 'strength', 'temporalStrength'],
+          rows: g.collaborations.map((c) => [
+            named(c.a),
+            named(c.b),
+            c.sharedFiles,
+            round(c.strength, 4),
+            round(c.temporalStrength, 4),
+          ]),
+          json: {
+            developers: g.developers.map((d) => ({
+              id: d.id,
+              name: d.name,
+              commits: d.commits,
+              files: d.files,
+              collaborators: d.collaborators,
+            })),
+            collaborations: g.collaborations.map((c) => ({
+              a: named(c.a),
+              b: named(c.b),
+              sharedFiles: c.sharedFiles,
+              strength: round(c.strength, 4),
+              temporalStrength: round(c.temporalStrength, 4),
+            })),
+            silos: g.silos.map(named),
+          },
+        };
+      }
+      case 'knowledge': {
+        const k = s.knowledge;
+        if (!k.files.length) return null;
+        return {
+          headers: [
+            'path',
+            'orphanedShare',
+            'riskScore',
+            'sizeBytes',
+            'primaryExpert',
+            'primaryExpertLastActive',
+            'busFactor',
+          ],
+          rows: k.files.map((f) => [
+            f.path,
+            round(f.orphanedShare, 4),
+            round(f.riskScore),
+            f.size,
+            f.primaryExpert?.name ?? '',
+            f.primaryExpert?.lastActiveAt ?? '',
+            f.busFactor,
+          ]),
+          json: {
+            commitsUsed: k.commitsUsed,
+            authors: k.authors.map((a) => ({
+              name: a.name,
+              commits: a.commits,
+              knowledge: round(a.knowledge),
+              lastActiveAt: a.lastActiveAt,
+              active: a.active,
+            })),
+            files: k.files.map((f) => ({
+              path: f.path,
+              orphanedShare: round(f.orphanedShare, 4),
+              riskScore: round(f.riskScore),
+              sizeBytes: f.size,
+              primaryExpert: f.primaryExpert?.name ?? null,
+              primaryExpertLastActive: f.primaryExpert?.lastActiveAt ?? null,
+              busFactor: f.busFactor,
+            })),
+          },
+        };
+      }
+      default:
+        return null;
+    }
   }
 
   protected label(path: string): string {
