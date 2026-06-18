@@ -242,6 +242,38 @@ describe('LocalGitProvider', () => {
     ]);
   });
 
+  it('records the removal when a tracked path becomes a submodule', async () => {
+    const enc = (text: string): Uint8Array => new TextEncoder().encode(text);
+    const blob = await git.writeBlob({ fs, dir: '/', blob: enc('hi\n') });
+    const parentTree = await git.writeTree({
+      fs,
+      dir: '/',
+      tree: [{ mode: '100644', path: 'mod.ts', oid: blob, type: 'blob' }],
+    });
+    const parent = await git.writeCommit({
+      fs,
+      dir: '/',
+      commit: { message: 'p', tree: parentTree, parent: [], author, committer: author },
+    });
+    // The same path is now a gitlink — the file was replaced by a submodule.
+    const childTree = await git.writeTree({
+      fs,
+      dir: '/',
+      tree: [{ mode: '160000', path: 'mod.ts', oid: parent, type: 'commit' }],
+    });
+    const child = await git.writeCommit({
+      fs,
+      dir: '/',
+      commit: { message: 'c', tree: childTree, parent: [parent], author, committer: author },
+    });
+
+    // The blob is gone; the gitlink that replaced it is skipped, but the removal
+    // must still be reported so downstream walks don't keep the file alive.
+    expect(await provider.getCommitFiles(slug, child)).toEqual([
+      { path: 'mod.ts', status: 'removed' },
+    ]);
+  });
+
   it('fails with guidance when the folder is not connected', async () => {
     await expect(
       provider.getMetadata({ provider: 'local', owner: 'local', repo: 'ghost' }),

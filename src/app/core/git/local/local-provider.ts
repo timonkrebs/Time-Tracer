@@ -387,9 +387,13 @@ export class LocalGitProvider implements GitProvider {
         } else if (prev.oid !== e.oid) {
           out.push({ path, status: 'modified' });
         }
+      } else {
+        // `e` is a gitlink (submodule): not a tracked file itself, so it is never
+        // emitted. But if it replaced a tracked blob or directory, that prior
+        // content is gone — still record its removal.
+        if (prev?.type === 'blob') out.push({ path, status: 'removed' });
+        else if (prev?.type === 'tree') await this.diffTrees(readTree, prev.oid, null, path, out);
       }
-      // A `commit` entry is a gitlink (submodule): there is no blob to read, so
-      // it is not a tracked file — skip it, as the previous `git.walk` diff did.
     }
     // Whatever is left in `before` was removed by this commit.
     for (const e of before.values()) {
