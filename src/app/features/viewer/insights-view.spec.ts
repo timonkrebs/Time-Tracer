@@ -726,4 +726,75 @@ describe('InsightsView', () => {
       expect(text()).toContain('Walking the full history');
     });
   });
+
+  describe('Bus factor', () => {
+    it('lists contributors and simulates a departure', async () => {
+      await setState(KNOWLEDGE);
+      button('Bus factor')!.click();
+      await fixture.whenStable();
+
+      // Contributors from the knowledge model, and the already-orphaned baseline
+      // (legacy.ts has only an inactive author).
+      expect(text()).toContain('Ada');
+      expect(text()).toContain('Linus');
+      expect(text()).toContain('1/2 owned files are already orphaned');
+
+      // fresh.ts rests on Ada + Linus together; remove both and it is orphaned.
+      clickContaining('Ada');
+      clickContaining('Linus');
+      await fixture.whenStable();
+      expect(text()).toContain('1 more file would be orphaned');
+      expect(text()).toContain('fresh.ts');
+
+      // The tab offers CSV/JSON export.
+      expect(button('CSV')).toBeDefined();
+      expect(button('JSON')).toBeDefined();
+    });
+  });
+
+  describe('Punch card', () => {
+    const PUNCH: CoChangeState = {
+      status: 'ready',
+      scanned: 3,
+      target: 75,
+      result: computeCoChange([]),
+      hotspots: [],
+      teamGraph: EMPTY_TEAM_GRAPH,
+      knowledge: EMPTY_KNOWLEDGE,
+      commitTimes: ['2024-01-03T14:00:00Z', '2024-01-03T14:20:00Z', '2024-01-01T09:00:00Z'],
+    };
+
+    it('renders the weekday grid from commit timestamps', async () => {
+      await setState(PUNCH);
+      button('Punch card')!.click();
+      await fixture.whenStable();
+      expect(text()).toContain('3 commits');
+      expect(text()).toContain('busiest hour has 2');
+      expect(text()).toContain('Mon');
+      expect(text()).toContain('Sun');
+    });
+  });
+
+  describe('Surprising couplings', () => {
+    const DISTANT: CoChangeState = {
+      status: 'ready',
+      scanned: 2,
+      target: 75,
+      result: computeCoChange([
+        { sha: '1', files: ['src/auth.ts', 'test/e2e.ts'] },
+        { sha: '2', files: ['src/auth.ts', 'test/e2e.ts'] },
+      ]),
+      hotspots: [],
+      teamGraph: EMPTY_TEAM_GRAPH,
+      knowledge: EMPTY_KNOWLEDGE,
+    };
+
+    it('flags strong couplings across distant folders', async () => {
+      await setState(DISTANT);
+      button('Coupling')!.click();
+      await fixture.whenStable();
+      expect(text()).toContain('Surprising couplings');
+      expect(text()).toContain('e2e.ts');
+    });
+  });
 });
