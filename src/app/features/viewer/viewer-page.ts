@@ -346,10 +346,13 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
               class="min-h-0 min-w-0 flex-1"
               [state]="store.coChange()"
               [focus]="store.coupleFocus()"
+              [survival]="store.survival()"
+              [survivalAvailable]="store.hasLocalData()"
               [commitCap]="commitCap"
               (analyze)="store.computeCoChange()"
               (loadAll)="store.computeCoChange({ all: true })"
-              (clear)="store.clearCoChange()"
+              (computeSurvival)="store.computeSurvival()"
+              (clear)="onInsightsReset()"
               (focusFile)="store.computeCoChangeFor($event)"
               (clearFocus)="store.clearCoupleFocus()"
               (openFile)="onInsightsOpenFile($event)"
@@ -1051,6 +1054,12 @@ export class ViewerPage {
       queryParams: { path, insights: null, at: null, view: null, line: null, base: null },
       queryParamsHandling: 'merge',
     });
+  }
+
+  /** Insights "Reset": drop the coupling/hotspot analysis and the survival walk. */
+  protected onInsightsReset(): void {
+    this.store.clearCoChange();
+    this.store.clearSurvival();
   }
 
   /** A file was picked in the finder: open it and dismiss the overlay. */

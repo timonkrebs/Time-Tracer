@@ -1737,4 +1737,555 @@ describe('RepoStore', () => {
       expect(store.coChange()?.status).toBe('ready');
     });
   });
+
+  describe('code survival (computeSurvival)', () => {
+    /** A three-commit history that adds, edits and trims one file. */
+    function scriptSurvivalHistory(): void {
+      const mk = (
+        sha: string,
+        authorName: string,
+        authoredAt: string,
+        parents: string[],
+      ): CommitInfo => ({
+        sha,
+        message: sha,
+        summary: sha,
+        authorName,
+        authorEmail: null,
+        authoredAt,
+        htmlUrl: `https://github.com/acme/rocket/commit/${sha}`,
+        parentShas: parents,
+      });
+      // c1 Ada adds 3 lines · c2 Bob edits L2 and appends L4 · c3 Ada drops L4.
+      const c1 = mk('c1', 'Ada', '2024-01-01T00:00:00Z', []);
+      const c2 = mk('c2', 'Bob', '2024-06-01T00:00:00Z', ['c1']);
+      const c3 = mk('c3', 'Ada', '2025-01-01T00:00:00Z', ['c2']);
+      provider.listCommitsResult = () => Promise.resolve([c3, c2, c1]); // newest first
+      provider.commitFilesResult = (sha) =>
+        Promise.resolve([{ path: 'a.txt', status: sha === 'c1' ? 'added' : 'modified' }]);
+      const text: Record<string, string> = {
+        c1: 'L1\nL2\nL3\n',
+        c2: 'L1\nL2x\nL3\nL4\n',
+        c3: 'L1\nL2x\nL3\n',
+      };
+      provider.fileAtRefResult = (path, ref) =>
+        Promise.resolve({
+          kind: 'text',
+          path,
+          sha: `blob-${ref}`,
+          size: text[ref].length,
+          text: text[ref],
+        });
+    }
+
+    it('tracks line births and deaths into cohorts, authorship and a survival curve', async () => {
+      scriptSurvivalHistory();
+      await store.loadRepo(slug);
+
+      await store.computeSurvival();
+
+      const state = store.survival();
+      expect(state?.status).toBe('ready');
+      const report = state!.report;
+      // Surviving lines at the tip: L1 (Ada), L2x (Bob), L3 (Ada).
+      expect(report.aliveLines).toBe(3);
+      // Deaths: L2 (Ada) at c2, L4 (Bob) at c3.
+      expect(report.curve.deaths).toBe(2);
+      expect(report.curve.censored).toBe(3);
+      expect(report.trackedLines).toBe(5);
+      // "% of code by author" counts only the lines alive today.
+      expect(report.authors).toEqual([
+        { author: 'Ada', lines: 2, share: 2 / 3 },
+        { author: 'Bob', lines: 1, share: 1 / 3 },
+      ]);
+    });
+
+    it('clears the survival analysis on demand', async () => {
+      scriptSurvivalHistory();
+      await store.loadRepo(slug);
+      await store.computeSurvival();
+      expect(store.survival()).not.toBeNull();
+
+      store.clearSurvival();
+      expect(store.survival()).toBeNull();
+    });
+
+    it('reports an empty history without error', async () => {
+      provider.listCommitsResult = () => Promise.resolve([]);
+      await store.loadRepo(slug);
+
+      await store.computeSurvival();
+
+      expect(store.survival()?.status).toBe('ready');
+      expect(store.survival()?.report.trackedLines).toBe(0);
+    });
+
+    it('surfaces a provider error mid-walk instead of a corrupted ready report', async () => {
+      scriptSurvivalHistory();
+      // c1 succeeds, then c2's file list fails (e.g. a rate limit): the walk must
+      // fail loudly, not silently drop that commit and publish a "ready" report.
+      provider.commitFilesResult = (sha) =>
+        sha === 'c2'
+          ? Promise.reject(new RepoProviderError('rate limited', 'rate-limited'))
+          : Promise.resolve([{ path: 'a.txt', status: sha === 'c1' ? 'added' : 'modified' }]);
+      await store.loadRepo(slug);
+
+      await store.computeSurvival();
+
+      expect(store.survival()?.status).toBe('error');
+      expect(store.survival()?.message).toContain('rate limited');
+    });
+
+    it('fails the walk on a non-not-found blob error rather than recording false deaths', async () => {
+      scriptSurvivalHistory();
+      provider.fileAtRefResult = (path, ref) =>
+        ref === 'c2'
+          ? Promise.reject(new RepoProviderError('network down', 'network'))
+          : Promise.resolve({ kind: 'text', path, sha: ref, size: 6, text: 'L1\nL2\nL3\n' });
+      await store.loadRepo(slug);
+
+      await store.computeSurvival();
+
+      expect(store.survival()?.status).toBe('error');
+    });
+
+    it('counts a copied file as new births, leaving the source intact', async () => {
+      const mk = (sha: string, authorName: string, authoredAt: string): CommitInfo => ({
+        sha,
+        message: sha,
+        summary: sha,
+        authorName,
+        authorEmail: null,
+        authoredAt,
+        htmlUrl: `https://github.com/acme/rocket/commit/${sha}`,
+        parentShas: sha === 'c1' ? [] : ['c1'],
+      });
+      provider.listCommitsResult = () =>
+        Promise.resolve([
+          mk('c2', 'Bob', '2024-06-01T00:00:00Z'),
+          mk('c1', 'Ada', '2024-01-01T00:00:00Z'),
+        ]);
+      // c1 Ada adds a.txt; c2 Bob copies it to b.txt (a.txt untouched).
+      provider.commitFilesResult = (sha) =>
+        Promise.resolve(
+          sha === 'c1'
+            ? [{ path: 'a.txt', status: 'added' }]
+            : [{ path: 'b.txt', status: 'copied', previousPath: 'a.txt' }],
+        );
+      provider.fileAtRefResult = (path) =>
+        Promise.resolve({ kind: 'text', path, sha: `blob-${path}`, size: 6, text: 'L1\nL2\n' });
+      await store.loadRepo(slug);
+
+      await store.computeSurvival();
+
+      const report = store.survival()!.report;
+      expect(report.curve.deaths).toBe(0); // a copy kills nothing
+      expect(report.aliveLines).toBe(4); // a.txt (Ada) + b.txt (Bob), 2 lines each
+      // The copy's lines are Bob's new births, not inherited from Ada.
+      expect(report.authors).toEqual([
+        { author: 'Ada', lines: 2, share: 0.5 },
+        { author: 'Bob', lines: 2, share: 0.5 },
+      ]);
+    });
+
+    it('resolves omitted parents to build the first-parent chain (Azure-style lists)', async () => {
+      const mk = (
+        sha: string,
+        authorName: string,
+        authoredAt: string,
+        parents: string[],
+      ): CommitInfo => ({
+        sha,
+        message: sha,
+        summary: sha,
+        authorName,
+        authorEmail: null,
+        authoredAt,
+        htmlUrl: `https://github.com/acme/rocket/commit/${sha}`,
+        parentShas: parents,
+      });
+      // The list omits parents (like Azure DevOps); getCommit fills them in.
+      provider.listCommitsResult = () =>
+        Promise.resolve([
+          mk('c3', 'Ada', '2025-01-01T00:00:00Z', []),
+          mk('c2', 'Bob', '2024-06-01T00:00:00Z', []),
+          mk('c1', 'Ada', '2024-01-01T00:00:00Z', []),
+        ]);
+      provider.commitResult = (sha) =>
+        Promise.resolve(
+          sha === 'c3'
+            ? mk('c3', 'Ada', '2025-01-01T00:00:00Z', ['c2'])
+            : sha === 'c2'
+              ? mk('c2', 'Bob', '2024-06-01T00:00:00Z', ['c1'])
+              : mk('c1', 'Ada', '2024-01-01T00:00:00Z', []),
+        );
+      provider.commitFilesResult = (sha) =>
+        Promise.resolve([{ path: 'a.txt', status: sha === 'c1' ? 'added' : 'modified' }]);
+      const text: Record<string, string> = {
+        c1: 'L1\nL2\nL3\n',
+        c2: 'L1\nL2x\nL3\nL4\n',
+        c3: 'L1\nL2x\nL3\n',
+      };
+      provider.fileAtRefResult = (path, ref) =>
+        Promise.resolve({
+          kind: 'text',
+          path,
+          sha: `blob-${ref}`,
+          size: text[ref].length,
+          text: text[ref],
+        });
+      await store.loadRepo(slug);
+
+      await store.computeSurvival();
+
+      const report = store.survival()!.report;
+      // Same outcome as the parents-present case — proof the chain was rebuilt.
+      expect(report.aliveLines).toBe(3);
+      expect(report.curve.deaths).toBe(2);
+      expect(provider.getCommitCalls).toContain('c3'); // parents were resolved on demand
+    });
+
+    it('clamps backdated commits so a death is never recorded before its birth', async () => {
+      const mk = (sha: string, authoredAt: string, parents: string[]): CommitInfo => ({
+        sha,
+        message: sha,
+        summary: sha,
+        authorName: 'Ada',
+        authorEmail: null,
+        authoredAt,
+        htmlUrl: `https://github.com/acme/rocket/commit/${sha}`,
+        parentShas: parents,
+      });
+      // base.txt (2020) spreads the time axis; a.txt is added in c1 (Jun 2024) and
+      // removed in c2 — a child of c1 but **backdated** to Jan 2024.
+      provider.listCommitsResult = () =>
+        Promise.resolve([
+          mk('c2', '2024-01-01T00:00:00Z', ['c1']),
+          mk('c1', '2024-06-01T00:00:00Z', ['c0']),
+          mk('c0', '2020-01-01T00:00:00Z', []),
+        ]);
+      provider.commitFilesResult = (sha) =>
+        Promise.resolve(
+          sha === 'c0'
+            ? [{ path: 'base.txt', status: 'added' }]
+            : sha === 'c1'
+              ? [{ path: 'a.txt', status: 'added' }]
+              : [{ path: 'a.txt', status: 'removed' }],
+        );
+      const blobs: Record<string, string> = { 'base.txt@c0': 'B\n', 'a.txt@c1': 'L\n' };
+      provider.fileAtRefResult = (path, ref) => {
+        const text = blobs[`${path}@${ref}`];
+        return text === undefined
+          ? Promise.reject(new RepoProviderError('absent', 'not-found'))
+          : Promise.resolve({ kind: 'text', path, sha: `${path}-${ref}`, size: text.length, text });
+      };
+      await store.loadRepo(slug);
+
+      await store.computeSurvival();
+
+      const report = store.survival()!.report;
+      expect(report.curve.deaths).toBe(1); // a.txt's line died (clamped to its birth time)
+      expect(report.aliveLines).toBe(1); // base.txt survives
+      // The clamp keeps every cohort count non-negative (diedAt ≥ bornAt throughout).
+      const allNonNegative = report.cohorts.bands.every((band) =>
+        report.cohorts.counts.get(band)!.every((count) => count >= 0),
+      );
+      expect(allNonNegative).toBe(true);
+    });
+
+    it('keeps a rename and a same-commit re-creation of the source path distinct', async () => {
+      const mk = (
+        sha: string,
+        authorName: string,
+        authoredAt: string,
+        parents: string[],
+      ): CommitInfo => ({
+        sha,
+        message: sha,
+        summary: sha,
+        authorName,
+        authorEmail: null,
+        authoredAt,
+        htmlUrl: `https://github.com/acme/rocket/commit/${sha}`,
+        parentShas: parents,
+      });
+      provider.listCommitsResult = () =>
+        Promise.resolve([
+          mk('c2', 'Bob', '2024-06-01T00:00:00Z', ['c1']),
+          mk('c1', 'Ada', '2024-01-01T00:00:00Z', []),
+        ]);
+      // c2 renames a.txt → b.txt AND adds a fresh a.txt (the new file listed first).
+      provider.commitFilesResult = (sha) =>
+        Promise.resolve(
+          sha === 'c1'
+            ? [{ path: 'a.txt', status: 'added' }]
+            : [
+                { path: 'a.txt', status: 'added' },
+                { path: 'b.txt', status: 'renamed', previousPath: 'a.txt' },
+              ],
+        );
+      const blobs: Record<string, string> = {
+        'a.txt@c1': 'A1\nA2\n',
+        'b.txt@c2': 'A1\nA2\n', // the renamed content
+        'a.txt@c2': 'X\n', // the new file at the old path
+      };
+      provider.fileAtRefResult = (path, ref) => {
+        const text = blobs[`${path}@${ref}`];
+        return text === undefined
+          ? Promise.reject(new RepoProviderError('absent', 'not-found'))
+          : Promise.resolve({ kind: 'text', path, sha: `${path}-${ref}`, size: text.length, text });
+      };
+      await store.loadRepo(slug);
+
+      await store.computeSurvival();
+
+      const report = store.survival()!.report;
+      expect(report.curve.deaths).toBe(0); // the rename carried A1/A2; nothing died
+      expect(report.aliveLines).toBe(3); // A1, A2 (now in b.txt) + X (new a.txt)
+      expect(report.authors).toEqual([
+        { author: 'Ada', lines: 2, share: 2 / 3 }, // A1, A2 keep Ada's authorship
+        { author: 'Bob', lines: 1, share: 1 / 3 }, // X is Bob's new line
+      ]);
+    });
+
+    it('does not record deaths when a tracked file grows past the size guard', async () => {
+      const mk = (sha: string, authoredAt: string, parents: string[]): CommitInfo => ({
+        sha,
+        message: sha,
+        summary: sha,
+        authorName: 'Ada',
+        authorEmail: null,
+        authoredAt,
+        htmlUrl: `https://github.com/acme/rocket/commit/${sha}`,
+        parentShas: parents,
+      });
+      provider.listCommitsResult = () =>
+        Promise.resolve([
+          mk('c2', '2024-06-01T00:00:00Z', ['c1']),
+          mk('c1', '2024-01-01T00:00:00Z', []),
+        ]);
+      provider.commitFilesResult = () => Promise.resolve([{ path: 'a.txt', status: 'modified' }]);
+      // a.txt is text at c1, then exceeds the size guard at c2 (unreadable, not deleted).
+      provider.fileAtRefResult = (path, ref) =>
+        ref === 'c1'
+          ? Promise.resolve({ kind: 'text', path, sha: 'a1', size: 6, text: 'L1\nL2\n' })
+          : Promise.resolve({ kind: 'too-large', path, sha: 'a2', size: 9_000_000 });
+      await store.loadRepo(slug);
+
+      await store.computeSurvival();
+
+      // No deletion was observed — the client just couldn't load the blob — so the
+      // lines are right-censored at that commit: counted (not dropped), but not
+      // deaths and not part of the live code.
+      const report = store.survival()!.report;
+      expect(store.survival()?.status).toBe('ready');
+      expect(report.curve.deaths).toBe(0);
+      expect(report.trackedLines).toBe(2); // observed, censored — not silently dropped
+      expect(report.curve.censored).toBe(2);
+      expect(report.aliveLines).toBe(0); // can't confirm them in the current tree
+    });
+
+    it('rebuilds content from inline patches without fetching any blobs', async () => {
+      const mk = (
+        sha: string,
+        authorName: string,
+        authoredAt: string,
+        parents: string[],
+      ): CommitInfo => ({
+        sha,
+        message: sha,
+        summary: sha,
+        authorName,
+        authorEmail: null,
+        authoredAt,
+        htmlUrl: `https://github.com/acme/rocket/commit/${sha}`,
+        parentShas: parents,
+      });
+      provider.listCommitsResult = () =>
+        Promise.resolve([
+          mk('c2', 'Bob', '2024-06-01T00:00:00Z', ['c1']),
+          mk('c1', 'Ada', '2024-01-01T00:00:00Z', []),
+        ]);
+      // c1 (Ada) adds a.txt with two lines; c2 (Bob) edits the second — both
+      // carry GitHub-style inline patches, so the walk needs no blob fetch.
+      provider.commitFilesResult = (sha) =>
+        Promise.resolve(
+          sha === 'c1'
+            ? [
+                {
+                  path: 'a.txt',
+                  status: 'added',
+                  additions: 2,
+                  deletions: 0,
+                  patch: '@@ -0,0 +1,2 @@\n+L1\n+L2',
+                },
+              ]
+            : [
+                {
+                  path: 'a.txt',
+                  status: 'modified',
+                  additions: 1,
+                  deletions: 1,
+                  patch: '@@ -1,2 +1,2 @@\n L1\n-L2\n+L2x',
+                },
+              ],
+        );
+
+      await store.loadRepo(slug);
+      await store.computeSurvival();
+
+      const report = store.survival()!.report;
+      expect(report.aliveLines).toBe(2); // L1 (Ada) + L2x (Bob)
+      expect(report.curve.deaths).toBe(1); // L2 (Ada) was replaced
+      expect(report.authors).toEqual([
+        { author: 'Ada', lines: 1, share: 0.5 },
+        { author: 'Bob', lines: 1, share: 0.5 },
+      ]);
+      // The whole history was reconstructed from the patches — zero blob fetches.
+      expect(provider.fileAtRefCalls).toEqual([]);
+    });
+
+    it('falls back to the blob when a patch is truncated (stats do not match)', async () => {
+      const mk = (sha: string, authoredAt: string, parents: string[]): CommitInfo => ({
+        sha,
+        message: sha,
+        summary: sha,
+        authorName: 'Ada',
+        authorEmail: null,
+        authoredAt,
+        htmlUrl: `https://github.com/acme/rocket/commit/${sha}`,
+        parentShas: parents,
+      });
+      provider.listCommitsResult = () => Promise.resolve([mk('c1', '2024-01-01T00:00:00Z', [])]);
+      // The header says 3 additions but the patch only carries 2 — a diff
+      // truncated between hunks; the walk must not trust it.
+      provider.commitFilesResult = () =>
+        Promise.resolve([
+          {
+            path: 'a.txt',
+            status: 'added',
+            additions: 3,
+            deletions: 0,
+            patch: '@@ -0,0 +1,2 @@\n+L1\n+L2',
+          },
+        ]);
+      provider.fileAtRefResult = (path) =>
+        Promise.resolve({ kind: 'text', path, sha: 'a1', size: 9, text: 'L1\nL2\nL3\n' });
+
+      await store.loadRepo(slug);
+      await store.computeSurvival();
+
+      const report = store.survival()!.report;
+      // It fetched the real blob and got all three lines, not the truncated two.
+      expect(provider.fileAtRefCalls).toEqual([{ path: 'a.txt', ref: 'c1' }]);
+      expect(report.aliveLines).toBe(3);
+    });
+
+    it('detects a rename by matching content when the provider gives no previousPath', async () => {
+      const mk = (
+        sha: string,
+        authorName: string,
+        authoredAt: string,
+        parents: string[],
+      ): CommitInfo => ({
+        sha,
+        message: sha,
+        summary: sha,
+        authorName,
+        authorEmail: null,
+        authoredAt,
+        htmlUrl: `https://github.com/acme/rocket/commit/${sha}`,
+        parentShas: parents,
+      });
+      provider.listCommitsResult = () =>
+        Promise.resolve([
+          mk('c2', 'Bob', '2024-06-01T00:00:00Z', ['c1']),
+          mk('c1', 'Ada', '2024-01-01T00:00:00Z', []),
+        ]);
+      // c1 (Ada) adds a.txt; c2 (Bob) `git mv` a.txt → b.txt, reported (as the
+      // local reader does) as a plain remove + add with no previousPath.
+      provider.commitFilesResult = (sha) =>
+        Promise.resolve(
+          sha === 'c1'
+            ? [{ path: 'a.txt', status: 'added' }]
+            : [
+                { path: 'a.txt', status: 'removed' },
+                { path: 'b.txt', status: 'added' },
+              ],
+        );
+      const blobs: Record<string, string> = { 'a.txt@c1': 'L1\nL2\n', 'b.txt@c2': 'L1\nL2\n' };
+      provider.fileAtRefResult = (path, ref) => {
+        const text = blobs[`${path}@${ref}`];
+        return text === undefined
+          ? Promise.reject(new RepoProviderError('absent', 'not-found'))
+          : Promise.resolve({ kind: 'text', path, sha: `${path}-${ref}`, size: text.length, text });
+      };
+
+      await store.loadRepo(slug);
+      await store.computeSurvival();
+
+      const report = store.survival()!.report;
+      // The two lines moved to b.txt, keeping Ada's authorship — not killed + reborn under Bob.
+      expect(report.curve.deaths).toBe(0);
+      expect(report.aliveLines).toBe(2);
+      expect(report.authors).toEqual([{ author: 'Ada', lines: 2, share: 1 }]);
+    });
+
+    it('detects a rename that also edits the file, by content similarity', async () => {
+      const mk = (
+        sha: string,
+        authorName: string,
+        authoredAt: string,
+        parents: string[],
+      ): CommitInfo => ({
+        sha,
+        message: sha,
+        summary: sha,
+        authorName,
+        authorEmail: null,
+        authoredAt,
+        htmlUrl: `https://github.com/acme/rocket/commit/${sha}`,
+        parentShas: parents,
+      });
+      provider.listCommitsResult = () =>
+        Promise.resolve([
+          mk('c2', 'Bob', '2024-06-01T00:00:00Z', ['c1']),
+          mk('c1', 'Ada', '2024-01-01T00:00:00Z', []),
+        ]);
+      // c1 (Ada) adds a 3-line a.txt; c2 (Bob) moves it to b.txt AND edits one
+      // line — reported (no previousPath) as remove + add, ~67% similar.
+      provider.commitFilesResult = (sha) =>
+        Promise.resolve(
+          sha === 'c1'
+            ? [{ path: 'a.txt', status: 'added' }]
+            : [
+                { path: 'a.txt', status: 'removed' },
+                { path: 'b.txt', status: 'added' },
+              ],
+        );
+      const blobs: Record<string, string> = {
+        'a.txt@c1': 'L1\nL2\nL3\n',
+        'b.txt@c2': 'L1\nL2x\nL3\n',
+      };
+      provider.fileAtRefResult = (path, ref) => {
+        const text = blobs[`${path}@${ref}`];
+        return text === undefined
+          ? Promise.reject(new RepoProviderError('absent', 'not-found'))
+          : Promise.resolve({ kind: 'text', path, sha: `${path}-${ref}`, size: text.length, text });
+      };
+
+      await store.loadRepo(slug);
+      await store.computeSurvival();
+
+      const report = store.survival()!.report;
+      // The two unchanged lines keep Ada's authorship; only the edited line dies
+      // and is reborn under Bob — not the whole file.
+      expect(report.curve.deaths).toBe(1);
+      expect(report.aliveLines).toBe(3);
+      expect(report.authors).toEqual([
+        { author: 'Ada', lines: 2, share: 2 / 3 },
+        { author: 'Bob', lines: 1, share: 1 / 3 },
+      ]);
+    });
+  });
 });

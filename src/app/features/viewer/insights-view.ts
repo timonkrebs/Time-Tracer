@@ -10,13 +10,14 @@ import {
   signal,
 } from '@angular/core';
 
-import { CoChangeState } from '../../core/store/repo-store';
+import { CoChangeState, SurvivalState } from '../../core/store/repo-store';
 import { CoChangeCluster, clusterCoChange, relatedFiles } from '../../core/util/co-change';
 import { ForceEdge, Point, forceLayout } from '../../core/util/force-layout';
 import { HEAT_THRESHOLDS, Hotspot } from '../../core/util/hotspots';
 import { AuthorPresence, KnowledgeRisk, RISK_THRESHOLDS } from '../../core/util/knowledge';
 import { disambiguateLabels } from '../../core/util/path-label';
 import { relativeTime } from '../../core/util/relative-time';
+import { CODE_HALF_LIFE_BENCHMARK, DAYS_PER_YEAR, survivalAt } from '../../core/util/survival';
 import {
   Collaboration,
   Collaborator,
@@ -137,6 +138,23 @@ function median(values: readonly number[]): number {
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
+
+/** Coordinate spaces for the Age tab's SVG charts (scaled uniformly to fill). */
+const SURVIVAL_VB = { w: 340, h: 180, l: 38, r: 12, t: 12, b: 26 };
+const COHORT_VB = { w: 340, h: 150, l: 38, r: 12, t: 12, b: 10 };
+/** Categorical fills for the authorship breakdown, cycled. */
+const AUTHOR_FILLS = [
+  '#818cf8',
+  '#34d399',
+  '#fbbf24',
+  '#f87171',
+  '#22d3ee',
+  '#c084fc',
+  '#f472b6',
+  '#a3e635',
+  '#fb923c',
+  '#94a3b8',
+];
 
 interface GraphNode {
   readonly path: string;
@@ -290,7 +308,7 @@ interface Quadrant {
       </svg>
       <h2 class="text-sm font-semibold tracking-tight text-zinc-100">Insights</h2>
       <span class="flex-1"></span>
-      @if (state() || focus()) {
+      @if (state() || focus() || survival()) {
         <button
           type="button"
           class="rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100"
@@ -302,7 +320,7 @@ interface Quadrant {
     </header>
 
     <div class="slim-scrollbar min-h-0 flex-1 overflow-y-auto p-4">
-      @if (state() || focus()) {
+      @if (state() || focus() || survival()) {
         <!-- Tabs are always available once anything has been analysed. -->
         <div class="mb-3 flex items-center gap-3 text-xs">
           <button
@@ -353,8 +371,32 @@ interface Quadrant {
           >
             Knowledge
           </button>
+          @if (survivalAvailable()) {
+            <button
+              type="button"
+              class="border-b-2 pb-1 font-medium transition"
+              [class]="
+                tab() === 'age'
+                  ? 'border-indigo-400 text-zinc-100'
+                  : 'border-transparent text-zinc-500 hover:text-zinc-300'
+              "
+              (click)="tab.set('age')"
+            >
+              Age
+            </button>
+          }
           <span class="flex-1"></span>
-          @if (state(); as s) {
+          @if (tab() === 'age') {
+            @if (survival(); as sv) {
+              <span class="text-zinc-600">
+                @if (sv.status === 'reading' || sv.status === 'computing') {
+                  {{ sv.scanned }}{{ sv.total ? '/' + sv.total : '' }} commits…
+                } @else {
+                  {{ sv.total }} commits
+                }
+              </span>
+            }
+          } @else if (state(); as s) {
             <span class="text-zinc-600">
               @if (s.status === 'computing') {
                 {{ s.scanned }}{{ s.target === Infinity ? '' : '/' + s.target }} commits…
@@ -953,7 +995,7 @@ interface Quadrant {
               </button>
             </div>
           }
-        } @else {
+        } @else if (tab() === 'knowledge') {
           <!-- Knowledge tab -->
           @if (state(); as s) {
             @if (s.status === 'error') {
@@ -1318,6 +1360,199 @@ interface Quadrant {
               </button>
             </div>
           }
+        } @else {
+          <!-- Age tab: code survival & cohorts (Git of Theseus) -->
+          @if (survival(); as sv) {
+            @if (sv.status === 'error') {
+              <p class="mb-2 text-sm text-rose-400">{{ sv.message }}</p>
+            }
+            @if (report()?.trackedLines) {
+              <p class="mb-2 text-xs text-zinc-500">
+                @if (sv.status === 'error') {
+                  Partial result — {{ report()!.aliveLines }} lines alive before the walk stopped.
+                } @else {
+                  How long code lives — {{ report()!.aliveLines }} lines alive across
+                  {{ sv.total }} commits.
+                }
+              </p>
+
+              @if (survivalChart(); as c) {
+                <p class="mt-1 mb-1 text-[11px] font-medium tracking-wide text-zinc-500 uppercase">
+                  Survival curve · Kaplan–Meier
+                </p>
+                <svg
+                  class="w-full rounded border border-zinc-800 bg-zinc-900/30"
+                  [attr.viewBox]="'0 0 ' + c.w + ' ' + c.h"
+                  preserveAspectRatio="xMidYMid meet"
+                >
+                  @for (yt of c.yticks; track yt.label) {
+                    <line
+                      [attr.x1]="c.leftX"
+                      [attr.y1]="yt.y"
+                      [attr.x2]="c.rightX"
+                      [attr.y2]="yt.y"
+                      stroke="#27272a"
+                      stroke-width="1"
+                    />
+                    <text
+                      [attr.x]="c.leftX - 4"
+                      [attr.y]="yt.y + 3"
+                      text-anchor="end"
+                      font-size="9"
+                      fill="#71717a"
+                    >
+                      {{ yt.label }}%
+                    </text>
+                  }
+                  @for (xt of c.xticks; track xt.label) {
+                    <text
+                      [attr.x]="xt.x"
+                      [attr.y]="c.h - 12"
+                      text-anchor="middle"
+                      font-size="9"
+                      fill="#71717a"
+                    >
+                      {{ xt.label }}y
+                    </text>
+                  }
+                  <!-- Bernhardsson reference (dashed): ≈6y half-life, ≈40% at 10y -->
+                  <polyline
+                    [attr.points]="c.bench"
+                    fill="none"
+                    stroke="#a1a1aa"
+                    stroke-width="1.5"
+                    stroke-dasharray="4 3"
+                    stroke-opacity="0.7"
+                  />
+                  @if (c.halfLifeX !== null) {
+                    <line
+                      [attr.x1]="c.halfLifeX"
+                      [attr.y1]="c.t"
+                      [attr.x2]="c.halfLifeX"
+                      [attr.y2]="c.halfY"
+                      stroke="#34d399"
+                      stroke-width="1"
+                      stroke-dasharray="2 2"
+                    />
+                  }
+                  <path [attr.d]="c.path" fill="none" stroke="#818cf8" stroke-width="2" />
+                </svg>
+                <div class="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-zinc-400">
+                  <span>
+                    Code half-life:
+                    <span class="font-medium text-emerald-300">
+                      {{
+                        c.halfLifeYears !== null
+                          ? years(report()!.curve.halfLifeDays) + ' yr'
+                          : 'not reached'
+                      }}
+                    </span>
+                  </span>
+                  <span>
+                    Alive at 10 yr:
+                    @if (c.tenYearSurvival !== null) {
+                      <span class="font-medium text-indigo-300">{{ pct(c.tenYearSurvival) }}%</span>
+                    } @else {
+                      <span class="text-zinc-500" title="The history is shorter than 10 years">
+                        unobserved
+                      </span>
+                    }
+                  </span>
+                  <span class="text-zinc-600">
+                    dashed = benchmark ≈ {{ benchmark.halfLifeYears }} yr ·
+                    {{ pct(benchmark.survivalAtTenYears) }}% @ 10 yr
+                  </span>
+                </div>
+              }
+
+              @if (cohortChart(); as c) {
+                <p class="mt-3 mb-1 text-[11px] font-medium tracking-wide text-zinc-500 uppercase">
+                  Surviving lines by year added
+                </p>
+                <svg
+                  class="w-full rounded border border-zinc-800 bg-zinc-900/30"
+                  [attr.viewBox]="'0 0 ' + c.w + ' ' + c.h"
+                  preserveAspectRatio="none"
+                >
+                  @for (band of c.bands; track band.key) {
+                    <path
+                      [attr.d]="band.path"
+                      [attr.fill]="band.color"
+                      fill-opacity="0.85"
+                      stroke="#18181b"
+                      stroke-width="0.4"
+                    >
+                      <title>{{ band.key }} — {{ band.current }} lines now</title>
+                    </path>
+                  }
+                </svg>
+                <div class="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-zinc-400">
+                  @for (band of c.bands; track band.key) {
+                    <span class="flex items-center gap-1">
+                      <span class="size-2 rounded-sm" [style.background]="band.color"></span>
+                      {{ band.key }}
+                    </span>
+                  }
+                </div>
+              }
+
+              @if (authorChart(); as c) {
+                <p class="mt-3 mb-1 text-[11px] font-medium tracking-wide text-zinc-500 uppercase">
+                  % of surviving code by author
+                </p>
+                <svg class="w-full" viewBox="0 0 100 6" preserveAspectRatio="none">
+                  @for (seg of c.segments; track seg.author) {
+                    <rect
+                      [attr.x]="seg.x"
+                      y="0"
+                      [attr.width]="seg.width"
+                      height="6"
+                      [attr.fill]="seg.color"
+                    >
+                      <title>
+                        {{ seg.author }} — {{ seg.lines }} lines ({{ pct(seg.share) }}%)
+                      </title>
+                    </rect>
+                  }
+                </svg>
+                <ul class="mt-1.5 space-y-0.5">
+                  @for (seg of c.segments; track seg.author) {
+                    <li class="flex items-center gap-2 text-xs">
+                      <span
+                        class="size-2 shrink-0 rounded-sm"
+                        [style.background]="seg.color"
+                      ></span>
+                      <span class="min-w-0 flex-1 truncate text-zinc-300">{{ seg.author }}</span>
+                      <span class="shrink-0 text-[11px] text-zinc-500 tabular-nums">
+                        {{ seg.lines }} · {{ pct(seg.share) }}%
+                      </span>
+                    </li>
+                  }
+                </ul>
+              }
+            } @else if (sv.status === 'reading' || sv.status === 'computing') {
+              <p class="text-sm text-zinc-500">{{ sv.message ?? 'Walking the full history…' }}</p>
+            } @else if (sv.status !== 'error') {
+              <p class="text-sm text-zinc-500">{{ sv.message ?? 'No tracked lines found.' }}</p>
+            }
+          } @else {
+            <p class="mb-3 text-sm text-zinc-500">
+              Chart how long this repository's code survives — a cohort stack by year added, the
+              authorship of the code alive today, and a Kaplan–Meier survival curve with the repo's
+              code half-life set against Bernhardsson's "half-life of code" benchmark.
+            </p>
+            <p class="mb-3 text-xs text-zinc-600">
+              Walks the <span class="text-zinc-400">whole history</span> from this local
+              repository's object database — entirely offline, no network requests.
+            </p>
+            <button
+              type="button"
+              class="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-400"
+              (click)="startSurvival()"
+            >
+              Analyze code age &amp; survival
+            </button>
+          }
         }
       } @else {
         <div class="mx-auto max-w-md py-10 text-center">
@@ -1343,6 +1578,19 @@ interface Quadrant {
               Load all commits
             </button>
           </div>
+          @if (survivalAvailable()) {
+            <p class="mt-4 text-xs leading-5 text-zinc-500">
+              Or chart <span class="text-zinc-300">code survival &amp; age</span> — cohorts by year,
+              authorship of the live code, and a Kaplan–Meier half-life.
+            </p>
+            <button
+              type="button"
+              class="mt-2 rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100"
+              (click)="startSurvival()"
+            >
+              Analyze code age &amp; survival
+            </button>
+          }
         </div>
       }
     </div>
@@ -1355,11 +1603,21 @@ export class InsightsView {
   readonly state = input<CoChangeState | null>(null);
   /** Active "filter coupling by file" result, or null. */
   readonly focus = input<CoChangeState | null>(null);
+  /** Code-survival analysis (cohorts + Kaplan–Meier), or null. */
+  readonly survival = input<SurvivalState | null>(null);
+  /**
+   * Whether the code-survival ("Age") analysis is offered. It walks the full
+   * history, so it is enabled only for local repositories (a local object DB,
+   * no per-commit network requests); hosted repos hide the tab.
+   */
+  readonly survivalAvailable = input<boolean>(false);
   readonly commitCap = input<number>(75);
 
   readonly analyze = output<void>();
   readonly loadAll = output<void>();
-  /** Full reset (drops the overview and any filter). */
+  /** Walk the whole history for the code-survival analysis. */
+  readonly computeSurvival = output<void>();
+  /** Full reset (drops the overview, any filter and the survival analysis). */
   readonly clear = output<void>();
   /** Filter coupling by a file (its full history). */
   readonly focusFile = output<string>();
@@ -1382,7 +1640,10 @@ export class InsightsView {
   protected readonly hovered = signal<QuadrantPoint | null>(null);
   /** File selected in the Knowledge list/quadrant — cross-highlights both, or null. */
   protected readonly selectedRisk = signal<string | null>(null);
-  protected readonly tab = signal<'hotspots' | 'coupling' | 'team' | 'knowledge'>('hotspots');
+  protected readonly benchmark = CODE_HALF_LIFE_BENCHMARK;
+  protected readonly tab = signal<'hotspots' | 'coupling' | 'team' | 'knowledge' | 'age'>(
+    'hotspots',
+  );
   protected readonly floor = CLUSTER_SIZE_FLOOR;
   protected readonly ceil = CLUSTER_SIZE_CEIL;
   protected readonly minClusterSize = signal(DEFAULT_MIN_CLUSTER_FILES);
@@ -1629,10 +1890,160 @@ export class InsightsView {
     return set;
   });
 
+  // ── Age tab ──────────────────────────────────────────────────────────────
+  protected readonly report = computed(() => this.survival()?.report ?? null);
+
+  /** The Kaplan–Meier survival curve as SVG geometry, or null when there's nothing to plot. */
+  protected readonly survivalChart = computed(() => {
+    const report = this.report();
+    if (!report || report.curve.totalLines === 0) return null;
+    const curve = report.curve;
+    const { w, h, l, r, t, b } = SURVIVAL_VB;
+    const maxDays = Math.max(
+      curve.points.at(-1)?.ageDays ?? 0,
+      curve.halfLifeDays ?? 0,
+      10 * DAYS_PER_YEAR,
+    );
+    const maxYears = Math.max(1, Math.ceil(maxDays / DAYS_PER_YEAR));
+    // The curve has no support past the oldest observed line; the axis still runs
+    // to 10y so the benchmark stays visible for comparison, but we never draw or
+    // read the repo's own curve beyond what it actually observed.
+    const observedYears = curve.maxObservedAgeDays / DAYS_PER_YEAR;
+    const px = (years: number): number => l + (years / maxYears) * (w - l - r);
+    const py = (s: number): number => t + (1 - s) * (h - t - b);
+
+    // Kaplan–Meier step path: flat between death ages, then a vertical drop.
+    let path = `M ${px(0)} ${py(1)}`;
+    for (const point of curve.points) {
+      path += ` H ${px(point.ageDays / DAYS_PER_YEAR).toFixed(1)} V ${py(point.survival).toFixed(1)}`;
+    }
+    path += ` H ${px(Math.min(maxYears, observedYears)).toFixed(1)}`; // stop at observed support
+
+    const bench = CODE_HALF_LIFE_BENCHMARK.points
+      .filter((point) => point.years <= maxYears)
+      .map((point) => `${px(point.years).toFixed(1)},${py(point.survival).toFixed(1)}`)
+      .join(' ');
+
+    const step = maxYears <= 12 ? 2 : Math.ceil(maxYears / 6);
+    const xticks: { x: number; label: number }[] = [];
+    for (let year = 0; year <= maxYears; year += step) xticks.push({ x: px(year), label: year });
+    const yticks = [0, 0.5, 1].map((s) => ({ y: py(s), label: Math.round(s * 100) }));
+
+    const halfLifeYears = curve.halfLifeDays !== null ? curve.halfLifeDays / DAYS_PER_YEAR : null;
+    return {
+      w,
+      h,
+      l,
+      r,
+      t,
+      b,
+      path,
+      bench,
+      halfY: py(0.5),
+      leftX: px(0),
+      rightX: px(maxYears),
+      halfLifeX: halfLifeYears !== null ? px(halfLifeYears) : null,
+      halfLifeYears,
+      // Only report 10-year survival when the history actually reaches that far —
+      // otherwise it's extrapolation that flatters a young repo.
+      tenYearSurvival: observedYears >= 10 ? survivalAt(curve, 10 * DAYS_PER_YEAR) : null,
+      xticks,
+      yticks,
+    };
+  });
+
+  /** The birth-year cohort stack as stacked-area SVG polygons. */
+  protected readonly cohortChart = computed(() => {
+    const report = this.report();
+    if (!report) return null;
+    const stack = report.cohorts;
+    const bandCount = stack.bands.length;
+    const samples = stack.times.length;
+    if (!bandCount || !samples) return null;
+    const { w, h, l, r, t, b } = COHORT_VB;
+
+    let peak = 0;
+    for (let i = 0; i < samples; i++) {
+      let sum = 0;
+      for (const band of stack.bands) sum += stack.counts.get(band)![i];
+      if (sum > peak) peak = sum;
+    }
+    peak = peak || 1;
+    const px = (i: number): number => l + (samples === 1 ? 0 : (i / (samples - 1)) * (w - l - r));
+    const py = (v: number): number => t + (1 - v / peak) * (h - t - b);
+
+    const cum = new Array<number>(samples).fill(0);
+    const bands = stack.bands.map((band, bandIndex) => {
+      const series = stack.counts.get(band)!;
+      const top: string[] = [];
+      const bottom: string[] = [];
+      for (let i = 0; i < samples; i++) {
+        const base = cum[i];
+        const next = base + series[i];
+        top.push(`${px(i).toFixed(1)},${py(next).toFixed(1)}`);
+        bottom.push(`${px(i).toFixed(1)},${py(base).toFixed(1)}`);
+        cum[i] = next;
+      }
+      bottom.reverse();
+      return {
+        key: band,
+        color: this.cohortFill(bandIndex, bandCount),
+        path: `M ${top.join(' L ')} L ${bottom.join(' L ')} Z`,
+        current: series[samples - 1],
+      };
+    });
+    return { w, h, l, r, t, b, bands, peak, baseY: py(0), topY: py(peak) };
+  });
+
+  /** The "% of code by author" 100%-stacked bar segments. */
+  protected readonly authorChart = computed(() => {
+    const report = this.report();
+    if (!report || report.aliveLines === 0) return null;
+    let offset = 0;
+    const segments = report.authors.map((author, i) => {
+      const width = author.share * 100;
+      const segment = {
+        author: author.author,
+        color: this.authorFill(i),
+        x: offset,
+        width,
+        share: author.share,
+        lines: author.lines,
+      };
+      offset += width;
+      return segment;
+    });
+    return { segments, total: report.aliveLines };
+  });
+
+  protected cohortFill(index: number, count: number): string {
+    // Oldest cohort cool (blue), newest warm (orange).
+    const hue = count <= 1 ? 210 : 210 - (190 * index) / (count - 1);
+    return `hsl(${hue.toFixed(0)} 70% 58%)`;
+  }
+
+  protected authorFill(index: number): string {
+    return AUTHOR_FILLS[index % AUTHOR_FILLS.length];
+  }
+
+  protected years(days: number | null): string {
+    return days === null ? '—' : (days / DAYS_PER_YEAR).toFixed(1);
+  }
+
+  protected startSurvival(): void {
+    this.tab.set('age');
+    this.computeSurvival.emit();
+  }
+
   constructor() {
     // Applying a file filter is a coupling action — show that tab.
     effect(() => {
       if (this.focus()) this.tab.set('coupling');
+    });
+    // The Age tab is local-only; if it's not offered (e.g. after opening a hosted
+    // repo), fall back so a hidden tab can't stay selected.
+    effect(() => {
+      if (!this.survivalAvailable() && this.tab() === 'age') this.tab.set('hotspots');
     });
   }
 

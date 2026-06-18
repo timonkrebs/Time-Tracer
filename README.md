@@ -43,7 +43,8 @@ renames — see the feature list and roadmap below for what's done and what's ne
 - **Open local repositories** like vscode.dev: pick a folder with the File System Access API and
   Time Tracer parses its `.git` directly in the browser with isomorphic-git — full tree, history,
   diffs, blame and rename candidates, completely offline and read-only. Folder handles persist
-  across reloads (IndexedDB); a one-click "Reconnect folder" re-grants permission.
+  across reloads (IndexedDB); a one-click "Reconnect folder" re-grants permission. Local
+  repositories also unlock the **Age** tab (code survival & cohorts), which walks the whole history.
 - **Desktop-first split-pane viewer**: resizable file tree (drag the divider, double-click to
   reset, or collapse it entirely with the header toggle — remembered while you browse, and
   re-revealed whenever you open another repository) next to a file view with a line-number
@@ -70,8 +71,8 @@ renames — see the feature list and roadmap below for what's done and what's ne
   repositories** the whole history is on disk, so the scan is free and runs automatically.
 - **Insights — a metrics view** (the chart toggle in the header), from one walk of recent
   commits — capped by default, or **"Load all commits"** to walk the whole history — in the spirit
-  of Tornhill's _Your Code as a Crime Scene_. **Hotspots**, **Coupling**, **Team** and
-  **Knowledge** are always a tab-switch apart:
+  of Tornhill's _Your Code as a Crime Scene_. **Hotspots**, **Coupling**, **Team**, **Knowledge**
+  and **Age** are always a tab-switch apart:
   - **Hotspots** — files ranked by **recency-weighted churn** (`core/util/hotspots.ts`), shown as
     a **treemap** (rectangle = size/LOC, colour = heat) _and_ a ranked list; click a file to open
     it.
@@ -108,6 +109,15 @@ renames — see the feature list and roadmap below for what's done and what's ne
     names every file's primary expert and when they were last active. "Gone" is inferred only from
     commit silence (never asserted) and automated/bot authors are filtered out, so a capped walk is
     marked partial — **Load all commits** for a complete turnover picture.
+  - **Age — code survival & cohorts** (`core/util/survival.ts`), in the spirit of Bernhardsson's
+    _Git of Theseus_, **for local repositories** (it walks the whole history, so it's offered only
+    where that's free of network requests). A full-history forward walk tags every line with the
+    commit that introduced it and records when it is later removed, then plots a **cohort stack** of
+    surviving lines by year added, the **% of the code alive today by author**, and a **Kaplan–Meier
+    survival curve** — the probability a line is still present _t_ years on — annotated with the
+    repo's **code half-life** and Bernhardsson's "half-life of code" benchmark (≈6-year half-life,
+    ≈40% of lines alive after 10 years). Survivors are censored at the tip commit's time, in-file
+    moves keep a line's age, and the walk follows the first-parent mainline; it streams as it goes.
 
   Mega-commits are filtered out as churn noise, and **generated/vendored files** (lockfiles,
   `dist/`/`build/` output, minified assets and the like — gitignore-style patterns in
@@ -314,7 +324,11 @@ npm run build      # production build into dist/
     interface.
 22. **Repository Insights** — a metrics view over the history. ✅ **Change coupling**
     (`core/util/co-change.ts`), a **hotspot treemap + list** (`core/util/hotspots.ts`,
-    `core/util/treemap.ts`), a **team collaboration / social graph** (`core/util/team-graph.ts`) —
-    who works with whom, by shared file authorship — and a **knowledge-loss / turnover risk map**
-    (`core/util/knowledge.ts`), all from the same commit walk; next: a contributor leaderboard with
-    a bus-factor "what if they left?" simulation, and a hierarchically zoomable treemap.
+    `core/util/treemap.ts`), a **team collaboration / social graph** (`core/util/team-graph.ts` —
+    who works with whom, by shared file authorship), a **knowledge-loss / turnover risk map**
+    (`core/util/knowledge.ts`), and **code survival / age cohorts** (`core/util/survival.ts`, the
+    _Age_ tab, for local repositories) — a Git-of-Theseus-style cohort stack by year added, the
+    authorship of the code alive today, and a **Kaplan–Meier survival curve** with the repo's code
+    half-life against Bernhardsson's "half-life of code" benchmark (≈6-year half-life, ≈40% alive at
+    10 years) — all from the same commit walk; next: a contributor leaderboard with a bus-factor
+    "what if they left?" simulation, and a hierarchically zoomable treemap.
