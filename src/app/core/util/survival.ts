@@ -296,6 +296,20 @@ export function cohortSeries(
   return { bands, times, counts };
 }
 
+/**
+ * The cohort stack at one granularity, with that grain's legend cap applied —
+ * the only part of a {@link SurvivalReport} that depends on the bucket. Lets the
+ * store re-bucket a finished report (swapping just `cohorts`) without redoing
+ * the Kaplan–Meier curve or author shares.
+ */
+export function cohortStackFor(
+  lifetimes: Iterable<LineLifetime>,
+  now: number,
+  bucket: CohortBucket,
+): CohortStack {
+  return cohortSeries(lifetimes, { now, bucket, maxBands: COHORT_MAX_BANDS[bucket] });
+}
+
 // ───────────────────────────── Authorship share ─────────────────────────────
 
 /** One author's stake in the code alive today. */

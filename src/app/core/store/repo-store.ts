@@ -41,7 +41,13 @@ import {
   summarizeOwnership,
 } from '../util/ownership';
 import { applyPatch, parsePatch, patchStatsMatch } from '../util/patch';
-import { CohortBucket, LineLifetime, SurvivalReport, summarizeSurvival } from '../util/survival';
+import {
+  CohortBucket,
+  LineLifetime,
+  SurvivalReport,
+  cohortStackFor,
+  summarizeSurvival,
+} from '../util/survival';
 import { ancestorsOf, buildTree } from '../util/tree';
 import { RecentRepos } from './recent-repos';
 
@@ -1392,8 +1398,11 @@ export class RepoStore {
     const state = this._survival();
     const lines = this.survivalLifetimes;
     if (!state || state.status !== 'ready' || !lines) return;
-    const report = summarizeSurvival(lines, { now: this.survivalNow, bucket });
-    this._survival.set({ ...state, report });
+    // Only the cohort stack depends on the grain — keep the (unchanged) curve,
+    // author shares and counts so a slider move stays O(lines), never a full
+    // Kaplan–Meier re-sort that could freeze the tab on a large repo.
+    const cohorts = cohortStackFor(lines, this.survivalNow, bucket);
+    this._survival.set({ ...state, report: { ...state.report, cohorts } });
   }
 
   /**

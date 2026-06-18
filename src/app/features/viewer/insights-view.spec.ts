@@ -686,6 +686,34 @@ describe('InsightsView', () => {
       expect(slider.value).toBe('0');
     });
 
+    it('redraws the cohort chart when the report is re-bucketed', async () => {
+      await setSurvival(SURVIVAL); // year-bucketed cohorts
+      button('Age')!.click();
+      await fixture.whenStable();
+      // Year legend shows bare years, no month suffix.
+      expect(text()).toContain('2024');
+      expect(text()).not.toContain('2024-01');
+
+      // The slider emits 'month'; the store responds by pushing a re-bucketed
+      // report plus the new bound bucket — exactly what viewer-page wires up.
+      const slider = fixture.nativeElement.querySelector(
+        'input[aria-label^="Cohort granularity"]',
+      ) as HTMLInputElement;
+      slider.value = '1';
+      slider.dispatchEvent(new Event('input'));
+      expect(bucketChanges).toEqual(['month']);
+
+      fixture.componentRef.setInput('cohortBucket', 'month');
+      fixture.componentRef.setInput('survival', {
+        ...SURVIVAL,
+        report: summarizeSurvival(LIFETIMES, { now: SURVIVAL_NOW, bucket: 'month' }),
+      });
+      await fixture.whenStable();
+      // The chart and legend now reflect monthly cohorts.
+      expect(text()).toContain('Surviving lines by month added');
+      expect(text()).toContain('2024-01');
+    });
+
     it('shows progress while the history is still being walked', async () => {
       await setSurvival({
         status: 'computing',
