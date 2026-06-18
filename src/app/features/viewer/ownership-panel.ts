@@ -1,6 +1,8 @@
 import { ChangeDetectionStrategy, Component, computed, input, output, signal } from '@angular/core';
 
 import { FolderOwnershipState } from '../../core/store/repo-store';
+import { CSV_MIME, JSON_MIME, fileSlug, round, toCsv, toJson } from '../../core/util/data-export';
+import { downloadText } from '../../core/util/download';
 import { FileRisk, OwnershipSummary } from '../../core/util/ownership';
 import { relativeTime, shortDate } from '../../core/util/relative-time';
 
@@ -169,6 +171,27 @@ export class OwnershipSummaryView {
                 }
               }
             }
+            @if (s.authors.length) {
+              <div class="mt-2 flex items-center gap-1.5 text-[10px] text-zinc-600">
+                <span>Export</span>
+                <button
+                  type="button"
+                  class="rounded border border-zinc-700 px-1.5 py-0.5 text-zinc-400 transition hover:border-zinc-500 hover:text-zinc-200"
+                  (click)="exportFile('csv')"
+                  title="Download this file's author breakdown as CSV"
+                >
+                  CSV
+                </button>
+                <button
+                  type="button"
+                  class="rounded border border-zinc-700 px-1.5 py-0.5 text-zinc-400 transition hover:border-zinc-500 hover:text-zinc-200"
+                  (click)="exportFile('json')"
+                  title="Download this file's author breakdown as JSON"
+                >
+                  JSON
+                </button>
+              </div>
+            }
           } @else if (blameUnavailable(); as reason) {
             <p class="text-xs text-zinc-600">{{ reason }}</p>
           } @else {
@@ -273,6 +296,27 @@ export class OwnershipSummaryView {
                 <p class="text-xs text-zinc-600">No files at risk — the code here is recent.</p>
               }
             }
+            @if (folderExportable()) {
+              <div class="mt-3 flex items-center gap-1.5 text-[10px] text-zinc-600">
+                <span>Export {{ folderTab() }}</span>
+                <button
+                  type="button"
+                  class="rounded border border-zinc-700 px-1.5 py-0.5 text-zinc-400 transition hover:border-zinc-500 hover:text-zinc-200"
+                  (click)="exportFolder('csv')"
+                  [title]="'Download the folder ' + folderTab() + ' as CSV'"
+                >
+                  CSV
+                </button>
+                <button
+                  type="button"
+                  class="rounded border border-zinc-700 px-1.5 py-0.5 text-zinc-400 transition hover:border-zinc-500 hover:text-zinc-200"
+                  (click)="exportFolder('json')"
+                  [title]="'Download the folder ' + folderTab() + ' as JSON'"
+                >
+                  JSON
+                </button>
+              </div>
+            }
             @if (fo.capped || !fo.fromCache) {
               <div class="mt-3 flex flex-wrap items-center gap-2">
                 @if (fo.capped) {
@@ -332,6 +376,8 @@ export class OwnershipSummaryView {
 export class OwnershipPanel {
   /** Selected file path; null when nothing is selected. */
   readonly path = input<string | null>(null);
+  /** Repository display name — only used to name exported files. */
+  readonly repoName = input<string>('repository');
   readonly fileSummary = input<OwnershipSummary | null>(null);
   /** Knowledge-loss risk of the selected file (orphaned lines), or null. */
   readonly fileRisk = input<FileRisk | null>(null);
@@ -409,4 +455,90 @@ export class OwnershipPanel {
   protected readonly folderRiskMax = computed(() =>
     this.folderRisk().reduce((max, file) => Math.max(max, file.riskScore), 0),
   );
+
+  /** Whether the active folder tab (authors/risk) has rows to export. */
+  protected readonly folderExportable = computed(() => {
+    const folder = this.currentFolder();
+    if (!folder) return false;
+    return this.folderTab() === 'risk'
+      ? this.folderRisk().length > 0
+      : folder.summary.authors.length > 0;
+  });
+
+  /** Exports the selected file's author breakdown as CSV or JSON. */
+  protected exportFile(format: 'csv' | 'json'): void {
+    const summary = this.fileSummary();
+    if (!summary) return;
+    const name = `${fileSlug(this.repoName())}-${fileSlug(this.baseName())}-owners`;
+    if (format === 'csv') downloadText(`${name}.csv`, CSV_MIME, ownersToCsv(summary));
+    else downloadText(`${name}.json`, JSON_MIME, toJson(ownersToJson(summary)));
+  }
+
+  /** Exports the scanned folder's active tab (authors or risk) as CSV or JSON. */
+  protected exportFolder(format: 'csv' | 'json'): void {
+    const folder = this.currentFolder();
+    if (!folder) return;
+    const base = `${fileSlug(this.repoName())}-${fileSlug(this.folderLabel())}-folder`;
+    if (this.folderTab() === 'risk') {
+      const files = this.folderRisk();
+      if (format === 'csv') downloadText(`${base}-risk.csv`, CSV_MIME, riskToCsv(files));
+      else downloadText(`${base}-risk.json`, JSON_MIME, toJson(riskToJson(files)));
+    } else if (format === 'csv') {
+      downloadText(`${base}-authors.csv`, CSV_MIME, ownersToCsv(folder.summary));
+    } else {
+      downloadText(`${base}-authors.json`, JSON_MIME, toJson(ownersToJson(folder.summary)));
+    }
+  }
+}
+
+/** An author-share table (per file or folder) as CSV. */
+function ownersToCsv(summary: OwnershipSummary): string {
+  return toCsv(
+    ['author', 'lines', 'share', 'lastAuthoredAt', 'lastSha'],
+    summary.authors.map((a) => [a.name, a.lines, round(a.share, 4), a.lastAuthoredAt, a.lastSha]),
+  );
+}
+
+/** An author-share summary (per file or folder) as a JSON-friendly object. */
+function ownersToJson(summary: OwnershipSummary) {
+  return {
+    attributedLines: summary.attributedLines,
+    totalLines: summary.totalLines,
+    busFactor: summary.busFactor,
+    latest: summary.latest,
+    authors: summary.authors.map((a) => ({
+      name: a.name,
+      lines: a.lines,
+      share: round(a.share, 4),
+      lastAuthoredAt: a.lastAuthoredAt,
+      lastSha: a.lastSha,
+    })),
+  };
+}
+
+/** A folder's knowledge-risk files as CSV. */
+function riskToCsv(files: readonly FileRisk[]): string {
+  return toCsv(
+    ['path', 'staleShare', 'riskScore', 'attributedLines', 'owner', 'ownerLastAuthoredAt'],
+    files.map((f) => [
+      f.path,
+      round(f.staleShare, 4),
+      round(f.riskScore),
+      f.attributedLines,
+      f.owner?.name ?? '',
+      f.owner?.lastAuthoredAt ?? '',
+    ]),
+  );
+}
+
+/** A folder's knowledge-risk files as JSON-friendly objects. */
+function riskToJson(files: readonly FileRisk[]) {
+  return files.map((f) => ({
+    path: f.path,
+    staleShare: round(f.staleShare, 4),
+    riskScore: round(f.riskScore),
+    attributedLines: f.attributedLines,
+    owner: f.owner?.name ?? null,
+    ownerLastAuthoredAt: f.owner?.lastAuthoredAt ?? null,
+  }));
 }

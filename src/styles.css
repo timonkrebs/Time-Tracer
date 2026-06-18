@@ -10,6 +10,46 @@ html {
   color-scheme: dark;
 }
 
+html[data-theme='light'] {
+  color-scheme: light;
+}
+
+/*
+ * Light theme. Tailwind v4 utilities reference the palette through CSS
+ * variables (e.g. `.bg-zinc-950 { background: var(--color-zinc-950) }`), so
+ * remapping the neutral ramps here re-themes the whole UI centrally — no
+ * per-component `dark:` variants. We invert the zinc and slate scales (50↔950,
+ * 100↔900, …, 500 fixed), which preserves every contrast relationship while
+ * flipping dark↔light. Accent hues (indigo/amber/rose/sky/emerald/…) are left
+ * untouched so they read on either background. The resolved theme is set on
+ * `<html data-theme>` by ThemeService (and the no-flash script in index.html).
+ */
+html[data-theme='light'] {
+  --color-zinc-50: oklch(14.1% 0.005 285.823);
+  --color-zinc-100: oklch(21% 0.006 285.885);
+  --color-zinc-200: oklch(27.4% 0.006 286.033);
+  --color-zinc-300: oklch(37% 0.013 285.805);
+  --color-zinc-400: oklch(44.2% 0.017 285.786);
+  --color-zinc-500: oklch(55.2% 0.016 285.938);
+  --color-zinc-600: oklch(70.5% 0.015 286.067);
+  --color-zinc-700: oklch(87.1% 0.006 286.286);
+  --color-zinc-800: oklch(92% 0.004 286.32);
+  --color-zinc-900: oklch(96.7% 0.001 286.375);
+  --color-zinc-950: oklch(98.5% 0 0);
+
+  --color-slate-50: oklch(12.9% 0.042 264.695);
+  --color-slate-100: oklch(20.8% 0.042 265.755);
+  --color-slate-200: oklch(27.9% 0.041 260.031);
+  --color-slate-300: oklch(37.2% 0.044 257.287);
+  --color-slate-400: oklch(44.6% 0.043 257.281);
+  --color-slate-500: oklch(55.4% 0.046 257.417);
+  --color-slate-600: oklch(70.4% 0.04 256.788);
+  --color-slate-700: oklch(86.9% 0.022 252.894);
+  --color-slate-800: oklch(92.9% 0.013 255.508);
+  --color-slate-900: oklch(96.8% 0.007 247.896);
+  --color-slate-950: oklch(98.4% 0.003 247.858);
+}
+
 html,
 body {
   height: 100%;
@@ -63,11 +103,12 @@ body {
   z-index: 50;
   width: max-content;
   max-width: min(28rem, calc(100vw - 2rem));
-  border: 1px solid var(--color-zinc-700);
+  /* A dark tooltip on either theme (literal colours, so it doesn't invert). */
+  border: 1px solid #3f3f46;
   border-radius: 4px;
-  background: black;
+  background: #18181b;
   box-shadow: 0 16px 40px rgb(0 0 0 / 0.45);
-  color: var(--color-zinc-100);
+  color: #f4f4f5;
   font-size: 11px;
   line-height: 1.4;
   opacity: 0;

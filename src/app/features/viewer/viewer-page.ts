@@ -23,6 +23,7 @@ import {
 } from '../../core/store/repo-store';
 import { LineRange, formatLineRange, parseLineRange } from '../../core/util/line-range';
 import { relativeTime, shortSha } from '../../core/util/relative-time';
+import { ThemeToggle } from '../shared/theme-toggle';
 import { DiffView } from './diff-view';
 import { FileFinder } from './file-finder';
 import { FileHistory } from './file-history';
@@ -62,6 +63,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
     FileFinder,
     OwnershipPanel,
     InsightsView,
+    ThemeToggle,
   ],
   host: { class: 'block h-full', '(document:keydown)': 'onGlobalKeydown($event)' },
   template: `
@@ -202,6 +204,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
           }
         }
 
+        <app-theme-toggle />
         <a
           href="https://github.com/timonkrebs/Time-Tracer/issues"
           target="_blank"
@@ -349,6 +352,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
               [survival]="store.survival()"
               [survivalAvailable]="store.hasLocalData()"
               [commitCap]="commitCap"
+              [repoName]="repoLabel()"
               [cohortBucket]="store.cohortBucket()"
               (analyze)="store.computeCoChange()"
               (loadAll)="store.computeCoChange({ all: true })"
@@ -549,6 +553,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
               <aside class="w-80 shrink-0 border-l border-zinc-800 bg-zinc-950">
                 <app-ownership-panel
                   [path]="store.selectedPath()"
+                  [repoName]="repoLabel()"
                   [fileSummary]="store.selectedOwnership()"
                   [fileRisk]="store.selectedFileRisk()"
                   [blameUnavailable]="fileBlameUnavailable()"
@@ -669,6 +674,11 @@ export class ViewerPage {
 
   /** The repository Insights view replaces the file browser when on. */
   protected readonly insightsMode = computed(() => this.insights() === '1');
+
+  /** Display name of the repo, used to name exported files. */
+  protected readonly repoLabel = computed(
+    () => this.store.metadata()?.fullName ?? `${this.owner()}/${this.repo()}`,
+  );
 
   /** Parent folder of the selected file ('' for the repository root). */
   protected readonly selectedFolder = computed(() => {

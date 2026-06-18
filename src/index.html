@@ -5,8 +5,26 @@
     <title>Time Tracer</title>
     <base href="/" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="dark light" />
     <meta name="theme-color" content="#09090b" />
+    <!-- Resolve the theme before first paint so there's no flash of the wrong
+         one. Mirrors ThemeService, which keeps it in sync afterwards. -->
+    <script>
+      (function () {
+        var resolved = 'dark';
+        try {
+          var pref = localStorage.getItem('time-tracer.theme');
+          if (pref === 'light' || pref === 'dark') {
+            resolved = pref;
+          } else if (window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches) {
+            resolved = 'light';
+          }
+        } catch (e) {}
+        var root = document.documentElement;
+        root.setAttribute('data-theme', resolved);
+        root.style.backgroundColor = resolved === 'light' ? '#fafafa' : '#09090b';
+      })();
+    </script>
     <meta
       name="description"
       content="Time Tracer — explore git repositories and travel back through their history, right in the browser."
@@ -21,7 +39,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Time Tracer" />
   </head>
-  <body style="background: #09090b">
+  <body>
     <app-root></app-root>
   </body>
 </html>

@@ -6,6 +6,7 @@ import { GitProvider, ProviderRegistry } from '../../core/git/git-provider';
 import { LocalRepos, supportsLocalRepos } from '../../core/git/local/local-repos';
 import { ParsedRepoUrl } from '../../core/models';
 import { RecentRepos, RecentRepo } from '../../core/store/recent-repos';
+import { ThemeToggle } from '../shared/theme-toggle';
 
 // Popular, heavily co-developed engineering projects — thousands of authors and
 // rich history to explore (blame, diffs, line traces).
@@ -34,7 +35,11 @@ type CustomFlavor = (typeof CUSTOM_FLAVORS)[number]['id'];
   selector: 'app-loader-page',
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { class: 'block h-full' },
+  imports: [ThemeToggle],
   template: `
+    <div class="fixed top-4 right-4 z-10">
+      <app-theme-toggle />
+    </div>
     <main class="mx-auto flex h-full max-w-2xl flex-col items-center justify-center px-6 py-16">
       <div class="w-full">
         <div class="mb-10 flex flex-col items-center text-center">
