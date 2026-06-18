@@ -17,7 +17,12 @@ import { HEAT_THRESHOLDS, Hotspot } from '../../core/util/hotspots';
 import { AuthorPresence, KnowledgeRisk, RISK_THRESHOLDS } from '../../core/util/knowledge';
 import { disambiguateLabels } from '../../core/util/path-label';
 import { relativeTime } from '../../core/util/relative-time';
-import { CODE_HALF_LIFE_BENCHMARK, DAYS_PER_YEAR, survivalAt } from '../../core/util/survival';
+import {
+  CODE_HALF_LIFE_BENCHMARK,
+  CohortBucket,
+  DAYS_PER_YEAR,
+  survivalAt,
+} from '../../core/util/survival';
 import {
   Collaboration,
   Collaborator,
@@ -142,6 +147,8 @@ function median(values: readonly number[]): number {
 /** Coordinate spaces for the Age tab's SVG charts (scaled uniformly to fill). */
 const SURVIVAL_VB = { w: 340, h: 180, l: 38, r: 12, t: 12, b: 26 };
 const COHORT_VB = { w: 340, h: 150, l: 38, r: 12, t: 12, b: 10 };
+/** Cohort granularities in slider order (narrow → wide). */
+const COHORT_BUCKETS: readonly CohortBucket[] = ['week', 'month', 'year'];
 /** Categorical fills for the authorship breakdown, cycled. */
 const AUTHOR_FILLS = [
   '#818cf8',
@@ -1466,9 +1473,28 @@ interface Quadrant {
               }
 
               @if (cohortChart(); as c) {
-                <p class="mt-3 mb-1 text-[11px] font-medium tracking-wide text-zinc-500 uppercase">
-                  Surviving lines by year added
-                </p>
+                <div class="mt-3 mb-1 flex items-end justify-between gap-3">
+                  <p class="text-[11px] font-medium tracking-wide text-zinc-500 uppercase">
+                    Surviving lines by {{ cohortBucket() }} added
+                  </p>
+                  <!-- Granularity slider: how wide each birth cohort is. -->
+                  <div class="flex shrink-0 flex-col items-stretch">
+                    <input
+                      type="range"
+                      min="0"
+                      max="2"
+                      step="1"
+                      [value]="cohortBucketIndex()"
+                      (input)="onCohortBucket($event)"
+                      class="h-1 w-28 cursor-pointer accent-indigo-400"
+                      aria-label="Cohort granularity: week, month or year"
+                      [attr.aria-valuetext]="cohortBucket()"
+                    />
+                    <div class="mt-0.5 flex justify-between text-[9px] text-zinc-600 select-none">
+                      <span>Week</span><span>Month</span><span>Year</span>
+                    </div>
+                  </div>
+                </div>
                 <svg
                   class="w-full rounded border border-zinc-800 bg-zinc-900/30"
                   [attr.viewBox]="'0 0 ' + c.w + ' ' + c.h"
@@ -1612,11 +1638,15 @@ export class InsightsView {
    */
   readonly survivalAvailable = input<boolean>(false);
   readonly commitCap = input<number>(75);
+  /** Cohort-stack granularity for the Age tab (week / month / year). */
+  readonly cohortBucket = input<CohortBucket>('year');
 
   readonly analyze = output<void>();
   readonly loadAll = output<void>();
   /** Walk the whole history for the code-survival analysis. */
   readonly computeSurvival = output<void>();
+  /** Change the cohort-stack granularity (re-buckets without a re-walk). */
+  readonly cohortBucketChange = output<CohortBucket>();
   /** Full reset (drops the overview, any filter and the survival analysis). */
   readonly clear = output<void>();
   /** Filter coupling by a file (its full history). */
@@ -2020,6 +2050,18 @@ export class InsightsView {
     // Oldest cohort cool (blue), newest warm (orange).
     const hue = count <= 1 ? 210 : 210 - (190 * index) / (count - 1);
     return `hsl(${hue.toFixed(0)} 70% 58%)`;
+  }
+
+  /** Slider position (0 week, 1 month, 2 year) for the current granularity. */
+  protected readonly cohortBucketIndex = computed(() => {
+    const i = COHORT_BUCKETS.indexOf(this.cohortBucket());
+    return i < 0 ? COHORT_BUCKETS.indexOf('year') : i;
+  });
+
+  /** Map a granularity-slider change to a bucket and bubble it up. */
+  protected onCohortBucket(event: Event): void {
+    const index = Number((event.target as HTMLInputElement).value);
+    this.cohortBucketChange.emit(COHORT_BUCKETS[index] ?? 'year');
   }
 
   protected authorFill(index: number): string {

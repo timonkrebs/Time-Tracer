@@ -5,7 +5,7 @@ import { CoChangeState, SurvivalState } from '../../core/store/repo-store';
 import { computeCoChange } from '../../core/util/co-change';
 import { computeHotspots } from '../../core/util/hotspots';
 import { computeKnowledgeRisk } from '../../core/util/knowledge';
-import { LineLifetime, summarizeSurvival } from '../../core/util/survival';
+import { CohortBucket, LineLifetime, summarizeSurvival } from '../../core/util/survival';
 import { EMPTY_TEAM_GRAPH, computeTeamGraph } from '../../core/util/team-graph';
 import { InsightsView } from './insights-view';
 
@@ -186,6 +186,7 @@ describe('InsightsView', () => {
   let focused: string[];
   let clearedFocus: number;
   let opened: string[];
+  let bucketChanges: CohortBucket[];
 
   beforeEach(async () => {
     // jsdom has no layout, so scrollIntoView logs a "not implemented" error;
@@ -204,6 +205,8 @@ describe('InsightsView', () => {
     focused = [];
     clearedFocus = 0;
     opened = [];
+    bucketChanges = [];
+    fixture.componentInstance.cohortBucketChange.subscribe((b) => bucketChanges.push(b));
     fixture.componentInstance.analyze.subscribe(() => analyzed++);
     fixture.componentInstance.loadAll.subscribe(() => loadedAll++);
     fixture.componentInstance.computeSurvival.subscribe(() => survivalRuns++);
@@ -656,6 +659,59 @@ describe('InsightsView', () => {
       expect(text()).toContain('Ada');
       // The three charts each render at least one SVG.
       expect(fixture.nativeElement.querySelectorAll('svg').length).toBeGreaterThanOrEqual(3);
+    });
+
+    it('emits a cohort-granularity change from the slider and reflects the bound bucket', async () => {
+      await setSurvival(SURVIVAL);
+      button('Age')!.click();
+      await fixture.whenStable();
+
+      const slider = fixture.nativeElement.querySelector(
+        'input[aria-label^="Cohort granularity"]',
+      ) as HTMLInputElement;
+      expect(slider).toBeTruthy();
+      // Default granularity is 'year' → the rightmost stop.
+      expect(slider.value).toBe('2');
+      expect(text()).toContain('Surviving lines by year added');
+
+      // Dragging to the middle stop emits 'month'.
+      slider.value = '1';
+      slider.dispatchEvent(new Event('input'));
+      expect(bucketChanges).toEqual(['month']);
+
+      // The title and slider position follow the bound granularity input.
+      fixture.componentRef.setInput('cohortBucket', 'week');
+      await fixture.whenStable();
+      expect(text()).toContain('Surviving lines by week added');
+      expect(slider.value).toBe('0');
+    });
+
+    it('redraws the cohort chart when the report is re-bucketed', async () => {
+      await setSurvival(SURVIVAL); // year-bucketed cohorts
+      button('Age')!.click();
+      await fixture.whenStable();
+      // Year legend shows bare years, no month suffix.
+      expect(text()).toContain('2024');
+      expect(text()).not.toContain('2024-01');
+
+      // The slider emits 'month'; the store responds by pushing a re-bucketed
+      // report plus the new bound bucket — exactly what viewer-page wires up.
+      const slider = fixture.nativeElement.querySelector(
+        'input[aria-label^="Cohort granularity"]',
+      ) as HTMLInputElement;
+      slider.value = '1';
+      slider.dispatchEvent(new Event('input'));
+      expect(bucketChanges).toEqual(['month']);
+
+      fixture.componentRef.setInput('cohortBucket', 'month');
+      fixture.componentRef.setInput('survival', {
+        ...SURVIVAL,
+        report: summarizeSurvival(LIFETIMES, { now: SURVIVAL_NOW, bucket: 'month' }),
+      });
+      await fixture.whenStable();
+      // The chart and legend now reflect monthly cohorts.
+      expect(text()).toContain('Surviving lines by month added');
+      expect(text()).toContain('2024-01');
     });
 
     it('shows progress while the history is still being walked', async () => {

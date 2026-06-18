@@ -15,8 +15,9 @@ actually live?" from the same commit walk the existing tabs use. It surfaces thr
 modelled directly on Erik Bernhardsson's [`git-of-theseus`](https://github.com/erikbern/git-of-theseus)
 and his 2016 essay [_The half-life of code_](https://erikbern.com/2016/12/05/the-half-life-of-code.html):
 
-1. **Cohort stack plot** — total lines over time, stacked into cohorts by the **year each line
-   was added**. You watch the repo grow and old cohorts erode.
+1. **Cohort stack plot** — total lines over time, stacked into cohorts by **when each line was
+   added**. A granularity slider chooses the cohort width — **week, month or year** — re-bucketed
+   from the already-walked lifetimes (no re-walk). You watch the repo grow and old cohorts erode.
 2. **Authorship share** — the same surface broken down by **author** (current snapshot as a
    100%-stacked bar, optionally over time).
 3. **Survival curve** — the probability a line is still present _t_ years after it was added,
