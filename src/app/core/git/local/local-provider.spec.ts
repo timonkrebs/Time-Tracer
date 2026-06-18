@@ -182,6 +182,29 @@ describe('LocalGitProvider', () => {
     expect(initial).toEqual([{ path: 'hello.txt', status: 'added' }]);
   });
 
+  it('reports modified files and recurses into nested subtrees', async () => {
+    // Root-level edit (c2 changed hello.txt's content).
+    expect(await provider.getCommitFiles(slug, c2)).toEqual([
+      { path: 'hello.txt', status: 'modified' },
+    ]);
+
+    // A change deep in a subtree is found by the oid-pruned recursion, with the
+    // unrelated root files skipped.
+    await fs.promises.writeFile('/src/lib/util.ts', 'export const a = 1;\n');
+    await git.add({ fs, dir: '/', filepath: 'src/lib/util.ts' });
+    const c4 = await git.commit({ fs, dir: '/', message: 'c4: add nested', author });
+    expect(await provider.getCommitFiles(slug, c4)).toEqual([
+      { path: 'src/lib/util.ts', status: 'added' },
+    ]);
+
+    await fs.promises.writeFile('/src/lib/util.ts', 'export const a = 2;\n');
+    await git.add({ fs, dir: '/', filepath: 'src/lib/util.ts' });
+    const c5 = await git.commit({ fs, dir: '/', message: 'c5: edit nested', author });
+    expect(await provider.getCommitFiles(slug, c5)).toEqual([
+      { path: 'src/lib/util.ts', status: 'modified' },
+    ]);
+  });
+
   it('fails with guidance when the folder is not connected', async () => {
     await expect(
       provider.getMetadata({ provider: 'local', owner: 'local', repo: 'ghost' }),

@@ -112,6 +112,13 @@ export class LocalGitProvider implements GitProvider {
    */
   private readonly primedRefs = new WeakMap<FsLike, Set<string>>();
 
+  /**
+   * Tree entries by oid, per fs. Tree oids are content-addressed and immutable,
+   * so a walk that revisits the same subtree across adjacent commits (the common
+   * case) reads it once instead of re-parsing it. Dies with the fs via WeakMap.
+   */
+  private readonly treeCache = new WeakMap<FsLike, Map<string, readonly TreeChild[]>>();
+
   /** Local repos are opened via the folder picker, never via URL input. */
   canHandle(): boolean {
     return false;
@@ -297,28 +304,21 @@ export class LocalGitProvider implements GitProvider {
     const git = await loadGit();
     const log = (await git.log({ fs, dir: '/', ref })) as LogCommitResult[];
     const treeOf = new Map(log.map((entry) => [entry.oid, entry.commit.tree]));
-    const treeCache = new Map<string, readonly TreeChild[]>();
-    const readTree = async (oid: string): Promise<readonly TreeChild[]> => {
-      let entries = treeCache.get(oid);
-      if (!entries) {
-        entries = (await git.readTree({ fs, dir: '/', oid })).tree as TreeChild[];
-        treeCache.set(oid, entries);
-      }
-      return entries;
-    };
+    const readTree = (oid: string): Promise<readonly TreeChild[]> =>
+      this.readTreeCached(git, fs, oid);
 
     // The log is newest-first, so appending keeps each path's history newest-first.
     const histories = new Map<string, CommitInfo[]>();
     for (const entry of log) {
       const parentOid = entry.commit.parent[0];
       const parentTree = parentOid ? (treeOf.get(parentOid) ?? null) : null;
-      const changed: string[] = [];
+      const changed: CommitFileChange[] = [];
       await this.diffTrees(readTree, parentTree, entry.commit.tree, '', changed);
       if (changed.length === 0) continue;
       const info = mapCommit(entry);
-      for (const p of changed) {
-        let arr = histories.get(p);
-        if (!arr) histories.set(p, (arr = []));
+      for (const change of changed) {
+        let arr = histories.get(change.path);
+        if (!arr) histories.set(change.path, (arr = []));
         arr.push(info);
       }
     }
@@ -335,10 +335,26 @@ export class LocalGitProvider implements GitProvider {
     primed.add(ref);
   }
 
+  /** A tree's entries, memoised per fs+oid (see {@link treeCache}). */
+  private async readTreeCached(
+    git: GitApi,
+    fs: FsLike,
+    oid: string,
+  ): Promise<readonly TreeChild[]> {
+    let perFs = this.treeCache.get(fs);
+    if (!perFs) this.treeCache.set(fs, (perFs = new Map()));
+    let entries = perFs.get(oid);
+    if (!entries) {
+      entries = (await git.readTree({ fs, dir: '/', oid })).tree as TreeChild[];
+      perFs.set(oid, entries);
+    }
+    return entries;
+  }
+
   /**
-   * Collects the blob paths that differ between two trees (the file changes of
-   * a commit vs its parent), recursing only into subtrees whose oids differ —
-   * identical subtrees are pruned, so the work is proportional to what changed.
+   * Collects the file changes between two trees (a commit vs its parent),
+   * recursing only into subtrees whose oids differ — identical subtrees are
+   * pruned, so the work is proportional to what changed, not to the tree size.
    * A null tree means "absent" (root commit, or an added/removed subtree).
    */
   private async diffTrees(
@@ -346,7 +362,7 @@ export class LocalGitProvider implements GitProvider {
     aTree: string | null,
     bTree: string | null,
     prefix: string,
-    out: string[],
+    out: CommitFileChange[],
   ): Promise<void> {
     if (aTree === bTree) return;
     const before = new Map<string, TreeChild>();
@@ -358,16 +374,24 @@ export class LocalGitProvider implements GitProvider {
       const prev = before.get(e.path);
       before.delete(e.path);
       if (e.type === 'tree') {
+        // A blob replaced by a directory: the old blob is gone, its files are new.
+        if (prev && prev.type !== 'tree') out.push({ path, status: 'removed' });
         await this.diffTrees(readTree, prev?.type === 'tree' ? prev.oid : null, e.oid, path, out);
-      } else if (!prev || prev.oid !== e.oid) {
-        out.push(path);
+      } else if (!prev) {
+        out.push({ path, status: 'added' });
+      } else if (prev.type === 'tree') {
+        // A directory replaced by a blob: its files are gone, the blob is new.
+        await this.diffTrees(readTree, prev.oid, null, path, out);
+        out.push({ path, status: 'added' });
+      } else if (prev.oid !== e.oid) {
+        out.push({ path, status: 'modified' });
       }
     }
     // Whatever is left in `before` was removed by this commit.
     for (const e of before.values()) {
       const path = prefix ? `${prefix}/${e.path}` : e.path;
       if (e.type === 'tree') await this.diffTrees(readTree, e.oid, null, path, out);
-      else out.push(path);
+      else out.push({ path, status: 'removed' });
     }
   }
 
@@ -387,30 +411,19 @@ export class LocalGitProvider implements GitProvider {
     try {
       const git = await loadGit();
       const { commit } = await git.readCommit({ fs, dir: '/', oid: sha });
-      const parent = commit.parent[0];
-      const changes = await git.walk({
-        fs,
-        dir: '/',
-        trees: [git.TREE({ ref: parent ?? sha }), git.TREE({ ref: sha })],
-        map: async (filepath, [before, after]) => {
-          if (filepath === '.') return undefined;
-          const beforeType = await before?.type();
-          const afterType = await after?.type();
-          if (beforeType === 'tree' || afterType === 'tree') return undefined;
-          const beforeOid = beforeType === 'blob' ? await before?.oid() : undefined;
-          const afterOid = afterType === 'blob' ? await after?.oid() : undefined;
-          if (!parent) {
-            return afterOid ? { path: filepath, status: 'added' } : undefined;
-          }
-          if (beforeOid === afterOid) return undefined;
-          if (beforeOid && !afterOid) return { path: filepath, status: 'removed' };
-          if (!beforeOid && afterOid) return { path: filepath, status: 'added' };
-          return { path: filepath, status: 'modified' };
-        },
-      });
-      return (changes as (CommitFileChange | undefined)[]).filter(
-        (c): c is CommitFileChange => !!c,
-      );
+      const parentOid = commit.parent[0];
+      // Diff the two root trees with oid pruning (identical subtrees are skipped),
+      // so the cost is proportional to what the commit changed — not to the whole
+      // tree, as a full `git.walk` of both trees would be. This is the per-commit
+      // primitive the co-change and Age walks call for every commit.
+      const parentTree = parentOid
+        ? (await git.readCommit({ fs, dir: '/', oid: parentOid })).commit.tree
+        : null;
+      const readTree = (oid: string): Promise<readonly TreeChild[]> =>
+        this.readTreeCached(git, fs, oid);
+      const changes: CommitFileChange[] = [];
+      await this.diffTrees(readTree, parentTree, commit.tree, '', changes);
+      return changes;
     } catch (error) {
       throw this.mapError(error, `Commit ${sha.slice(0, 7)} was not found in this repository.`);
     }

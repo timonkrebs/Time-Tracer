@@ -55,9 +55,13 @@ const ORIGIN_SNAPSHOT_CAP = 30;
 const ORIGIN_RESULT_CAP = 8;
 /** Files blamed for a per-folder ownership summary (it is request-heavy). */
 export const FOLDER_OWNERSHIP_CAP = 30;
+/** Files blamed concurrently for the folder ownership scan (each blame is independent). */
+const FOLDER_OWNERSHIP_CONCURRENCY = 6;
 
 /** Recent commits walked for the co-change analysis (one request per commit). */
 export const CO_CHANGE_COMMIT_CAP = 75;
+/** Per-commit changed-file fetches kept in flight at once during the co-change walk. */
+const CO_CHANGE_PREFETCH = 12;
 
 /** Safety cap for a single file's full-history co-change walk. */
 export const FILE_COCHANGE_COMMIT_CAP = 400;
@@ -1315,17 +1319,32 @@ export class RepoStore {
       }
     }
 
-    for (const entry of files) {
-      await this.loadBlame(entry.path, null);
-      if (!live()) return;
-      const blame = this._blames().get(fileKey(entry.path, null));
-      if (blame && (blame.status === 'ready' || blame.status === 'computing')) {
-        owners.push(...blame.lines);
-        perFile.push({ path: entry.path, lines: blame.lines });
+    // Blame the files with bounded concurrency: each file's blame is independent,
+    // so overlapping a handful turns N sequential history+blob walks into roughly
+    // N / limit. The summary and risk list aggregate and re-sort their inputs, so
+    // the published result is identical regardless of which file finishes first.
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        if (!live()) return;
+        const i = next++;
+        if (i >= files.length) return;
+        const entry = files[i];
+        await this.loadBlame(entry.path, null);
+        if (!live()) return;
+        const blame = this._blames().get(fileKey(entry.path, null));
+        if (blame && (blame.status === 'ready' || blame.status === 'computing')) {
+          owners.push(...blame.lines);
+          perFile.push({ path: entry.path, lines: blame.lines });
+        }
+        scanned++;
+        publish('computing');
       }
-      scanned++;
-      publish('computing');
-    }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(FOLDER_OWNERSHIP_CONCURRENCY, files.length) }, () => worker()),
+    );
+    if (!live()) return;
     publish('ready');
   }
 
@@ -1481,10 +1500,27 @@ export class RepoStore {
         }
         this.cacheCommits(commits);
         const before = collected.length;
-        for (const commit of commits) {
+        // Pipeline the per-commit changed-file fetches with bounded concurrency,
+        // so the requests overlap instead of running strictly one at a time (the
+        // dominant cost of this walk). `commitFilesFor` is memoised, so the few
+        // fetches started past the cap are simply cached, never wasted twice.
+        const pending: (Promise<readonly string[]> | undefined)[] = new Array(commits.length);
+        let started = 0;
+        const fill = (limit: number): void => {
+          while (started < commits.length && started < limit) {
+            const promise = this.commitFilesFor(slug, commits[started].sha);
+            void promise.catch(() => {}); // handled; the in-order await still surfaces the error
+            pending[started++] = promise;
+          }
+        };
+        fill(CO_CHANGE_PREFETCH);
+        for (let i = 0; i < commits.length; i++) {
           if (collected.length >= options.cap) break;
-          const files = await this.commitFilesFor(slug, commit.sha);
+          const files = await pending[i]!;
+          pending[i] = undefined;
           if (!live()) return;
+          fill(i + 1 + CO_CHANGE_PREFETCH); // keep the request window full
+          const commit = commits[i];
           collected.push({
             sha: commit.sha,
             authoredAt: commit.authoredAt,
