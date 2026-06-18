@@ -182,6 +182,98 @@ describe('LocalGitProvider', () => {
     expect(initial).toEqual([{ path: 'hello.txt', status: 'added' }]);
   });
 
+  it('reports modified files and recurses into nested subtrees', async () => {
+    // Root-level edit (c2 changed hello.txt's content).
+    expect(await provider.getCommitFiles(slug, c2)).toEqual([
+      { path: 'hello.txt', status: 'modified' },
+    ]);
+
+    // A change deep in a subtree is found by the oid-pruned recursion, with the
+    // unrelated root files skipped.
+    await fs.promises.writeFile('/src/lib/util.ts', 'export const a = 1;\n');
+    await git.add({ fs, dir: '/', filepath: 'src/lib/util.ts' });
+    const c4 = await git.commit({ fs, dir: '/', message: 'c4: add nested', author });
+    expect(await provider.getCommitFiles(slug, c4)).toEqual([
+      { path: 'src/lib/util.ts', status: 'added' },
+    ]);
+
+    await fs.promises.writeFile('/src/lib/util.ts', 'export const a = 2;\n');
+    await git.add({ fs, dir: '/', filepath: 'src/lib/util.ts' });
+    const c5 = await git.commit({ fs, dir: '/', message: 'c5: edit nested', author });
+    expect(await provider.getCommitFiles(slug, c5)).toEqual([
+      { path: 'src/lib/util.ts', status: 'modified' },
+    ]);
+  });
+
+  it('skips gitlink (submodule) entries, reporting only tracked files', async () => {
+    // A gitlink can't be staged through the high-level API, so write the tree
+    // objects directly: one tracked file changes, and a submodule is added.
+    const enc = (text: string): Uint8Array => new TextEncoder().encode(text);
+    const v1 = await git.writeBlob({ fs, dir: '/', blob: enc('one\n') });
+    const v2 = await git.writeBlob({ fs, dir: '/', blob: enc('two\n') });
+    const parentTree = await git.writeTree({
+      fs,
+      dir: '/',
+      tree: [{ mode: '100644', path: 'keep.txt', oid: v1, type: 'blob' }],
+    });
+    const parent = await git.writeCommit({
+      fs,
+      dir: '/',
+      commit: { message: 'p', tree: parentTree, parent: [], author, committer: author },
+    });
+    const childTree = await git.writeTree({
+      fs,
+      dir: '/',
+      tree: [
+        { mode: '100644', path: 'keep.txt', oid: v2, type: 'blob' },
+        { mode: '160000', path: 'submodule', oid: parent, type: 'commit' }, // a gitlink
+      ],
+    });
+    const child = await git.writeCommit({
+      fs,
+      dir: '/',
+      commit: { message: 'c', tree: childTree, parent: [parent], author, committer: author },
+    });
+
+    // keep.txt is reported; the added gitlink is skipped (no blob to read), so
+    // downstream walks never try to fetch it.
+    expect(await provider.getCommitFiles(slug, child)).toEqual([
+      { path: 'keep.txt', status: 'modified' },
+    ]);
+  });
+
+  it('records the removal when a tracked path becomes a submodule', async () => {
+    const enc = (text: string): Uint8Array => new TextEncoder().encode(text);
+    const blob = await git.writeBlob({ fs, dir: '/', blob: enc('hi\n') });
+    const parentTree = await git.writeTree({
+      fs,
+      dir: '/',
+      tree: [{ mode: '100644', path: 'mod.ts', oid: blob, type: 'blob' }],
+    });
+    const parent = await git.writeCommit({
+      fs,
+      dir: '/',
+      commit: { message: 'p', tree: parentTree, parent: [], author, committer: author },
+    });
+    // The same path is now a gitlink — the file was replaced by a submodule.
+    const childTree = await git.writeTree({
+      fs,
+      dir: '/',
+      tree: [{ mode: '160000', path: 'mod.ts', oid: parent, type: 'commit' }],
+    });
+    const child = await git.writeCommit({
+      fs,
+      dir: '/',
+      commit: { message: 'c', tree: childTree, parent: [parent], author, committer: author },
+    });
+
+    // The blob is gone; the gitlink that replaced it is skipped, but the removal
+    // must still be reported so downstream walks don't keep the file alive.
+    expect(await provider.getCommitFiles(slug, child)).toEqual([
+      { path: 'mod.ts', status: 'removed' },
+    ]);
+  });
+
   it('fails with guidance when the folder is not connected', async () => {
     await expect(
       provider.getMetadata({ provider: 'local', owner: 'local', repo: 'ghost' }),
