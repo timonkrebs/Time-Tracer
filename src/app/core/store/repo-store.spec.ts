@@ -1856,6 +1856,39 @@ describe('RepoStore', () => {
       expect(provider.fileAtRefCalls.length).toBe(fetches);
     });
 
+    it('re-buckets a partial report after an errored walk', async () => {
+      const dated = (sha: string, authoredAt: string, parents: string[] = []): CommitInfo => ({
+        ...commit(sha, parents),
+        authoredAt,
+      });
+      provider.listCommitsResult = () =>
+        Promise.resolve([
+          dated('c2', '2024-03-15T00:00:00Z', ['c1']),
+          dated('c1', '2024-01-15T00:00:00Z', []),
+        ]);
+      // c1 lands; c2's changed-file fetch fails (rate limit / network) mid-walk.
+      provider.commitFilesResult = (sha) =>
+        sha === 'c1'
+          ? Promise.resolve([{ path: 'a.txt', status: 'added' }])
+          : Promise.reject(new RepoProviderError('rate limited', 'network'));
+      provider.fileAtRefResult = (path, ref) =>
+        Promise.resolve({ kind: 'text', path, sha: `${path}-${ref}`, size: 6, text: 'L1\nL2\n' });
+      await store.loadRepo(slug);
+      await store.computeSurvival();
+
+      // The walk stopped on c2, but c1's two lines are a partial report on screen.
+      const state = store.survival()!;
+      expect(state.status).toBe('error');
+      expect(state.report.trackedLines).toBe(2);
+      expect(state.report.cohorts.bands).toEqual(['2024']);
+
+      // The slider must still re-bucket that partial result — not just move the
+      // label while the chart stays in the old grain.
+      store.setCohortBucket('month');
+      expect(store.survival()!.status).toBe('error');
+      expect(store.survival()!.report.cohorts.bands).toEqual(['2024-01']);
+    });
+
     it('reports an empty history without error', async () => {
       provider.listCommitsResult = () => Promise.resolve([]);
       await store.loadRepo(slug);

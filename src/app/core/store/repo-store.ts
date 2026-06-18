@@ -1397,7 +1397,11 @@ export class RepoStore {
     this._cohortBucket.set(bucket);
     const state = this._survival();
     const lines = this.survivalLifetimes;
-    if (!state || state.status !== 'ready' || !lines) return;
+    // Re-bucket for any *terminal* state with retained lifetimes — a finished
+    // walk ('ready') or one stopped early ('error') whose partial report is still
+    // on screen. An in-flight walk ('reading'/'computing') is left alone: its
+    // next streamed publish already re-buckets, and its lifetimes are partial.
+    if (!state || !lines || (state.status !== 'ready' && state.status !== 'error')) return;
     // Only the cohort stack depends on the grain — keep the (unchanged) curve,
     // author shares and counts so a slider move stays O(lines), never a full
     // Kaplan–Meier re-sort that could freeze the tab on a large repo.
