@@ -24,8 +24,10 @@ export interface PunchCard {
   readonly byHour: readonly number[];
 }
 
-/** Weekday + hour (and year) of an ISO timestamp's own wall-clock, or null. */
-export function wallClockParts(iso: string): { year: number; day: number; hour: number } | null {
+/** Year, month (0 = Jan), weekday and hour of an ISO timestamp's wall-clock. */
+export function wallClockParts(
+  iso: string,
+): { year: number; month: number; day: number; hour: number } | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):/.exec(iso);
   if (!match) return null;
   const [, year, month, dayOfMonth, hour] = match;
@@ -33,7 +35,7 @@ export function wallClockParts(iso: string): { year: number; day: number; hour: 
   // by the runtime's timezone).
   const day = new Date(Date.UTC(+year, +month - 1, +dayOfMonth)).getUTCDay();
   if (Number.isNaN(day)) return null;
-  return { year: +year, day, hour: +hour };
+  return { year: +year, month: +month - 1, day, hour: +hour };
 }
 
 /** Bins commit timestamps into a {@link PunchCard}. */
@@ -158,4 +160,37 @@ export function yearWeekday(times: Iterable<string>): YearWeekdayCard {
   for (const row of grid) for (const count of row) if (count > max) max = count;
 
   return { years, grid, byYear, byWeekday, total, max };
+}
+
+/** A month-of-year × weekday commit histogram — the punch card's seasonal view. */
+export interface MonthWeekdayCard {
+  /** `grid[month][weekday]` counts; month 0 = January, weekday 0 = Sunday. */
+  readonly grid: readonly (readonly number[])[];
+  /** Commits per month of the year (index 0 = January), length 12. */
+  readonly byMonth: readonly number[];
+  /** Commits per weekday (index 0 = Sunday), length 7. */
+  readonly byWeekday: readonly number[];
+  readonly total: number;
+  readonly max: number;
+}
+
+/** Bins commit timestamps by month of the year (Jan…Dec) and weekday. */
+export function monthWeekday(times: Iterable<string>): MonthWeekdayCard {
+  const grid = Array.from({ length: 12 }, () => new Array<number>(7).fill(0));
+  const byMonth = new Array<number>(12).fill(0);
+  const byWeekday = new Array<number>(7).fill(0);
+  let total = 0;
+  let max = 0;
+
+  for (const iso of times) {
+    const parts = wallClockParts(iso);
+    if (!parts) continue;
+    const count = ++grid[parts.month][parts.day];
+    byMonth[parts.month]++;
+    byWeekday[parts.day]++;
+    total++;
+    if (count > max) max = count;
+  }
+
+  return { grid, byMonth, byWeekday, total, max };
 }

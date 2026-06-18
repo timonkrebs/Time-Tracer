@@ -1,13 +1,23 @@
-import { punchCard, punchInsights, wallClockParts, yearWeekday } from './punch-card';
+import { monthWeekday, punchCard, punchInsights, wallClockParts, yearWeekday } from './punch-card';
 
 describe('wallClockParts', () => {
-  it('reads the year, weekday and hour from the wall clock', () => {
-    // 2024-01-03 is a Wednesday (getUTCDay 3).
-    expect(wallClockParts('2024-01-03T14:30:00Z')).toEqual({ year: 2024, day: 3, hour: 14 });
+  it('reads the year, month, weekday and hour from the wall clock', () => {
+    // 2024-01-03 is a Wednesday (getUTCDay 3); January is month 0.
+    expect(wallClockParts('2024-01-03T14:30:00Z')).toEqual({
+      year: 2024,
+      month: 0,
+      day: 3,
+      hour: 14,
+    });
   });
 
   it('uses the written hour regardless of the offset', () => {
-    expect(wallClockParts('2024-01-03T09:00:00+02:00')).toEqual({ year: 2024, day: 3, hour: 9 });
+    expect(wallClockParts('2024-01-03T09:00:00+02:00')).toEqual({
+      year: 2024,
+      month: 0,
+      day: 3,
+      hour: 9,
+    });
   });
 
   it('returns null for unparseable input', () => {
@@ -80,6 +90,24 @@ describe('yearWeekday', () => {
     expect(card.grid[0][6]).toBe(1); // 2024 Sat
     expect(card.grid[1][1]).toBe(1); // 2023 Mon
     expect(card.byWeekday[1]).toBe(1);
+    expect(card.total).toBe(3);
+    expect(card.max).toBe(1);
+  });
+});
+
+describe('monthWeekday', () => {
+  it('bins commits by month of the year and weekday', () => {
+    const card = monthWeekday([
+      '2024-01-03T00:00:00Z', // Jan, Wed
+      '2023-01-01T00:00:00Z', // Jan, Sun (different year, same month)
+      '2024-03-02T00:00:00Z', // Mar, Sat
+    ]);
+    expect(card.grid).toHaveLength(12);
+    expect(card.byMonth[0]).toBe(2); // January across both years
+    expect(card.byMonth[2]).toBe(1); // March
+    expect(card.grid[0][3]).toBe(1); // Jan, Wed
+    expect(card.grid[0][0]).toBe(1); // Jan, Sun
+    expect(card.byWeekday[6]).toBe(1); // one Saturday
     expect(card.total).toBe(3);
     expect(card.max).toBe(1);
   });

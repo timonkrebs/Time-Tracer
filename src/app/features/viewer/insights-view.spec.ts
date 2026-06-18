@@ -778,6 +778,12 @@ describe('InsightsView', () => {
       button('Year × weekday')!.click();
       await fixture.whenStable();
       expect(text()).toContain('2024');
+
+      // …and the month × weekday (seasonal) view.
+      button('Month × weekday')!.click();
+      await fixture.whenStable();
+      expect(text()).toContain('Jan');
+      expect(text()).toContain('Dec');
     });
   });
 

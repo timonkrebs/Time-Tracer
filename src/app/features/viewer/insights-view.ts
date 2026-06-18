@@ -23,7 +23,13 @@ import {
   surprisingCouplings,
 } from '../../core/util/co-change';
 import { ForceEdge, Point, forceLayout } from '../../core/util/force-layout';
-import { PunchCard, punchCard, punchInsights, yearWeekday } from '../../core/util/punch-card';
+import {
+  PunchCard,
+  monthWeekday,
+  punchCard,
+  punchInsights,
+  yearWeekday,
+} from '../../core/util/punch-card';
 import { HEAT_THRESHOLDS, Hotspot } from '../../core/util/hotspots';
 import { AuthorPresence, KnowledgeRisk, RISK_THRESHOLDS } from '../../core/util/knowledge';
 import { disambiguateLabels } from '../../core/util/path-label';
@@ -160,6 +166,21 @@ function median(values: readonly number[]): number {
 
 /** Weekday names by index (0 = Sunday). */
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+/** Month names by index (0 = January). */
+const MONTH_LABELS = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+];
 
 /** One row of the punch-card view model (a weekday in hour mode, a year in year mode). */
 interface PunchRow {
@@ -1702,6 +1723,18 @@ interface Quadrant {
                     type="button"
                     class="border-l border-zinc-700 px-2 py-0.5 transition"
                     [class]="
+                      punchMode() === 'month'
+                        ? 'bg-zinc-700/60 font-medium text-zinc-200'
+                        : 'text-zinc-400 hover:bg-white/10'
+                    "
+                    (click)="punchMode.set('month')"
+                  >
+                    Month × weekday
+                  </button>
+                  <button
+                    type="button"
+                    class="border-l border-zinc-700 px-2 py-0.5 transition"
+                    [class]="
                       punchMode() === 'year'
                         ? 'bg-zinc-700/60 font-medium text-zinc-200'
                         : 'text-zinc-400 hover:bg-white/10'
@@ -2573,10 +2606,12 @@ export class InsightsView {
 
   /** Commit punch card from the walked commit timestamps. */
   protected readonly punch = computed<PunchCard>(() => punchCard(this.state()?.commitTimes ?? []));
-  /** Which axes the punch card shows: weekday × hour, or year × weekday. */
-  protected readonly punchMode = signal<'hour' | 'year'>('hour');
+  /** Which axes the punch card shows: weekday × hour, month × weekday, or year × weekday. */
+  protected readonly punchMode = signal<'hour' | 'month' | 'year'>('hour');
   /** The coarser year × weekday histogram, for the toggle's "year" mode. */
   protected readonly punchYear = computed(() => yearWeekday(this.state()?.commitTimes ?? []));
+  /** The seasonal month × weekday histogram, for the toggle's "month" mode. */
+  protected readonly punchMonth = computed(() => monthWeekday(this.state()?.commitTimes ?? []));
   /** Work-rhythm headline (peak slot, off-hours/weekend share, active span). */
   protected readonly insights = computed(() => punchInsights(this.punch()));
 
@@ -2587,6 +2622,16 @@ export class InsightsView {
    * weekday axis in year mode.
    */
   protected readonly punchView = computed<PunchView>(() => {
+    const weekdayColumns = (colTotals: readonly number[], max: number, rows: PunchRow[]) => ({
+      rows,
+      colAxis: this.punchDays.map((day) => day.label),
+      colFull: this.punchDays.map((day) => day.label),
+      colTotals,
+      max,
+      maxRowTotal: Math.max(1, ...rows.map((row) => row.total)),
+      maxColTotal: Math.max(1, ...colTotals),
+    });
+
     if (this.punchMode() === 'year') {
       const card = this.punchYear();
       const rows: PunchRow[] = card.years.map((year, index) => ({
@@ -2594,16 +2639,24 @@ export class InsightsView {
         cells: this.punchDays.map((day) => card.grid[index][day.idx]),
         total: card.byYear[index],
       }));
-      const colTotals = this.punchDays.map((day) => card.byWeekday[day.idx]);
-      return {
+      return weekdayColumns(
+        this.punchDays.map((day) => card.byWeekday[day.idx]),
+        card.max,
         rows,
-        colAxis: this.punchDays.map((day) => day.label),
-        colFull: this.punchDays.map((day) => day.label),
-        colTotals,
-        max: card.max,
-        maxRowTotal: Math.max(1, ...card.byYear),
-        maxColTotal: Math.max(1, ...colTotals),
-      };
+      );
+    }
+    if (this.punchMode() === 'month') {
+      const card = this.punchMonth();
+      const rows: PunchRow[] = MONTH_LABELS.map((label, month) => ({
+        label,
+        cells: this.punchDays.map((day) => card.grid[month][day.idx]),
+        total: card.byMonth[month],
+      }));
+      return weekdayColumns(
+        this.punchDays.map((day) => card.byWeekday[day.idx]),
+        card.max,
+        rows,
+      );
     }
     const card = this.punch();
     const rows: PunchRow[] = this.punchDays.map((day) => ({
