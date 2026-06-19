@@ -1,4 +1,4 @@
-import { monthWeekday, punchCard, punchInsights, wallClockParts, yearWeekday } from './punch-card';
+import { monthWeekday, punchCard, punchInsights, wallClockParts, yearMonth } from './punch-card';
 
 describe('wallClockParts', () => {
   it('reads the year, month, weekday and hour from the wall clock', () => {
@@ -77,19 +77,20 @@ describe('punchInsights', () => {
   });
 });
 
-describe('yearWeekday', () => {
-  it('bins commits by year (newest first) and weekday', () => {
-    const card = yearWeekday([
-      '2023-01-02T00:00:00Z', // Mon 2023
-      '2024-01-03T00:00:00Z', // Wed 2024
-      '2024-01-06T00:00:00Z', // Sat 2024
+describe('yearMonth', () => {
+  it('bins commits by year (newest first) and month', () => {
+    const card = yearMonth([
+      '2023-02-02T00:00:00Z', // Feb 2023
+      '2024-01-03T00:00:00Z', // Jan 2024
+      '2024-03-06T00:00:00Z', // Mar 2024
     ]);
     expect(card.years).toEqual([2024, 2023]);
     expect(card.byYear).toEqual([2, 1]);
-    expect(card.grid[0][3]).toBe(1); // 2024 Wed
-    expect(card.grid[0][6]).toBe(1); // 2024 Sat
-    expect(card.grid[1][1]).toBe(1); // 2023 Mon
-    expect(card.byWeekday[1]).toBe(1);
+    expect(card.grid[0]).toHaveLength(12);
+    expect(card.grid[0][0]).toBe(1); // 2024 Jan
+    expect(card.grid[0][2]).toBe(1); // 2024 Mar
+    expect(card.grid[1][1]).toBe(1); // 2023 Feb
+    expect(card.byMonth[0]).toBe(1); // one January
     expect(card.total).toBe(3);
     expect(card.max).toBe(1);
   });

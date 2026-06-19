@@ -774,8 +774,8 @@ describe('InsightsView', () => {
       expect(text()).toContain('Mon');
       expect(text()).toContain('Sun');
 
-      // Toggle to the year × weekday view.
-      button('Year × weekday')!.click();
+      // Toggle to the year × month view.
+      button('Year × month')!.click();
       await fixture.whenStable();
       expect(text()).toContain('2024');
 

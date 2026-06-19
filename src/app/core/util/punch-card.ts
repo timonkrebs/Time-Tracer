@@ -123,33 +123,33 @@ export function punchInsights(card: PunchCard): PunchInsights {
   };
 }
 
-/** A year × weekday commit histogram — the punch card's coarser companion. */
-export interface YearWeekdayCard {
+/** A year × month commit histogram — the punch card's coarsest companion. */
+export interface YearMonthCard {
   /** Calendar years present, newest first. */
   readonly years: readonly number[];
-  /** `grid[yearIndex][weekday]` counts; weekday 0 = Sunday … 6 = Saturday. */
+  /** `grid[yearIndex][month]` counts; month 0 = January … 11 = December. */
   readonly grid: readonly (readonly number[])[];
   /** Commits per year, aligned with {@link years}. */
   readonly byYear: readonly number[];
-  /** Commits per weekday (index 0 = Sunday). */
-  readonly byWeekday: readonly number[];
+  /** Commits per month of the year (index 0 = January), length 12. */
+  readonly byMonth: readonly number[];
   readonly total: number;
   readonly max: number;
 }
 
-/** Bins commit timestamps by calendar year and weekday. */
-export function yearWeekday(times: Iterable<string>): YearWeekdayCard {
+/** Bins commit timestamps by calendar year and month of the year. */
+export function yearMonth(times: Iterable<string>): YearMonthCard {
   const rows = new Map<number, number[]>();
-  const byWeekday = new Array<number>(7).fill(0);
+  const byMonth = new Array<number>(12).fill(0);
   let total = 0;
 
   for (const iso of times) {
     const parts = wallClockParts(iso);
     if (!parts) continue;
     let row = rows.get(parts.year);
-    if (!row) rows.set(parts.year, (row = new Array<number>(7).fill(0)));
-    row[parts.day]++;
-    byWeekday[parts.day]++;
+    if (!row) rows.set(parts.year, (row = new Array<number>(12).fill(0)));
+    row[parts.month]++;
+    byMonth[parts.month]++;
     total++;
   }
 
@@ -159,7 +159,7 @@ export function yearWeekday(times: Iterable<string>): YearWeekdayCard {
   let max = 0;
   for (const row of grid) for (const count of row) if (count > max) max = count;
 
-  return { years, grid, byYear, byWeekday, total, max };
+  return { years, grid, byYear, byMonth, total, max };
 }
 
 /** A month-of-year × weekday commit histogram — the punch card's seasonal view. */

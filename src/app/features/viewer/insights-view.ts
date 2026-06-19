@@ -30,7 +30,7 @@ import {
   monthWeekday,
   punchCard,
   punchInsights,
-  yearWeekday,
+  yearMonth,
 } from '../../core/util/punch-card';
 import { HEAT_THRESHOLDS, Hotspot } from '../../core/util/hotspots';
 import { AuthorPresence, KnowledgeRisk, RISK_THRESHOLDS } from '../../core/util/knowledge';
@@ -1795,7 +1795,7 @@ interface Quadrant {
                     "
                     (click)="punchMode.set('year')"
                   >
-                    Year × weekday
+                    Year × month
                   </button>
                 </div>
               </div>
@@ -2726,18 +2726,17 @@ export class InsightsView {
   protected readonly punch = computed<PunchCard>(() => punchCard(this.state()?.commitTimes ?? []));
   /** Which axes the punch card shows: weekday × hour, month × weekday, or year × weekday. */
   protected readonly punchMode = signal<'hour' | 'month' | 'year'>('hour');
-  /** The coarser year × weekday histogram, for the toggle's "year" mode. */
-  protected readonly punchYear = computed(() => yearWeekday(this.state()?.commitTimes ?? []));
+  /** The coarser year × month histogram, for the toggle's "year" mode. */
+  protected readonly punchYear = computed(() => yearMonth(this.state()?.commitTimes ?? []));
   /** The seasonal month × weekday histogram, for the toggle's "month" mode. */
   protected readonly punchMonth = computed(() => monthWeekday(this.state()?.commitTimes ?? []));
   /** Work-rhythm headline (peak slot, off-hours/weekend share, active span). */
   protected readonly insights = computed(() => punchInsights(this.punch()));
 
   /**
-   * The punch card as a labelled grid with marginals — one shape for both
-   * modes, so a single template renders weekday × hour and year × weekday.
-   * Columns are always laid out Monday-first in hour mode (hours) / for the
-   * weekday axis in year mode.
+   * The punch card as a labelled grid with marginals — one shape for every
+   * mode, so a single template renders weekday × hour, month × weekday and
+   * year × month. Weekday columns are laid out Monday-first.
    */
   protected readonly punchView = computed<PunchView>(() => {
     const weekdayColumns = (colTotals: readonly number[], max: number, rows: PunchRow[]) => ({
@@ -2754,14 +2753,18 @@ export class InsightsView {
       const card = this.punchYear();
       const rows: PunchRow[] = card.years.map((year, index) => ({
         label: String(year),
-        cells: this.punchDays.map((day) => card.grid[index][day.idx]),
+        cells: card.grid[index], // one count per month, January → December
         total: card.byYear[index],
       }));
-      return weekdayColumns(
-        this.punchDays.map((day) => card.byWeekday[day.idx]),
-        card.max,
+      return {
         rows,
-      );
+        colAxis: MONTH_LABELS,
+        colFull: MONTH_LABELS,
+        colTotals: card.byMonth,
+        max: card.max,
+        maxRowTotal: Math.max(1, ...card.byYear),
+        maxColTotal: Math.max(1, ...card.byMonth),
+      };
     }
     if (this.punchMode() === 'month') {
       const card = this.punchMonth();
