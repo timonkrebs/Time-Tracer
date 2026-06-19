@@ -56,6 +56,8 @@ describe('LocalGitProvider', () => {
     expect(tree.truncated).toBe(false);
     expect(tree.entries).toHaveLength(1);
     expect(tree.entries[0]).toMatchObject({ path: 'greeting.txt', kind: 'file' });
+    // Size is read from the working tree ('one\ntwo\n' is 8 bytes).
+    expect(tree.entries[0].size).toBe(8);
   });
 
   it('reads blobs by tree entry and historical versions by ref', async () => {

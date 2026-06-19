@@ -19,6 +19,8 @@ import { LocalRepos } from './local-repos';
 
 /** Files above this size are not decoded into the viewer. */
 const MAX_FILE_SIZE_BYTES = 2_000_000;
+/** Parallel `stat` calls when sizing a tree — overlaps the FS metadata reads. */
+const SIZE_STAT_CONCURRENCY = 48;
 
 export type GitApi = typeof import('isomorphic-git').default;
 
@@ -160,10 +162,49 @@ export class LocalGitProvider implements GitProvider {
       const { commit } = await git.readCommit({ fs, dir: '/', oid: commitOid });
       const entries: TreeEntry[] = [];
       await this.walkTree(git, fs, commit.tree, '', entries);
-      return { entries, truncated: false };
+      return { entries: await this.withSizes(fs, entries), truncated: false };
     } catch (error) {
       throw this.mapError(error, `Ref "${ref}" was not found in this repository.`, 'invalid-ref');
     }
+  }
+
+  /**
+   * Fills in file sizes by statting the working tree. isomorphic-git's tree
+   * walk yields no blob size (unlike the hosted providers, whose tree APIs
+   * include it), so the treemap rectangles and the Insights size filter would
+   * otherwise have nothing to scale by. A working-tree `stat` is cheap metadata
+   * — no blob inflation — and reflects the checked-out files; entries absent
+   * from the working tree (e.g. when viewing a ref other than the checkout)
+   * keep an undefined size. Bounded concurrency overlaps the FS reads.
+   */
+  private async withSizes(
+    fs: FsLike,
+    entries: readonly TreeEntry[],
+  ): Promise<readonly TreeEntry[]> {
+    const files = entries.filter((entry) => entry.kind === 'file');
+    if (files.length === 0) return entries;
+    const sizes = new Map<string, number>();
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (next < files.length) {
+        const entry = files[next++];
+        try {
+          const stat = await fs.promises.stat(entry.path);
+          if (stat.isFile()) sizes.set(entry.path, stat.size);
+        } catch {
+          // Not in the working tree — leave the size undefined.
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(SIZE_STAT_CONCURRENCY, files.length) }, worker),
+    );
+    if (sizes.size === 0) return entries;
+    return entries.map((entry) =>
+      entry.kind === 'file' && sizes.has(entry.path)
+        ? { ...entry, size: sizes.get(entry.path) }
+        : entry,
+    );
   }
 
   private async walkTree(
