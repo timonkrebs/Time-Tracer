@@ -14,8 +14,22 @@ import { CoChangeState, SurvivalState } from '../../core/store/repo-store';
 import { CSV_MIME, JSON_MIME, fileSlug, round, toCsv, toJson } from '../../core/util/data-export';
 import { downloadBlob, downloadText } from '../../core/util/download';
 import { composeStackedSvg, svgToPngBlob } from '../../core/util/image-export';
-import { CoChangeCluster, clusterCoChange, relatedFiles } from '../../core/util/co-change';
+import { Contributor, busFactorBoard, simulateDeparture } from '../../core/util/bus-factor';
+import {
+  CoChangeCluster,
+  SurprisingPair,
+  clusterCoChange,
+  relatedFiles,
+  surprisingCouplings,
+} from '../../core/util/co-change';
 import { ForceEdge, Point, forceLayout } from '../../core/util/force-layout';
+import {
+  PunchCard,
+  monthWeekday,
+  punchCard,
+  punchInsights,
+  yearWeekday,
+} from '../../core/util/punch-card';
 import { HEAT_THRESHOLDS, Hotspot } from '../../core/util/hotspots';
 import { AuthorPresence, KnowledgeRisk, RISK_THRESHOLDS } from '../../core/util/knowledge';
 import { disambiguateLabels } from '../../core/util/path-label';
@@ -44,6 +58,8 @@ const MAX_HOTSPOTS = 45;
 const MAX_RISK = 45;
 /** Contributors listed in the Knowledge "holders" breakdown. */
 const MAX_HOLDERS = 10;
+/** Contributors listed in the bus-factor leaderboard before "+N more". */
+const MAX_CONTRIBUTORS = 40;
 /** Risk-quadrant hover tooltip box, in treemap viewBox units. */
 const QUAD_TIP_W = 640;
 const QUAD_TIP_H = 150;
@@ -146,6 +162,43 @@ function median(values: readonly number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/** Weekday names by index (0 = Sunday). */
+const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+/** Month names by index (0 = January). */
+const MONTH_LABELS = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+];
+
+/** One row of the punch-card view model (a weekday in hour mode, a year in year mode). */
+interface PunchRow {
+  readonly label: string;
+  readonly cells: readonly number[];
+  readonly total: number;
+}
+/** The punch card rendered as a labelled grid with row + column marginals. */
+interface PunchView {
+  readonly rows: readonly PunchRow[];
+  /** Sparse axis labels for the columns ('' hides one). */
+  readonly colAxis: readonly string[];
+  /** Full column labels, used in the cell tooltips. */
+  readonly colFull: readonly string[];
+  readonly colTotals: readonly number[];
+  readonly max: number;
+  readonly maxRowTotal: number;
+  readonly maxColTotal: number;
 }
 
 /** Flattens a survival report into a JSON-friendly export payload. */
@@ -419,6 +472,30 @@ interface Quadrant {
             (click)="tab.set('knowledge')"
           >
             Knowledge
+          </button>
+          <button
+            type="button"
+            class="border-b-2 pb-1 font-medium transition"
+            [class]="
+              tab() === 'busfactor'
+                ? 'border-indigo-400 text-zinc-100'
+                : 'border-transparent text-zinc-500 hover:text-zinc-300'
+            "
+            (click)="tab.set('busfactor')"
+          >
+            Bus factor
+          </button>
+          <button
+            type="button"
+            class="border-b-2 pb-1 font-medium transition"
+            [class]="
+              tab() === 'punchcard'
+                ? 'border-indigo-400 text-zinc-100'
+                : 'border-transparent text-zinc-500 hover:text-zinc-300'
+            "
+            (click)="tab.set('punchcard')"
+          >
+            Punch card
           </button>
           @if (survivalAvailable()) {
             <button
@@ -788,6 +865,50 @@ interface Quadrant {
               </ul>
               @if (more() > 0) {
                 <p class="mt-2 text-[11px] text-zinc-600">+{{ more() }} more pairs</p>
+              }
+              @if (surprising().length) {
+                <p class="mt-4 mb-1 text-[11px] font-medium tracking-wide text-zinc-500 uppercase">
+                  Surprising couplings
+                </p>
+                <p class="mb-1.5 text-[11px] leading-4 text-zinc-600">
+                  Strongly coupled files that sit far apart in the tree — often a hidden dependency
+                  worth a look.
+                </p>
+                <ul class="space-y-1">
+                  @for (pair of surprising(); track $index) {
+                    <li
+                      class="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-white/[0.03]"
+                    >
+                      <span class="flex min-w-0 flex-1 items-center gap-1.5">
+                        <button
+                          type="button"
+                          class="truncate font-mono text-xs text-zinc-200 underline-offset-2 hover:text-indigo-300 hover:underline"
+                          [title]="pair.a"
+                          (click)="focusFile.emit(pair.a)"
+                        >
+                          {{ label(pair.a) }}
+                        </button>
+                        <span class="shrink-0 text-zinc-600">↔</span>
+                        <button
+                          type="button"
+                          class="truncate font-mono text-xs text-zinc-200 underline-offset-2 hover:text-indigo-300 hover:underline"
+                          [title]="pair.b"
+                          (click)="focusFile.emit(pair.b)"
+                        >
+                          {{ label(pair.b) }}
+                        </button>
+                      </span>
+                      <span
+                        class="shrink-0 text-[11px] text-zinc-500 tabular-nums"
+                        [title]="
+                          'co-changed in ' + pair.support + ' commits, across distant folders'
+                        "
+                      >
+                        {{ pair.support }}× · {{ pct(pair.degree) }}%
+                      </span>
+                    </li>
+                  }
+                </ul>
               }
               <p class="mt-3 border-t border-zinc-800/70 pt-2 text-[11px] leading-5 text-zinc-600">
                 <span class="font-medium text-zinc-500">N× · M%</span> — co-changed in N commits and
@@ -1409,6 +1530,318 @@ interface Quadrant {
               </button>
             </div>
           }
+        } @else if (tab() === 'busfactor') {
+          <!-- Bus factor: contributor leaderboard + "what if they left?" -->
+          @if (state(); as s) {
+            @if (s.status === 'error') {
+              <p class="text-sm text-rose-400">{{ s.message }}</p>
+            } @else if (busBoard().length) {
+              <p class="mb-2 text-xs text-zinc-500">
+                Who holds the knowledge — click contributors to simulate their departure and see
+                which files would lose their last active expert.
+              </p>
+              @if (departure(); as d) {
+                <div class="mb-3 rounded border border-zinc-800 bg-zinc-900/40 p-3">
+                  @if (departedCount() > 0) {
+                    <p class="text-sm text-zinc-200">
+                      If {{ departedCount() }}
+                      {{ departedCount() === 1 ? 'contributor leaves' : 'contributors leave' }},
+                      <span class="font-medium text-amber-300">{{ d.newlyOrphaned }}</span>
+                      more {{ d.newlyOrphaned === 1 ? 'file' : 'files' }} would be orphaned —
+                      {{ d.orphanedAfter }}/{{ d.filesWithExperts }} owned files ({{
+                        orphanPct(d.orphanedAfter, d.filesWithExperts)
+                      }}%) left with no active expert.
+                    </p>
+                  } @else {
+                    <p class="text-sm text-zinc-400">
+                      {{ d.alreadyOrphaned }}/{{ d.filesWithExperts }} owned files are already
+                      orphaned (no active expert). Pick contributors to see who else holds the keys.
+                    </p>
+                  }
+                  <svg
+                    class="mt-2 w-full"
+                    viewBox="0 0 100 4"
+                    preserveAspectRatio="none"
+                    aria-hidden="true"
+                  >
+                    <rect x="0" y="0" width="100" height="4" fill="#3f3f46" />
+                    <rect
+                      x="0"
+                      y="0"
+                      [attr.width]="barPct(d.alreadyOrphaned, d.filesWithExperts)"
+                      height="4"
+                      fill="#ef4444"
+                    />
+                    <rect
+                      [attr.x]="barPct(d.alreadyOrphaned, d.filesWithExperts)"
+                      y="0"
+                      [attr.width]="barPct(d.newlyOrphaned, d.filesWithExperts)"
+                      height="4"
+                      fill="#f59e0b"
+                    />
+                  </svg>
+                  @if (newlyOrphanedTop().length) {
+                    <ul class="mt-2 space-y-0.5">
+                      @for (path of newlyOrphanedTop(); track path) {
+                        <li class="truncate font-mono text-[11px] text-amber-200/80" [title]="path">
+                          {{ label(path) }}
+                        </li>
+                      }
+                    </ul>
+                    @if (d.newlyOrphanedPaths.length > newlyOrphanedTop().length) {
+                      <p class="text-[10px] text-zinc-600">
+                        +{{ d.newlyOrphanedPaths.length - newlyOrphanedTop().length }} more
+                      </p>
+                    }
+                  }
+                  @if (departedCount() > 0) {
+                    <button
+                      type="button"
+                      class="mt-2 text-[11px] text-zinc-400 underline-offset-2 transition hover:text-zinc-200 hover:underline"
+                      (click)="clearDeparted()"
+                    >
+                      Clear selection
+                    </button>
+                  }
+                </div>
+              }
+              <ul class="space-y-1">
+                @for (c of busListed(); track c.name) {
+                  <li>
+                    <button
+                      type="button"
+                      class="flex w-full items-center gap-2 rounded px-2 py-1 text-left transition"
+                      [class]="
+                        isDeparted(c.name)
+                          ? 'bg-amber-500/15 ring-1 ring-amber-400/40'
+                          : 'hover:bg-white/[0.03]'
+                      "
+                      (click)="toggleDeparted(c.name)"
+                      [title]="'Toggle ' + c.name + ' as departed'"
+                    >
+                      <span
+                        class="size-2 shrink-0 rounded-full"
+                        [class]="c.active ? 'bg-emerald-400' : 'bg-zinc-600'"
+                        [title]="c.active ? 'active' : 'gone quiet'"
+                      ></span>
+                      <span class="min-w-0 flex-1 truncate text-sm text-zinc-200">{{
+                        c.name
+                      }}</span>
+                      @if (aliveByAuthor().get(c.name); as lines) {
+                        <span
+                          class="shrink-0 text-[11px] text-zinc-600 tabular-nums"
+                          title="lines alive today"
+                        >
+                          {{ lines }} ln
+                        </span>
+                      }
+                      <span
+                        class="shrink-0 text-[11px] text-zinc-500 tabular-nums"
+                        [title]="c.filesOwned + ' files owned (primary expert)'"
+                      >
+                        {{ c.filesOwned }} owned
+                      </span>
+                      <span
+                        class="w-16 shrink-0 text-right text-[11px] tabular-nums"
+                        [class]="c.busRisk > 0 ? 'text-amber-300' : 'text-zinc-600'"
+                        [title]="c.busRisk + ' files orphaned if they left'"
+                      >
+                        {{ c.busRisk }} at risk
+                      </span>
+                    </button>
+                  </li>
+                }
+              </ul>
+              @if (busExtra() > 0) {
+                <p class="mt-1.5 text-[11px] text-zinc-600">+{{ busExtra() }} more contributors</p>
+              }
+              @if (s.knowledge.partial) {
+                <p class="mt-2 text-[11px] text-zinc-600">
+                  Capped walk — load all commits for a complete picture.
+                </p>
+              }
+            } @else if (s.status === 'ready') {
+              <p class="text-sm text-zinc-500">No contributor data in the analysed commits.</p>
+            } @else {
+              <p class="text-sm text-zinc-500">Crunching contributors…</p>
+            }
+          } @else {
+            <p class="mb-3 text-sm text-zinc-500">Analyze the history to see the bus factor.</p>
+            <div class="flex flex-wrap gap-2">
+              <button
+                type="button"
+                class="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-400"
+                (click)="analyze.emit()"
+              >
+                Analyze recent history
+              </button>
+              <button
+                type="button"
+                class="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100"
+                (click)="loadAll.emit()"
+              >
+                Load all commits
+              </button>
+            </div>
+          }
+        } @else if (tab() === 'punchcard') {
+          <!-- Punch card: commit times by weekday × hour -->
+          @if (state(); as s) {
+            @if (s.status === 'error') {
+              <p class="text-sm text-rose-400">{{ s.message }}</p>
+            } @else if (punch().total > 0) {
+              <div class="mb-2 flex items-start justify-between gap-3">
+                @if (insights(); as ins) {
+                  <p class="min-w-0 text-xs text-zinc-500">
+                    {{ punch().total }} commits · busiest
+                    <span class="text-zinc-300"
+                      >{{ weekdayLabel(ins.peakDay) }} {{ ins.peakHour }}:00</span
+                    >
+                    · <span class="text-zinc-300">{{ pct(ins.afterHoursShare) }}%</span> after hours
+                    · <span class="text-zinc-300">{{ pct(ins.weekendShare) }}%</span> weekends ·
+                    active {{ ins.firstActiveHour }}:00–{{ ins.lastActiveHour }}:00
+                  </p>
+                }
+                <div
+                  class="flex shrink-0 overflow-hidden rounded border border-zinc-700 text-[11px]"
+                  role="group"
+                  aria-label="Punch card axes"
+                >
+                  <button
+                    type="button"
+                    class="px-2 py-0.5 transition"
+                    [class]="
+                      punchMode() === 'hour'
+                        ? 'bg-zinc-700/60 font-medium text-zinc-200'
+                        : 'text-zinc-400 hover:bg-white/10'
+                    "
+                    (click)="punchMode.set('hour')"
+                  >
+                    Weekday × hour
+                  </button>
+                  <button
+                    type="button"
+                    class="border-l border-zinc-700 px-2 py-0.5 transition"
+                    [class]="
+                      punchMode() === 'month'
+                        ? 'bg-zinc-700/60 font-medium text-zinc-200'
+                        : 'text-zinc-400 hover:bg-white/10'
+                    "
+                    (click)="punchMode.set('month')"
+                  >
+                    Month × weekday
+                  </button>
+                  <button
+                    type="button"
+                    class="border-l border-zinc-700 px-2 py-0.5 transition"
+                    [class]="
+                      punchMode() === 'year'
+                        ? 'bg-zinc-700/60 font-medium text-zinc-200'
+                        : 'text-zinc-400 hover:bg-white/10'
+                    "
+                    (click)="punchMode.set('year')"
+                  >
+                    Year × weekday
+                  </button>
+                </div>
+              </div>
+              <div class="overflow-x-auto">
+                <table class="border-separate" style="border-spacing: 2px">
+                  <thead>
+                    <tr>
+                      <th></th>
+                      @for (label of punchView().colAxis; track $index) {
+                        <th class="text-[9px] font-normal text-zinc-600 tabular-nums">
+                          {{ label }}
+                        </th>
+                      }
+                      <th class="pl-1 text-[9px] font-normal text-zinc-600">Σ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    @for (row of punchView().rows; track row.label) {
+                      <tr>
+                        <td class="pr-1 text-right text-[10px] text-zinc-500 tabular-nums">
+                          {{ row.label }}
+                        </td>
+                        @for (count of row.cells; track $index) {
+                          <td>
+                            <div
+                              class="size-3 rounded-[2px]"
+                              [style.background]="punchColor(count, punchView().max)"
+                              [title]="
+                                row.label +
+                                ' ' +
+                                punchView().colFull[$index] +
+                                ' — ' +
+                                count +
+                                ' commits'
+                              "
+                            ></div>
+                          </td>
+                        }
+                        <td class="pl-1">
+                          <div
+                            class="h-3 w-10 overflow-hidden rounded-sm bg-zinc-800"
+                            [title]="row.total + ' commits'"
+                          >
+                            <div
+                              class="h-full rounded-sm bg-indigo-400/70"
+                              [style.width.%]="barOf(row.total, punchView().maxRowTotal)"
+                            ></div>
+                          </div>
+                        </td>
+                      </tr>
+                    }
+                    <tr>
+                      <td></td>
+                      @for (total of punchView().colTotals; track $index) {
+                        <td class="align-bottom">
+                          <div
+                            class="flex h-6 items-end justify-center"
+                            [title]="total + ' commits'"
+                          >
+                            <div
+                              class="w-3 rounded-[1px] bg-indigo-400/70"
+                              [style.height.%]="barOf(total, punchView().maxColTotal)"
+                            ></div>
+                          </div>
+                        </td>
+                      }
+                      <td></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              @if (s.knowledge.partial) {
+                <p class="mt-2 text-[11px] text-zinc-600">
+                  Capped walk — load all commits for the full pattern.
+                </p>
+              }
+            } @else if (s.status === 'ready') {
+              <p class="text-sm text-zinc-500">No dated commits in the analysed history.</p>
+            } @else {
+              <p class="text-sm text-zinc-500">Collecting commit times…</p>
+            }
+          } @else {
+            <p class="mb-3 text-sm text-zinc-500">Analyze the history to see the punch card.</p>
+            <div class="flex flex-wrap gap-2">
+              <button
+                type="button"
+                class="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-400"
+                (click)="analyze.emit()"
+              >
+                Analyze recent history
+              </button>
+              <button
+                type="button"
+                class="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100"
+                (click)="loadAll.emit()"
+              >
+                Load all commits
+              </button>
+            </div>
+          }
         } @else {
           <!-- Age tab: code survival & cohorts (Git of Theseus) -->
           @if (survival(); as sv) {
@@ -1722,9 +2155,9 @@ export class InsightsView {
   /** File selected in the Knowledge list/quadrant — cross-highlights both, or null. */
   protected readonly selectedRisk = signal<string | null>(null);
   protected readonly benchmark = CODE_HALF_LIFE_BENCHMARK;
-  protected readonly tab = signal<'hotspots' | 'coupling' | 'team' | 'knowledge' | 'age'>(
-    'hotspots',
-  );
+  protected readonly tab = signal<
+    'hotspots' | 'coupling' | 'team' | 'knowledge' | 'busfactor' | 'punchcard' | 'age'
+  >('hotspots');
   protected readonly floor = CLUSTER_SIZE_FLOOR;
   protected readonly ceil = CLUSTER_SIZE_CEIL;
   protected readonly minClusterSize = signal(DEFAULT_MIN_CLUSTER_FILES);
@@ -2123,6 +2556,161 @@ export class InsightsView {
     return days === null ? '—' : (days / DAYS_PER_YEAR).toFixed(1);
   }
 
+  // ───────────────────────── Bus factor / Punch card ─────────────────────────
+
+  /** Contributor leaderboard with per-author bus risk (empty until analysed). */
+  protected readonly busBoard = computed<Contributor[]>(() => {
+    const knowledge = this.state()?.knowledge;
+    return knowledge ? busFactorBoard(knowledge) : [];
+  });
+  protected readonly busListed = computed(() => this.busBoard().slice(0, MAX_CONTRIBUTORS));
+  protected readonly busExtra = computed(() =>
+    Math.max(0, this.busBoard().length - MAX_CONTRIBUTORS),
+  );
+
+  /** Contributors toggled as "departed" for the what-if simulation. */
+  private readonly departed = signal<ReadonlySet<string>>(new Set());
+  protected departedCount(): number {
+    return this.departed().size;
+  }
+  protected isDeparted(name: string): boolean {
+    return this.departed().has(name);
+  }
+  protected toggleDeparted(name: string): void {
+    const next = new Set(this.departed());
+    if (next.has(name)) next.delete(name);
+    else next.add(name);
+    this.departed.set(next);
+  }
+  protected clearDeparted(): void {
+    this.departed.set(new Set());
+  }
+
+  /** The departure simulation for the current selection, or null until analysed. */
+  protected readonly departure = computed(() => {
+    const knowledge = this.state()?.knowledge;
+    return knowledge ? simulateDeparture(knowledge, this.departed()) : null;
+  });
+  protected readonly newlyOrphanedTop = computed(() =>
+    (this.departure()?.newlyOrphanedPaths ?? []).slice(0, 12),
+  );
+
+  /** Lines alive today by author — populated only when a survival report exists. */
+  protected readonly aliveByAuthor = computed(() => {
+    const map = new Map<string, number>();
+    for (const author of this.survival()?.report?.authors ?? []) {
+      map.set(author.author, author.lines);
+    }
+    return map;
+  });
+
+  /** Commit punch card from the walked commit timestamps. */
+  protected readonly punch = computed<PunchCard>(() => punchCard(this.state()?.commitTimes ?? []));
+  /** Which axes the punch card shows: weekday × hour, month × weekday, or year × weekday. */
+  protected readonly punchMode = signal<'hour' | 'month' | 'year'>('hour');
+  /** The coarser year × weekday histogram, for the toggle's "year" mode. */
+  protected readonly punchYear = computed(() => yearWeekday(this.state()?.commitTimes ?? []));
+  /** The seasonal month × weekday histogram, for the toggle's "month" mode. */
+  protected readonly punchMonth = computed(() => monthWeekday(this.state()?.commitTimes ?? []));
+  /** Work-rhythm headline (peak slot, off-hours/weekend share, active span). */
+  protected readonly insights = computed(() => punchInsights(this.punch()));
+
+  /**
+   * The punch card as a labelled grid with marginals — one shape for both
+   * modes, so a single template renders weekday × hour and year × weekday.
+   * Columns are always laid out Monday-first in hour mode (hours) / for the
+   * weekday axis in year mode.
+   */
+  protected readonly punchView = computed<PunchView>(() => {
+    const weekdayColumns = (colTotals: readonly number[], max: number, rows: PunchRow[]) => ({
+      rows,
+      colAxis: this.punchDays.map((day) => day.label),
+      colFull: this.punchDays.map((day) => day.label),
+      colTotals,
+      max,
+      maxRowTotal: Math.max(1, ...rows.map((row) => row.total)),
+      maxColTotal: Math.max(1, ...colTotals),
+    });
+
+    if (this.punchMode() === 'year') {
+      const card = this.punchYear();
+      const rows: PunchRow[] = card.years.map((year, index) => ({
+        label: String(year),
+        cells: this.punchDays.map((day) => card.grid[index][day.idx]),
+        total: card.byYear[index],
+      }));
+      return weekdayColumns(
+        this.punchDays.map((day) => card.byWeekday[day.idx]),
+        card.max,
+        rows,
+      );
+    }
+    if (this.punchMode() === 'month') {
+      const card = this.punchMonth();
+      const rows: PunchRow[] = MONTH_LABELS.map((label, month) => ({
+        label,
+        cells: this.punchDays.map((day) => card.grid[month][day.idx]),
+        total: card.byMonth[month],
+      }));
+      return weekdayColumns(
+        this.punchDays.map((day) => card.byWeekday[day.idx]),
+        card.max,
+        rows,
+      );
+    }
+    const card = this.punch();
+    const rows: PunchRow[] = this.punchDays.map((day) => ({
+      label: day.label,
+      cells: card.grid[day.idx],
+      total: card.byDay[day.idx],
+    }));
+    return {
+      rows,
+      colAxis: this.hours.map((hour) => (hour % 6 === 0 ? String(hour) : '')),
+      colFull: this.hours.map((hour) => `${hour}:00`),
+      colTotals: card.byHour,
+      max: card.max,
+      maxRowTotal: Math.max(1, ...card.byDay),
+      maxColTotal: Math.max(1, ...card.byHour),
+    };
+  });
+
+  /** Strong couplings between files far apart in the tree (shown in Coupling). */
+  protected readonly surprising = computed<SurprisingPair[]>(() =>
+    surprisingCouplings(this.state()?.result.pairs ?? [], { limit: 8 }),
+  );
+
+  protected readonly hours = Array.from({ length: 24 }, (_, hour) => hour);
+  /** Weekday rows, Monday first (Sunday is `getUTCDay` 0). */
+  protected readonly punchDays = [
+    { label: 'Mon', idx: 1 },
+    { label: 'Tue', idx: 2 },
+    { label: 'Wed', idx: 3 },
+    { label: 'Thu', idx: 4 },
+    { label: 'Fri', idx: 5 },
+    { label: 'Sat', idx: 6 },
+    { label: 'Sun', idx: 0 },
+  ] as const;
+
+  protected orphanPct(value: number, total: number): number {
+    return total > 0 ? Math.round((value / total) * 100) : 0;
+  }
+  protected barPct(value: number, total: number): number {
+    return total > 0 ? (value / total) * 100 : 0;
+  }
+  /** Heat colour for a punch-card cell (theme-aware empty track, indigo fill). */
+  protected punchColor(count: number, max: number): string {
+    if (count === 0 || max === 0) return 'var(--color-zinc-800)';
+    return `rgba(99, 102, 241, ${(0.2 + 0.8 * (count / max)).toFixed(3)})`;
+  }
+  /** Marginal-bar length as a percentage of the largest marginal. */
+  protected barOf(value: number, max: number): number {
+    return max > 0 ? (value / max) * 100 : 0;
+  }
+  protected weekdayLabel(day: number): string {
+    return WEEKDAY_LABELS[day] ?? '';
+  }
+
   protected startSurvival(): void {
     this.tab.set('age');
     this.computeSurvival.emit();
@@ -2473,6 +3061,10 @@ export class InsightsView {
         return s.teamGraph.developers.length > 0;
       case 'knowledge':
         return s.knowledge.files.length > 0;
+      case 'busfactor':
+        return s.knowledge.authors.length > 0;
+      case 'punchcard':
+        return (s.commitTimes?.length ?? 0) > 0;
       default:
         return false;
     }
@@ -2664,6 +3256,63 @@ export class InsightsView {
               primaryExpertLastActive: f.primaryExpert?.lastActiveAt ?? null,
               busFactor: f.busFactor,
             })),
+          },
+        };
+      }
+      case 'busfactor': {
+        const board = this.busBoard();
+        if (!board.length) return null;
+        return {
+          headers: [
+            'contributor',
+            'commits',
+            'knowledge',
+            'filesOwned',
+            'busRisk',
+            'active',
+            'lastActiveAt',
+          ],
+          rows: board.map((c) => [
+            c.name,
+            c.commits,
+            round(c.knowledge),
+            c.filesOwned,
+            c.busRisk,
+            c.active,
+            c.lastActiveAt ?? '',
+          ]),
+          json: {
+            contributors: board.map((c) => ({
+              name: c.name,
+              commits: c.commits,
+              knowledge: round(c.knowledge),
+              filesOwned: c.filesOwned,
+              busRisk: c.busRisk,
+              active: c.active,
+              lastActiveAt: c.lastActiveAt,
+            })),
+          },
+        };
+      }
+      case 'punchcard': {
+        const card = this.punch();
+        if (card.total === 0) return null;
+        const rows: unknown[][] = [];
+        for (const day of this.punchDays) {
+          for (const hour of this.hours) {
+            const count = card.grid[day.idx][hour];
+            if (count > 0) rows.push([day.label, hour, count]);
+          }
+        }
+        return {
+          headers: ['weekday', 'hour', 'commits'],
+          rows,
+          json: {
+            total: card.total,
+            max: card.max,
+            byDay: card.byDay,
+            byHour: card.byHour,
+            grid: card.grid,
           },
         };
       }

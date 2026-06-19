@@ -1,9 +1,12 @@
 import {
+  CoChangePair,
   CommitFiles,
   clusterCoChange,
   computeCoChange,
   couplingConfidence,
+  pathDistance,
   relatedFiles,
+  surprisingCouplings,
 } from './co-change';
 
 const COMMITS: CommitFiles[] = [
@@ -167,5 +170,42 @@ describe('clusterCoChange', () => {
 
   it('returns nothing when every coupling is below the degree threshold', () => {
     expect(clusterCoChange(pairs, { minDegree: 0.95 })).toEqual([]);
+  });
+});
+
+describe('pathDistance', () => {
+  it('is 0 for files in the same folder (or both at the root)', () => {
+    expect(pathDistance('a.ts', 'b.ts')).toBe(0);
+    expect(pathDistance('src/a.ts', 'src/b.ts')).toBe(0);
+  });
+
+  it('is 1 for files under unrelated top-level folders', () => {
+    expect(pathDistance('src/a.ts', 'test/b.ts')).toBe(1);
+  });
+
+  it('is partial for sibling subfolders sharing a parent', () => {
+    expect(pathDistance('src/ui/a.ts', 'src/db/b.ts')).toBe(0.5);
+  });
+});
+
+describe('surprisingCouplings', () => {
+  const pairs: CoChangePair[] = [
+    { a: 'src/auth.ts', b: 'src/session.ts', support: 9, degree: 0.9 }, // same folder
+    { a: 'src/auth.ts', b: 'test/e2e.ts', support: 3, degree: 0.6 }, // distant
+    { a: 'src/ui/x.ts', b: 'src/db/y.ts', support: 4, degree: 0.5 }, // sibling subdirs
+  ];
+
+  it('keeps only distant pairs, ranked by degree × distance', () => {
+    const result = surprisingCouplings(pairs);
+    expect(result.map((p) => [p.a, p.b])).toEqual([
+      ['src/auth.ts', 'test/e2e.ts'],
+      ['src/ui/x.ts', 'src/db/y.ts'],
+    ]);
+    expect(result[0].distance).toBe(1);
+    expect(result[1].distance).toBe(0.5);
+  });
+
+  it('honours the limit', () => {
+    expect(surprisingCouplings(pairs, { limit: 1 })).toHaveLength(1);
   });
 });

@@ -230,3 +230,57 @@ export function clusterCoChange(
   clusters.sort((a, b) => b.score - a.score || b.files.length - a.files.length);
   return clusters.slice(0, limit);
 }
+
+/** A coupling whose two files sit far apart in the directory tree. */
+export interface SurprisingPair extends CoChangePair {
+  /** Tree distance of the paths: 0 = same folder … 1 = nothing in common. */
+  readonly distance: number;
+}
+
+/** Below this path distance a coupling is "expected" (same/near folder). */
+const DEFAULT_MIN_DISTANCE = 0.5;
+
+/**
+ * Strongly-coupled pairs whose files live far apart in the tree — the
+ * couplings most worth a second look. Nearby files changing together is
+ * expected; a strong tie between distant parts of the codebase hints at a
+ * hidden dependency or a leaky abstraction. Ranked by coupling degree weighted
+ * by tree distance, keeping only pairs at or beyond `minDistance`. Pure.
+ */
+export function surprisingCouplings(
+  pairs: readonly CoChangePair[],
+  options: { limit?: number; minDistance?: number } = {},
+): SurprisingPair[] {
+  const limit = options.limit ?? 8;
+  const minDistance = options.minDistance ?? DEFAULT_MIN_DISTANCE;
+  const surprising: SurprisingPair[] = [];
+  for (const pair of pairs) {
+    const distance = pathDistance(pair.a, pair.b);
+    if (distance >= minDistance) surprising.push({ ...pair, distance });
+  }
+  surprising.sort(
+    (x, y) =>
+      y.degree * y.distance - x.degree * x.distance ||
+      y.support - x.support ||
+      x.a.localeCompare(y.a) ||
+      x.b.localeCompare(y.b),
+  );
+  return surprising.slice(0, limit);
+}
+
+/**
+ * Directory distance between two file paths, 0 (same folder) to 1 (no shared
+ * directory). Compares only the folder segments — a Sørensen-style ratio of
+ * shared leading directories to total directory depth — so two files in the
+ * same folder are 0 and two under unrelated top-level folders are 1.
+ */
+export function pathDistance(a: string, b: string): number {
+  const dirsA = a.split('/').slice(0, -1);
+  const dirsB = b.split('/').slice(0, -1);
+  const total = dirsA.length + dirsB.length;
+  if (total === 0) return 0; // both at the repository root
+  const max = Math.min(dirsA.length, dirsB.length);
+  let common = 0;
+  while (common < max && dirsA[common] === dirsB[common]) common++;
+  return 1 - (2 * common) / total;
+}

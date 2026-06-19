@@ -285,6 +285,8 @@ export interface CoChangeState {
   readonly teamGraph: TeamGraph;
   /** Knowledge-loss / turnover risk per file (repo-wide only; empty for a focus). */
   readonly knowledge: KnowledgeModel;
+  /** Author timestamps (ISO) of the walked commits — drives the punch card. */
+  readonly commitTimes?: readonly string[];
   /** Distinct generated/vendored files held out of the metrics, if any. */
   readonly excludedFiles?: number;
   readonly message?: string;
@@ -1518,6 +1520,7 @@ export class RepoStore {
         hotspots: options.focus ? [] : computeHotspots(filtered, sizes),
         teamGraph: options.focus ? EMPTY_TEAM_GRAPH : computeTeamGraph(filtered),
         knowledge,
+        commitTimes: options.focus ? undefined : collected.map((commit) => commit.authoredAt),
         excludedFiles: excluded.size || undefined,
         message,
       };
