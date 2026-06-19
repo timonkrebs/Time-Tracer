@@ -752,7 +752,7 @@ describe('InsightsView', () => {
     });
   });
 
-  describe('Punch card', () => {
+  describe('Git Wrapped', () => {
     const PUNCH: CoChangeState = {
       status: 'ready',
       scanned: 3,
@@ -764,9 +764,9 @@ describe('InsightsView', () => {
       commitTimes: ['2024-01-03T14:00:00Z', '2024-01-03T14:20:00Z', '2024-01-01T09:00:00Z'],
     };
 
-    it('renders the grid with an insight line, marginals and a year toggle', async () => {
+    it('keeps the punch card (with its grid and toggles) under the Wrapped tab', async () => {
       await setState(PUNCH);
-      button('Punch card')!.click();
+      button('Git Wrapped')!.click();
       await fixture.whenStable();
       expect(text()).toContain('3 commits');
       expect(text()).toContain('Wed 14:00'); // busiest slot
@@ -774,8 +774,8 @@ describe('InsightsView', () => {
       expect(text()).toContain('Mon');
       expect(text()).toContain('Sun');
 
-      // Toggle to the year × weekday view.
-      button('Year × weekday')!.click();
+      // Toggle to the year × month view.
+      button('Year × month')!.click();
       await fixture.whenStable();
       expect(text()).toContain('2024');
 
@@ -784,6 +784,28 @@ describe('InsightsView', () => {
       await fixture.whenStable();
       expect(text()).toContain('Jan');
       expect(text()).toContain('Dec');
+    });
+
+    it('shows year-in-review cards with a PNG export', async () => {
+      await setState(PUNCH);
+      button('Git Wrapped')!.click();
+      await fixture.whenStable();
+      expect(text()).toContain('Git Wrapped');
+      expect(text()).toContain('Busiest day');
+      expect(text()).toContain('2024-01-03'); // the busiest day's date
+      expect(button('PNG')).toBeDefined(); // each card exports a poster
+    });
+
+    it('picks the oldest cohort that still has live lines', async () => {
+      await setState(PUNCH);
+      // SURVIVAL's 2019 cohort is fully dead by the tip; 2020 is still alive.
+      fixture.componentRef.setInput('survival', SURVIVAL);
+      await fixture.whenStable();
+      button('Git Wrapped')!.click();
+      await fixture.whenStable();
+      expect(text()).toContain('Oldest code alive');
+      expect(text()).toContain('2020'); // the oldest cohort with live lines…
+      expect(text()).not.toContain('2019'); // …not the fully-dead 2019 cohort
     });
   });
 
