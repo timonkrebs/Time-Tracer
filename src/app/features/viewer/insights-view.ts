@@ -57,6 +57,8 @@ import { TreemapTile, squarify } from '../../core/util/treemap';
 const MAX_PAIRS = 60;
 const MAX_RELATED = 100;
 const MAX_HOTSPOTS = 45;
+/** Rising files listed in the tech-debt forecast. */
+const MAX_FORECAST = 12;
 const MAX_RISK = 45;
 /** Contributors listed in the Knowledge "holders" breakdown. */
 const MAX_HOLDERS = 10;
@@ -704,6 +706,49 @@ interface Quadrant {
                 }
               } @else {
                 <p class="text-sm text-zinc-500">Crunching hotspots…</p>
+              }
+              @if (forecast().length) {
+                <section class="mt-5 border-t border-zinc-800/70 pt-4">
+                  <h3 class="text-[11px] font-medium tracking-wide text-zinc-500 uppercase">
+                    🌡️ Forecast — heating up
+                  </h3>
+                  <p class="mt-0.5 mb-2 text-[11px] leading-4 text-zinc-600">
+                    Files whose churn is accelerating (recent vs. earlier in the analysed history) —
+                    likely next hotspots. Click to open.
+                  </p>
+                  <ul class="space-y-1">
+                    @for (file of forecast(); track file.path) {
+                      <li>
+                        <button
+                          type="button"
+                          class="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm transition hover:bg-white/[0.03]"
+                          [title]="
+                            file.path +
+                            ' — ' +
+                            file.recent +
+                            ' recent vs ' +
+                            file.prior +
+                            ' earlier changes'
+                          "
+                          (click)="openFile.emit(file.path)"
+                        >
+                          <span class="shrink-0 text-amber-400" aria-hidden="true">↑</span>
+                          <span class="min-w-0 flex-1 truncate font-mono text-xs text-zinc-200">{{
+                            label(file.path)
+                          }}</span>
+                          <span class="shrink-0 text-[11px] text-zinc-500 tabular-nums">
+                            {{ file.prior }} → {{ file.recent }}
+                          </span>
+                          <span
+                            class="w-8 shrink-0 text-right text-[11px] text-amber-300 tabular-nums"
+                          >
+                            +{{ file.acceleration }}
+                          </span>
+                        </button>
+                      </li>
+                    }
+                  </ul>
+                </section>
               }
             }
           } @else {
@@ -2353,6 +2398,10 @@ export class InsightsView {
     return (this.state()?.hotspots ?? []).filter((hot) => hot.size <= max).slice(0, MAX_HOTSPOTS);
   });
   protected readonly list = computed(() => this.hotspots());
+  /** Files whose churn is accelerating — the tech-debt forecast (top risers). */
+  protected readonly forecast = computed(() =>
+    (this.state()?.forecast?.files ?? []).slice(0, MAX_FORECAST),
+  );
   protected readonly tiles = computed<TreemapTile<Hotspot>[]>(() =>
     squarify(
       // A touched file missing from the current tree has size 0; squarify drops

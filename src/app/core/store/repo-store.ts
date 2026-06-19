@@ -1,6 +1,7 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 
 import { ProviderRegistry, RepoWebLinks } from '../git/git-provider';
+import { AnalysisRunner } from './analysis-runner';
 import {
   CommitFileChange,
   CommitInfo,
@@ -13,18 +14,14 @@ import {
   TreeEntry,
   toRepoProviderError,
 } from '../models';
-import {
-  CoChangeResult,
-  CommitFiles,
-  RelatedFile,
-  computeCoChange,
-  relatedFiles,
-} from '../util/co-change';
+import { CoChangeResult, CommitFiles, RelatedFile, relatedFiles } from '../util/co-change';
 import { FileDiff, computeFileDiff, diffLines, lineSimilarity, splitLines } from '../util/diff';
-import { FileMetric, Hotspot, computeFileMetric, computeHotspots } from '../util/hotspots';
+import { FileMetric, Hotspot, computeFileMetric } from '../util/hotspots';
 import { isGeneratedFile } from '../util/ignore';
-import { KnowledgeModel, computeKnowledgeRisk } from '../util/knowledge';
-import { EMPTY_TEAM_GRAPH, TeamGraph, computeTeamGraph } from '../util/team-graph';
+import { KnowledgeModel } from '../util/knowledge';
+import { TeamGraph } from '../util/team-graph';
+import { AggregateInput, AggregateResult, aggregateInsights } from '../util/analysis';
+import { Forecast } from '../util/forecast';
 import {
   LineRange,
   changeRegions,
@@ -74,6 +71,12 @@ export const FILE_COCHANGE_COMMIT_CAP = 400;
 
 /** Shared empty size map for the knowledge model on a single-file focus walk. */
 const EMPTY_SIZES: ReadonlyMap<string, number> = new Map();
+/** The empty aggregation used for the synchronous first 'computing' frame. */
+const EMPTY_AGGREGATE: AggregateResult = aggregateInsights({
+  commits: [],
+  sizes: EMPTY_SIZES,
+  partial: true,
+});
 /** Commit file-lists kept in flight at once during the survival walk (overlaps the requests). */
 const SURVIVAL_PREFETCH = 12;
 /** Minimum gap between streaming recomputes of the survival report (it is O(lines)). */
@@ -285,6 +288,8 @@ export interface CoChangeState {
   readonly teamGraph: TeamGraph;
   /** Knowledge-loss / turnover risk per file (repo-wide only; empty for a focus). */
   readonly knowledge: KnowledgeModel;
+  /** Files whose churn is accelerating — likely next hotspots (repo-wide only). */
+  readonly forecast?: Forecast;
   /** Author timestamps (ISO) of the walked commits — drives the punch card. */
   readonly commitTimes?: readonly string[];
   /** Distinct generated/vendored files held out of the metrics, if any. */
@@ -330,6 +335,7 @@ interface HistorySnapshot {
 export class RepoStore {
   private readonly registry = inject(ProviderRegistry);
   private readonly recents = inject(RecentRepos);
+  private readonly analysis = inject(AnalysisRunner);
 
   private loadSeq = 0;
   /** In-flight file fetches keyed like {@link fileKey}, to dedupe callers. */
@@ -1484,51 +1490,77 @@ export class RepoStore {
     // the cap is reported complete rather than partial.
     let exhausted = false;
 
-    const compose = (status: CoChangeState['status'], message?: string): CoChangeState => {
-      // Partial while still streaming or errored, or when a capped walk stopped
-      // with older history still unread — but not when history simply ran out.
-      const partial = status !== 'ready' || (!exhausted && collected.length >= options.cap);
-      // Drop generated files before aggregating, so a commit that is mostly
-      // build output still contributes the real files it also touched.
+    // Snapshot the walk so far as worker input: drop generated/vendored files
+    // (counted so the header can note them) and mark the knowledge partial while
+    // older history may still be unread.
+    let excludedCount = 0;
+    const snapshot = (status: CoChangeState['status']): AggregateInput => {
       const excluded = new Set<string>();
-      const filtered = collected.map((commit) => ({
-        ...commit,
+      const commits = collected.map((commit) => ({
+        sha: commit.sha,
+        authoredAt: commit.authoredAt,
+        authorName: commit.authorName,
+        authorEmail: commit.authorEmail,
         files: commit.files.filter((path) => {
           if (keepFile(path)) return true;
           excluded.add(path);
           return false;
         }),
       }));
-      // Knowledge-loss risk only makes sense for files that still exist, so drop
-      // any touched in history but since deleted from the current tree — their
-      // path is absent from `sizes`, which is built from the current tree.
-      const knowledgeModel = options.focus
-        ? computeKnowledgeRisk([], EMPTY_SIZES)
-        : computeKnowledgeRisk(filtered, sizes, { partial });
-      const knowledge: KnowledgeModel = {
-        ...knowledgeModel,
-        files: knowledgeModel.files.filter((file) => sizes.has(file.path)),
-      };
-      return {
-        status,
-        focus: options.focus,
-        scanned: collected.length,
-        target: options.cap,
-        result: computeCoChange(filtered, { minSupport: options.minSupport }),
-        // Hotspots, the team graph and knowledge are repo-wide metrics; a single
-        // file's walk doesn't have them.
-        hotspots: options.focus ? [] : computeHotspots(filtered, sizes),
-        teamGraph: options.focus ? EMPTY_TEAM_GRAPH : computeTeamGraph(filtered),
-        knowledge,
-        commitTimes: options.focus ? undefined : collected.map((commit) => commit.authoredAt),
-        excludedFiles: excluded.size || undefined,
-        message,
-      };
+      excludedCount = excluded.size;
+      const partial = status !== 'ready' || (!exhausted && collected.length >= options.cap);
+      return { commits, sizes, focus: options.focus, minSupport: options.minSupport, partial };
     };
-    const publish = (status: CoChangeState['status'], message?: string): void =>
-      sink.set(compose(status, message));
 
-    publish('computing');
+    const stateFrom = (
+      status: CoChangeState['status'],
+      agg: AggregateResult,
+      message?: string,
+    ): CoChangeState => ({
+      status,
+      focus: options.focus,
+      scanned: collected.length,
+      target: options.cap,
+      result: agg.result,
+      // Hotspots, the team graph, knowledge and the forecast are repo-wide
+      // metrics; a single file's focused walk doesn't have them.
+      hotspots: agg.hotspots,
+      teamGraph: agg.teamGraph,
+      knowledge: agg.knowledge,
+      forecast: options.focus ? undefined : agg.forecast,
+      commitTimes: options.focus ? undefined : collected.map((commit) => commit.authoredAt),
+      excludedFiles: excludedCount || undefined,
+      message,
+    });
+
+    // The heavy aggregation runs off the main thread (a Web Worker, when
+    // available) without queueing: a request while one is in flight just
+    // supersedes the previous, and the terminal 'ready'/'error' run is awaited
+    // so the published state always reflects every commit walked. Stale runs
+    // from a superseded walk are dropped by the `live()` guard.
+    let running: Promise<void> | null = null;
+    let queued: { status: CoChangeState['status']; message?: string } | null = null;
+    const pump = (status: CoChangeState['status'], message?: string): Promise<void> => {
+      queued = { status, message };
+      running ??= (async () => {
+        try {
+          while (queued && live()) {
+            const next = queued;
+            queued = null;
+            const agg = await this.analysis.run(snapshot(next.status));
+            if (!live()) return;
+            sink.set(stateFrom(next.status, agg, next.message));
+          }
+        } finally {
+          running = null;
+        }
+      })();
+      return running;
+    };
+
+    // A synchronous first frame so the view shows progress immediately; the
+    // heavy aggregation streams in off-thread.
+    sink.set(stateFrom('computing', EMPTY_AGGREGATE));
     try {
       for (let page = 1; collected.length < options.cap; page++) {
         const commits = await provider.listCommits(slug, {
@@ -1574,7 +1606,7 @@ export class RepoStore {
             authorEmail: commit.authorEmail,
             files,
           });
-          if (collected.length % 5 === 0) publish('computing');
+          if (collected.length % 5 === 0) void pump('computing');
         }
         // A short page is the end of history — but only when the cap didn't
         // stop us partway through it. If we broke at the cap mid-page, older
@@ -1585,10 +1617,10 @@ export class RepoStore {
         }
       }
       const empty = options.path ? 'No history found for this file.' : 'No commit history found.';
-      publish('ready', collected.length === 0 ? empty : undefined);
+      await pump('ready', collected.length === 0 ? empty : undefined);
     } catch (error) {
       if (!live()) return; // a cleared/superseded walk must not resurrect state
-      sink.set(compose('error', toRepoProviderError(error).message));
+      await pump('error', toRepoProviderError(error).message);
     }
   }
 
