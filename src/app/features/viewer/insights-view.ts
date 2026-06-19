@@ -2859,7 +2859,12 @@ export class InsightsView {
         '#818cf8',
       );
     }
-    const topAuthor = s.knowledge.authors[0];
+    // The contributor with the most commits (knowledge.authors is sorted by
+    // recency-weighted knowledge, which isn't the same as the highest count).
+    const topAuthor = s.knowledge.authors.reduce<(typeof s.knowledge.authors)[number] | null>(
+      (best, author) => (!best || author.commits > best.commits ? author : best),
+      null,
+    );
     if (topAuthor) {
       add(
         'top-author',
@@ -2910,14 +2915,21 @@ export class InsightsView {
       );
     }
     const report = this.survival()?.report;
-    if (report && report.aliveLines > 0 && report.cohorts.bands.length) {
-      add(
-        'oldest',
-        'Oldest code alive',
-        report.cohorts.bands[0],
-        `${plural(report.aliveLines, 'line')} still live`,
-        '#a78bfa',
+    if (report && report.aliveLines > 0) {
+      // The oldest cohort that still has lines alive at the tip — not just the
+      // oldest cohort ever observed (whose lines may all have since died).
+      const oldestAlive = report.cohorts.bands.find(
+        (band) => (report.cohorts.counts.get(band)?.at(-1) ?? 0) > 0,
       );
+      if (oldestAlive) {
+        add(
+          'oldest',
+          'Oldest code alive',
+          oldestAlive,
+          `${plural(report.aliveLines, 'line')} still live`,
+          '#a78bfa',
+        );
+      }
     }
     return cards;
   });

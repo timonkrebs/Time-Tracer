@@ -795,6 +795,18 @@ describe('InsightsView', () => {
       expect(text()).toContain('2024-01-03'); // the busiest day's date
       expect(button('PNG')).toBeDefined(); // each card exports a poster
     });
+
+    it('picks the oldest cohort that still has live lines', async () => {
+      await setState(PUNCH);
+      // SURVIVAL's 2019 cohort is fully dead by the tip; 2020 is still alive.
+      fixture.componentRef.setInput('survival', SURVIVAL);
+      await fixture.whenStable();
+      button('Git Wrapped')!.click();
+      await fixture.whenStable();
+      expect(text()).toContain('Oldest code alive');
+      expect(text()).toContain('2020'); // the oldest cohort with live lines…
+      expect(text()).not.toContain('2019'); // …not the fully-dead 2019 cohort
+    });
   });
 
   describe('Surprising couplings', () => {
