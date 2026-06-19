@@ -60,6 +60,46 @@ describe('LocalGitProvider', () => {
     expect(tree.entries[0].size).toBe(8);
   });
 
+  it('populates a size for every working-tree file, across nested folders', async () => {
+    await fs.promises.writeFile('/src/a.ts', 'aaaa'); // 4 bytes
+    await git.add({ fs, dir: '/', filepath: 'src/a.ts' });
+    await fs.promises.writeFile('/src/deep/b.ts', 'bbbbbbbb'); // 8 bytes
+    await git.add({ fs, dir: '/', filepath: 'src/deep/b.ts' });
+    await git.commit({ fs, dir: '/', message: 'c4: add sources', author });
+
+    const tree = await provider.getTree(slug, 'main');
+    const byPath = new Map(tree.entries.map((entry) => [entry.path, entry]));
+
+    expect(byPath.get('src/a.ts')?.size).toBe(4);
+    expect(byPath.get('src/deep/b.ts')?.size).toBe(8);
+
+    // The regression guard: every file entry carries a numeric size, so the
+    // treemap can scale by it and the size filter has a spread to work with.
+    const files = tree.entries.filter((entry) => entry.kind === 'file');
+    expect(files.length).toBeGreaterThan(1);
+    expect(files.every((entry) => typeof entry.size === 'number')).toBe(true);
+    expect(new Set(files.map((entry) => entry.size)).size).toBeGreaterThan(1);
+
+    // Directories never carry a size.
+    expect(byPath.get('src')).toMatchObject({ kind: 'dir' });
+    expect(byPath.get('src')?.size).toBeUndefined();
+  });
+
+  it('leaves size undefined for a tree file missing from the working tree', async () => {
+    await fs.promises.writeFile('/tracked.txt', 'hello'); // 5 bytes
+    await git.add({ fs, dir: '/', filepath: 'tracked.txt' });
+    await git.commit({ fs, dir: '/', message: 'c4: add tracked', author });
+    // Remove it from the working tree only — it stays in the committed tree.
+    await fs.promises.unlink('/tracked.txt');
+
+    const tree = await provider.getTree(slug, 'main');
+    const byPath = new Map(tree.entries.map((entry) => [entry.path, entry]));
+
+    expect(byPath.has('tracked.txt')).toBe(true); // still in the tree…
+    expect(byPath.get('tracked.txt')?.size).toBeUndefined(); // …but no working file
+    expect(byPath.get('greeting.txt')?.size).toBe(8); // other files stay sized
+  });
+
   it('reads blobs by tree entry and historical versions by ref', async () => {
     const tree = await provider.getTree(slug, 'main');
     const file = await provider.getFile(slug, tree.entries[0]);
