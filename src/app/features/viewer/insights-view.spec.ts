@@ -752,7 +752,7 @@ describe('InsightsView', () => {
     });
   });
 
-  describe('Punch card', () => {
+  describe('Git Wrapped', () => {
     const PUNCH: CoChangeState = {
       status: 'ready',
       scanned: 3,
@@ -764,9 +764,9 @@ describe('InsightsView', () => {
       commitTimes: ['2024-01-03T14:00:00Z', '2024-01-03T14:20:00Z', '2024-01-01T09:00:00Z'],
     };
 
-    it('renders the grid with an insight line, marginals and a year toggle', async () => {
+    it('keeps the punch card (with its grid and toggles) under the Wrapped tab', async () => {
       await setState(PUNCH);
-      button('Punch card')!.click();
+      button('Git Wrapped')!.click();
       await fixture.whenStable();
       expect(text()).toContain('3 commits');
       expect(text()).toContain('Wed 14:00'); // busiest slot
@@ -784,6 +784,16 @@ describe('InsightsView', () => {
       await fixture.whenStable();
       expect(text()).toContain('Jan');
       expect(text()).toContain('Dec');
+    });
+
+    it('shows year-in-review cards with a PNG export', async () => {
+      await setState(PUNCH);
+      button('Git Wrapped')!.click();
+      await fixture.whenStable();
+      expect(text()).toContain('Git Wrapped');
+      expect(text()).toContain('Busiest day');
+      expect(text()).toContain('2024-01-03'); // the busiest day's date
+      expect(button('PNG')).toBeDefined(); // each card exports a poster
     });
   });
 

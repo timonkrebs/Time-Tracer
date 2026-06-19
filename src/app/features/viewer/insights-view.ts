@@ -8,12 +8,14 @@ import {
   input,
   output,
   signal,
+  viewChild,
 } from '@angular/core';
 
 import { CoChangeState, SurvivalState } from '../../core/store/repo-store';
 import { CSV_MIME, JSON_MIME, fileSlug, round, toCsv, toJson } from '../../core/util/data-export';
 import { downloadBlob, downloadText } from '../../core/util/download';
 import { composeStackedSvg, svgToPngBlob } from '../../core/util/image-export';
+import { busiestDay, longestStreak } from '../../core/util/wrapped';
 import { Contributor, busFactorBoard, simulateDeparture } from '../../core/util/bus-factor';
 import {
   CoChangeCluster,
@@ -199,6 +201,58 @@ interface PunchView {
   readonly max: number;
   readonly maxRowTotal: number;
   readonly maxColTotal: number;
+}
+
+/** One "Git Wrapped" year-in-review card. */
+interface WrappedCard {
+  readonly key: string;
+  readonly title: string;
+  /** The headline value (a name, count, date, …). */
+  readonly value: string;
+  readonly caption: string;
+  /** Accent colour (hex) for the title and card tint. */
+  readonly accent: string;
+  /** CSS background for the in-app card. */
+  readonly bg: string;
+}
+
+const POSTER_FONT = 'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
+
+function escapeXml(value: string): string {
+  return value.replace(
+    /[<>&"']/g,
+    (char) =>
+      ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[char] ?? char,
+  );
+}
+
+function ellipsize(value: string, max: number): string {
+  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
+
+/** Builds a 1080×1080 shareable poster SVG for one Git Wrapped card. */
+function wrappedPoster(card: WrappedCard, repo: string): string {
+  const size = 1080;
+  const id = `g-${card.key}`;
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" ` +
+    `viewBox="0 0 ${size} ${size}" font-family="${POSTER_FONT}">` +
+    `<defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1">` +
+    `<stop offset="0" stop-color="${card.accent}" stop-opacity="0.35"/>` +
+    `<stop offset="0.7" stop-color="#09090b"/></linearGradient></defs>` +
+    `<rect width="${size}" height="${size}" fill="#09090b"/>` +
+    `<rect width="${size}" height="${size}" fill="url(#${id})"/>` +
+    `<text x="96" y="250" font-size="34" font-weight="600" letter-spacing="3" fill="${card.accent}">` +
+    `${escapeXml(card.title.toUpperCase())}</text>` +
+    `<rect x="96" y="284" width="84" height="10" rx="5" fill="${card.accent}"/>` +
+    `<text x="92" y="470" font-size="104" font-weight="700" fill="#fafafa">` +
+    `${escapeXml(ellipsize(card.value, 22))}</text>` +
+    `<text x="96" y="556" font-size="40" fill="#a1a1aa">${escapeXml(ellipsize(card.caption, 40))}</text>` +
+    `<text x="96" y="${size - 84}" font-size="30" font-weight="600" fill="#e4e4e7">` +
+    `${escapeXml(ellipsize(repo, 36))}</text>` +
+    `<text x="96" y="${size - 40}" font-size="26" fill="#71717a">Time Tracer · Git Wrapped</text>` +
+    `</svg>`
+  );
 }
 
 /** Flattens a survival report into a JSON-friendly export payload. */
@@ -489,13 +543,13 @@ interface Quadrant {
             type="button"
             class="border-b-2 pb-1 font-medium transition"
             [class]="
-              tab() === 'punchcard'
+              tab() === 'wrapped'
                 ? 'border-indigo-400 text-zinc-100'
                 : 'border-transparent text-zinc-500 hover:text-zinc-300'
             "
-            (click)="tab.set('punchcard')"
+            (click)="tab.set('wrapped')"
           >
-            Punch card
+            Git Wrapped
           </button>
           @if (survivalAvailable()) {
             <button
@@ -1684,8 +1738,8 @@ interface Quadrant {
               </button>
             </div>
           }
-        } @else if (tab() === 'punchcard') {
-          <!-- Punch card: commit times by weekday × hour -->
+        } @else if (tab() === 'wrapped') {
+          <!-- Git Wrapped: the punch card plus a swipeable year-in-review -->
           @if (state(); as s) {
             @if (s.status === 'error') {
               <p class="text-sm text-rose-400">{{ s.message }}</p>
@@ -1818,13 +1872,77 @@ interface Quadrant {
                   Capped walk — load all commits for the full pattern.
                 </p>
               }
+              @if (wrappedCards().length) {
+                <div class="mt-5 border-t border-zinc-800/70 pt-4">
+                  <div class="mb-2 flex items-center gap-2">
+                    <h3 class="text-[11px] font-medium tracking-wide text-zinc-500 uppercase">
+                      Git Wrapped
+                    </h3>
+                    <span class="flex-1"></span>
+                    <button
+                      type="button"
+                      class="rounded border border-zinc-700 px-1.5 py-0.5 text-[11px] text-zinc-400 transition hover:border-zinc-500 hover:text-zinc-200"
+                      (click)="scrollWrapped(-1)"
+                      aria-label="Previous card"
+                    >
+                      ‹
+                    </button>
+                    <button
+                      type="button"
+                      class="rounded border border-zinc-700 px-1.5 py-0.5 text-[11px] text-zinc-400 transition hover:border-zinc-500 hover:text-zinc-200"
+                      (click)="scrollWrapped(1)"
+                      aria-label="Next card"
+                    >
+                      ›
+                    </button>
+                  </div>
+                  <div
+                    #wrappedTrack
+                    class="slim-scrollbar flex snap-x snap-mandatory gap-3 overflow-x-auto pb-2"
+                  >
+                    @for (card of wrappedCards(); track card.key) {
+                      <figure
+                        class="relative flex aspect-square w-56 shrink-0 snap-start flex-col justify-between overflow-hidden rounded-xl border border-zinc-800 p-4"
+                        [style.background]="card.bg"
+                      >
+                        <figcaption
+                          class="text-[11px] font-medium tracking-wide uppercase"
+                          [style.color]="card.accent"
+                        >
+                          {{ card.title }}
+                        </figcaption>
+                        <div class="min-h-0">
+                          <p
+                            class="truncate text-2xl font-semibold text-zinc-50"
+                            [title]="card.value"
+                          >
+                            {{ card.value }}
+                          </p>
+                          <p class="mt-1 line-clamp-2 text-xs text-zinc-400">{{ card.caption }}</p>
+                        </div>
+                        <button
+                          type="button"
+                          class="absolute top-2 right-2 rounded border border-white/15 bg-black/20 px-1.5 py-0.5 text-[10px] text-zinc-200 transition hover:bg-black/40"
+                          (click)="exportCard(card)"
+                          title="Download this card as a PNG"
+                        >
+                          PNG
+                        </button>
+                      </figure>
+                    }
+                  </div>
+                  <p class="mt-1 text-[11px] text-zinc-600">
+                    Swipe the cards · each exports as a PNG to share.
+                  </p>
+                </div>
+              }
             } @else if (s.status === 'ready') {
               <p class="text-sm text-zinc-500">No dated commits in the analysed history.</p>
             } @else {
               <p class="text-sm text-zinc-500">Collecting commit times…</p>
             }
           } @else {
-            <p class="mb-3 text-sm text-zinc-500">Analyze the history to see the punch card.</p>
+            <p class="mb-3 text-sm text-zinc-500">Analyze the history to see your Git Wrapped.</p>
             <div class="flex flex-wrap gap-2">
               <button
                 type="button"
@@ -2156,7 +2274,7 @@ export class InsightsView {
   protected readonly selectedRisk = signal<string | null>(null);
   protected readonly benchmark = CODE_HALF_LIFE_BENCHMARK;
   protected readonly tab = signal<
-    'hotspots' | 'coupling' | 'team' | 'knowledge' | 'busfactor' | 'punchcard' | 'age'
+    'hotspots' | 'coupling' | 'team' | 'knowledge' | 'busfactor' | 'wrapped' | 'age'
   >('hotspots');
   protected readonly floor = CLUSTER_SIZE_FLOOR;
   protected readonly ceil = CLUSTER_SIZE_CEIL;
@@ -2711,6 +2829,116 @@ export class InsightsView {
     return WEEKDAY_LABELS[day] ?? '';
   }
 
+  // ─────────────────────────── Git Wrapped ───────────────────────────
+
+  private readonly wrappedTrack = viewChild<ElementRef<HTMLElement>>('wrappedTrack');
+
+  /** The year-in-review cards, assembled from the analyses already on hand. */
+  protected readonly wrappedCards = computed<WrappedCard[]>(() => {
+    const s = this.state();
+    if (!s) return [];
+    const cards: WrappedCard[] = [];
+    const add = (key: string, title: string, value: string, caption: string, accent: string) =>
+      cards.push({
+        key,
+        title,
+        value,
+        caption,
+        accent,
+        bg: `linear-gradient(140deg, ${accent}33, #0b0b0f 70%)`,
+      });
+    const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
+
+    const times = s.commitTimes ?? [];
+    if (times.length) {
+      add(
+        'commits',
+        'Commits',
+        String(times.length),
+        `analysed${s.knowledge.partial ? ' (capped)' : ''}`,
+        '#818cf8',
+      );
+    }
+    const topAuthor = s.knowledge.authors[0];
+    if (topAuthor) {
+      add(
+        'top-author',
+        'Top contributor',
+        topAuthor.name,
+        plural(topAuthor.commits, 'commit'),
+        '#34d399',
+      );
+    }
+    const busy = busiestDay(times);
+    if (busy)
+      add(
+        'busiest-day',
+        'Busiest day',
+        busy.date,
+        `${plural(busy.count, 'commit')} in a day`,
+        '#fbbf24',
+      );
+
+    const streak = longestStreak(times);
+    if (streak && streak.days > 1) {
+      add(
+        'streak',
+        'Longest streak',
+        `${streak.days} days`,
+        `${streak.start} → ${streak.end}`,
+        '#f472b6',
+      );
+    }
+    const hottest = s.hotspots[0];
+    if (hottest) {
+      add(
+        'hottest',
+        'Most-churned file',
+        this.label(hottest.path),
+        plural(hottest.metric.revisions, 'change'),
+        '#fb923c',
+      );
+    }
+    const ins = this.insights();
+    if (ins.hasData) {
+      add(
+        'rhythm',
+        ins.afterHoursShare >= 0.5 ? 'Night owl' : 'Nine to five',
+        `${this.pct(ins.afterHoursShare)}% after hours`,
+        `busiest ${this.weekdayLabel(ins.peakDay)} ${ins.peakHour}:00`,
+        '#22d3ee',
+      );
+    }
+    const report = this.survival()?.report;
+    if (report && report.aliveLines > 0 && report.cohorts.bands.length) {
+      add(
+        'oldest',
+        'Oldest code alive',
+        report.cohorts.bands[0],
+        `${plural(report.aliveLines, 'line')} still live`,
+        '#a78bfa',
+      );
+    }
+    return cards;
+  });
+
+  /** Scrolls the card track by roughly one card (the ‹ / › buttons). */
+  protected scrollWrapped(direction: number): void {
+    const track = this.wrappedTrack()?.nativeElement;
+    if (track)
+      track.scrollBy({ left: direction * Math.min(track.clientWidth, 260), behavior: 'smooth' });
+  }
+
+  /** Renders a card as a 1080² poster PNG and downloads it. */
+  protected async exportCard(card: WrappedCard): Promise<void> {
+    try {
+      const blob = await svgToPngBlob(wrappedPoster(card, this.repoName()), 1080, 1080, 1);
+      downloadBlob(`${fileSlug(this.repoName())}-wrapped-${card.key}.png`, blob);
+    } catch {
+      // Rasterization unsupported in this browser — nothing to download.
+    }
+  }
+
   protected startSurvival(): void {
     this.tab.set('age');
     this.computeSurvival.emit();
@@ -3063,7 +3291,7 @@ export class InsightsView {
         return s.knowledge.files.length > 0;
       case 'busfactor':
         return s.knowledge.authors.length > 0;
-      case 'punchcard':
+      case 'wrapped':
         return (s.commitTimes?.length ?? 0) > 0;
       default:
         return false;
@@ -3294,7 +3522,7 @@ export class InsightsView {
           },
         };
       }
-      case 'punchcard': {
+      case 'wrapped': {
         const card = this.punch();
         if (card.total === 0) return null;
         const rows: unknown[][] = [];
