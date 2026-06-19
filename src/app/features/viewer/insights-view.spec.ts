@@ -831,4 +831,28 @@ describe('InsightsView', () => {
       expect(text()).toContain('e2e.ts');
     });
   });
+
+  describe('Forecast', () => {
+    const RISING: CoChangeState = {
+      status: 'ready',
+      scanned: 4,
+      target: 75,
+      result: computeCoChange([]),
+      hotspots: HOTSPOTS,
+      teamGraph: EMPTY_TEAM_GRAPH,
+      knowledge: EMPTY_KNOWLEDGE,
+      forecast: {
+        files: [{ path: 'src/rising.ts', recent: 3, prior: 1, acceleration: 2 }],
+        splitAt: 0,
+        from: 0,
+        to: 0,
+      },
+    };
+
+    it('lists accelerating files under the Hotspots tab', async () => {
+      await setState(RISING); // hotspots is the default tab
+      expect(text()).toContain('Forecast — heating up');
+      expect(text()).toContain('rising.ts');
+    });
+  });
 });
