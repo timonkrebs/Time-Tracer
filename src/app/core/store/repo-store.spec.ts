@@ -1690,6 +1690,39 @@ describe('RepoStore', () => {
       expect(store.coChange()?.knowledge.authors[0]?.deletions).toBe(5);
     });
 
+    it('keeps partial insights explorable when the walk is blocked mid-way', async () => {
+      provider.listCommitsResult = () =>
+        Promise.resolve([commit('c1'), commit('c2'), commit('c3')]);
+      provider.commitFilesResult = (sha) =>
+        sha === 'c3'
+          ? Promise.reject(new RepoProviderError('rate limit exhausted', 'rate-limited'))
+          : Promise.resolve([
+              { path: 'a.ts', status: 'modified' },
+              { path: 'b.ts', status: 'modified' },
+            ]);
+
+      await store.computeCoChange();
+
+      const state = store.coChange();
+      // A blocking error is avoided: the partial results are published instead.
+      expect(state?.status).toBe('ready');
+      expect(state?.incomplete).toContain('rate limit');
+      expect(state?.result.commitsUsed).toBe(2); // the two commits that loaded
+      expect(state?.knowledge.partial).toBe(true); // flagged as missing history
+    });
+
+    it('still surfaces a blocking error when nothing was gathered before the block', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c1')]);
+      provider.commitFilesResult = () =>
+        Promise.reject(new RepoProviderError('rate limit exhausted', 'rate-limited'));
+
+      await store.computeCoChange();
+
+      const state = store.coChange();
+      expect(state?.status).toBe('error');
+      expect(state?.incomplete).toBeUndefined();
+    });
+
     it('reports a walk complete when history is exhausted exactly at the cap', async () => {
       // 75 commits (= CO_CHANGE_COMMIT_CAP) delivered as 30 + 30 + 15; the short
       // final page marks the end of history, so the result must not be partial.

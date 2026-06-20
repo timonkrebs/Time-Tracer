@@ -599,6 +599,15 @@ interface Quadrant {
           }
         </div>
 
+        @if (state()?.incomplete; as note) {
+          <div
+            class="mb-3 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs leading-5 text-amber-300"
+            role="status"
+          >
+            Stopped early — showing partial insights from the commits loaded so far. {{ note }}
+          </div>
+        }
+
         @if (tab() === 'hotspots') {
           @if (state(); as s) {
             @if (s.status === 'error') {

@@ -252,6 +252,25 @@ describe('InsightsView', () => {
     await fixture.whenStable();
   }
 
+  it('renders partial insights with a notice when the walk was cut short', async () => {
+    await setState({
+      status: 'ready',
+      scanned: 2,
+      target: 75,
+      result: computeCoChange(COMMITS),
+      hotspots: HOTSPOTS,
+      teamGraph: EMPTY_TEAM_GRAPH,
+      knowledge: EMPTY_KNOWLEDGE,
+      incomplete: "GitHub's unauthenticated API rate limit (60 requests/hour per IP) is exhausted.",
+    });
+
+    const t = text();
+    expect(t).toContain('partial insights'); // the non-blocking notice
+    expect(t).toContain('rate limit'); // carries the provider's reason
+    // The hotspot treemap still renders from the partial data.
+    expect(fixture.nativeElement.querySelector('svg rect')).not.toBeNull();
+  });
+
   it('prompts when there is no result yet, and emits from both buttons', () => {
     expect(text()).toContain('Find files that change together');
     button('Analyze recent history')!.click();

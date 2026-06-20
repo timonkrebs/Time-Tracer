@@ -296,6 +296,12 @@ export interface CoChangeState {
   /** Distinct generated/vendored files held out of the metrics, if any. */
   readonly excludedFiles?: number;
   readonly message?: string;
+  /**
+   * Set when the walk was cut short (e.g. the provider blocked further API
+   * access) but had already gathered results: carries the reason, and the
+   * partial metrics are still published so the panel stays explorable.
+   */
+  readonly incomplete?: string;
 }
 
 /**
@@ -1724,7 +1730,19 @@ export class RepoStore {
       await pump('ready', collected.length === 0 ? empty : undefined);
     } catch (error) {
       if (!live()) return; // a cleared/superseded walk must not resurrect state
-      await pump('error', toRepoProviderError(error).message);
+      const message = toRepoProviderError(error).message;
+      if (collected.length === 0) {
+        await pump('error', message);
+        return;
+      }
+      // Blocked mid-walk but results were already gathered: publish them as a
+      // partial (ready) state with the reason, so the panel stays explorable
+      // instead of replacing every collected metric with a blocking error.
+      await running; // let any in-flight streaming update settle first
+      if (!live()) return;
+      const agg = await this.analysis.run(snapshot('computing')); // forces knowledge.partial
+      if (!live()) return;
+      sink.set({ ...stateFrom('ready', agg), incomplete: message });
     }
   }
 
