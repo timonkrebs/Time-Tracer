@@ -2740,7 +2740,7 @@ export class RepoStore {
     return (
       !!current &&
       current.provider === slug.provider &&
-      (current.host ?? null) === (slug.host ?? null) &&
+      sameHost(current.host, slug.host) &&
       current.owner.toLowerCase() === slug.owner.toLowerCase() &&
       current.repo.toLowerCase() === slug.repo.toLowerCase() &&
       (this._requestedRef() ?? null) === ref
@@ -2776,6 +2776,18 @@ function sharedPrefixLength(a: readonly string[], b: readonly string[]): number 
   let i = 0;
   while (i < a.length && i < b.length && a[i] === b[i]) i++;
   return i;
+}
+
+/**
+ * Whether two slugs name the same instance. Hosts are compared with trailing
+ * slashes stripped — exactly how every provider builds its API base
+ * (`stripTrailingSlash`) — so `https://ghe.example.com` and
+ * `https://ghe.example.com/` count as one target. Without this a load already
+ * in flight for one form would not match the other, and the duplicate request
+ * (to the identical API URL) would slip past the re-entry guard.
+ */
+function sameHost(a: string | undefined, b: string | undefined): boolean {
+  return (a ?? '').replace(/\/+$/, '') === (b ?? '').replace(/\/+$/, '');
 }
 
 /** File extension including the dot, or '' when there is none. */
