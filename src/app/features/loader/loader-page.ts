@@ -3,6 +3,7 @@ import { Router } from '@angular/router';
 
 import { AccessTokens, TokenProviderId, hostKey } from '../../core/git/access-tokens';
 import { GitProvider, ProviderRegistry } from '../../core/git/git-provider';
+import { normalizeInstanceHost } from '../../core/git/host-url';
 import { LocalRepos, supportsLocalRepos } from '../../core/git/local/local-repos';
 import { ParsedRepoUrl } from '../../core/models';
 import { RecentRepos, RecentRepo } from '../../core/store/recent-repos';
@@ -534,6 +535,10 @@ export class LoaderPage {
     const host = this.customHost().trim();
     if (!host) {
       this.customError.set('Enter the instance base URL.');
+      return;
+    }
+    if (!normalizeInstanceHost(host)) {
+      this.customError.set('Enter a valid http(s) instance URL, e.g. https://git.example.com.');
       return;
     }
     const repo = this.customRepo().trim();

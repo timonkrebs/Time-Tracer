@@ -1,6 +1,7 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 
 import { ProviderRegistry, RepoWebLinks } from '../git/git-provider';
+import { normalizeInstanceHost } from '../git/host-url';
 import { AnalysisRunner } from './analysis-runner';
 import {
   CommitFileChange,
@@ -568,7 +569,30 @@ export class RepoStore {
     options?: { force?: boolean },
   ): Promise<void> {
     const ref = requestedRef ?? null;
-    if (!options?.force && this.isCurrentTarget(slug, ref) && this._phase() !== 'error') {
+
+    // The instance host arrives from a user-controlled query param and survives
+    // in shareable deep links, so it is validated here — the one gate every load
+    // passes through — before it can reach a fetch() or be rendered into a link.
+    // Only plain http(s) origins are allowed; a javascript:/data:/file: URL is
+    // dropped and surfaced as a load error instead of silently hitting the
+    // wrong (public) host.
+    let invalidHost = false;
+    if (slug.host !== undefined) {
+      const safeHost = normalizeInstanceHost(slug.host);
+      if (safeHost) {
+        slug = { ...slug, host: safeHost };
+      } else {
+        slug = { provider: slug.provider, owner: slug.owner, repo: slug.repo };
+        invalidHost = true;
+      }
+    }
+
+    if (
+      !invalidHost &&
+      !options?.force &&
+      this.isCurrentTarget(slug, ref) &&
+      this._phase() !== 'error'
+    ) {
       return;
     }
 
@@ -602,6 +626,12 @@ export class RepoStore {
     this._phase.set('metadata');
 
     try {
+      if (invalidHost) {
+        throw new RepoProviderError(
+          'That self-hosted instance URL is not a valid http(s) address.',
+          'unknown',
+        );
+      }
       const provider = this.registry.byId(slug.provider);
       const metadata = await provider.getMetadata(slug);
       if (seq !== this.loadSeq) return;

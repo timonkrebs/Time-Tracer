@@ -209,6 +209,35 @@ describe('RepoStore', () => {
     expect(provider.metadataCalls).toBe(2);
   });
 
+  describe('self-hosted instance host validation', () => {
+    it.each([
+      "javascript:alert('xss')",
+      'javascript://alert(1)',
+      'data:text/html,<script>alert(1)</script>',
+      'file:///etc/passwd',
+    ])('rejects the dangerous host %s without contacting the provider', async (host) => {
+      await store.loadRepo({ provider: 'github', owner: 'acme', repo: 'rocket', host });
+
+      // The host never reaches a fetch(): the provider is not called at all.
+      expect(provider.metadataCalls).toBe(0);
+      expect(store.phase()).toBe('error');
+      // The malicious host is dropped, so nothing can later render it as a link.
+      expect(store.slug()?.host).toBeUndefined();
+    });
+
+    it('normalises a valid scheme-less host to its origin', async () => {
+      await store.loadRepo({
+        provider: 'github',
+        owner: 'acme',
+        repo: 'rocket',
+        host: 'git.example.com/',
+      });
+
+      expect(store.phase()).toBe('ready');
+      expect(store.slug()?.host).toBe('https://git.example.com');
+    });
+  });
+
   it('ignores results of a superseded load (race safety)', async () => {
     const slow = deferred<RepoMetadata>();
     provider.metadataResult = () => slow.promise;
