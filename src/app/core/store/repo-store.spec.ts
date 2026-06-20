@@ -255,6 +255,59 @@ describe('RepoStore', () => {
     });
   });
 
+  describe('exploring a partially-loaded repository', () => {
+    it('keeps the loaded tree when a reload of the same repo fails, and explores it on demand', async () => {
+      await store.loadRepo(slug);
+      expect(store.phase()).toBe('ready');
+      expect(store.tree().length).toBeGreaterThan(0);
+
+      // A forced reload (retry / ref change) of the SAME repo is then blocked.
+      provider.metadataResult = () =>
+        Promise.reject(new RepoProviderError('rate limit exhausted', 'rate-limited'));
+      await store.loadRepo(slug, undefined, { force: true });
+
+      expect(store.phase()).toBe('error');
+      // The previously-loaded tree survived the failed reload.
+      expect(store.tree().length).toBeGreaterThan(0);
+      expect(store.canExplorePartial()).toBe(true);
+
+      store.exploreAnyway();
+      expect(store.phase()).toBe('ready');
+      expect(store.incomplete()).toBe(true);
+      expect(store.tree().length).toBeGreaterThan(0);
+    });
+
+    it('clears a different repo on failure, leaving nothing to explore', async () => {
+      await store.loadRepo(slug);
+      expect(store.tree().length).toBeGreaterThan(0);
+
+      provider.metadataResult = () =>
+        Promise.reject(new RepoProviderError('rate limit exhausted', 'rate-limited'));
+      await store.loadRepo({ provider: 'github', owner: 'other', repo: 'repo' });
+
+      expect(store.phase()).toBe('error');
+      expect(store.tree().length).toBe(0);
+      expect(store.canExplorePartial()).toBe(false);
+      // With nothing loaded, exploring is a no-op.
+      store.exploreAnyway();
+      expect(store.phase()).toBe('error');
+    });
+
+    it('clears the incomplete flag once a later load succeeds', async () => {
+      await store.loadRepo(slug);
+      provider.metadataResult = () =>
+        Promise.reject(new RepoProviderError('rate limit exhausted', 'rate-limited'));
+      await store.loadRepo(slug, undefined, { force: true });
+      store.exploreAnyway();
+      expect(store.incomplete()).toBe(true);
+
+      provider.metadataResult = () => Promise.resolve(metadata);
+      await store.loadRepo(slug, undefined, { force: true });
+      expect(store.phase()).toBe('ready');
+      expect(store.incomplete()).toBe(false);
+    });
+  });
+
   it('ignores results of a superseded load (race safety)', async () => {
     const slow = deferred<RepoMetadata>();
     provider.metadataResult = () => slow.promise;

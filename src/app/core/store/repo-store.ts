@@ -355,6 +355,12 @@ export class RepoStore {
   private readonly _metadata = signal<RepoMetadata | null>(null);
   private readonly _entries = signal<readonly TreeEntry[]>([]);
   private readonly _truncated = signal(false);
+  /**
+   * True when the user chose to explore a repository whose load did not finish
+   * (the provider blocked further API access), so what's shown is whatever was
+   * already loaded — see {@link exploreAnyway}.
+   */
+  private readonly _incomplete = signal(false);
   private readonly _selectedPath = signal<string | null>(null);
   /** Commit sha the selected file is viewed at; null = the loaded snapshot. */
   private readonly _viewAt = signal<string | null>(null);
@@ -433,6 +439,16 @@ export class RepoStore {
   readonly slug = this._slug.asReadonly();
   readonly metadata = this._metadata.asReadonly();
   readonly truncated = this._truncated.asReadonly();
+  /** True while showing a repository whose load was cut short (see {@link exploreAnyway}). */
+  readonly incomplete = this._incomplete.asReadonly();
+  /**
+   * Whether a failed load left enough behind to explore anyway — a tree from a
+   * previous successful load of the same repository survives a failed reload, so
+   * the error screen can offer to drop into it instead of dead-ending.
+   */
+  readonly canExplorePartial = computed(
+    () => this._phase() === 'error' && this._entries().length > 0,
+  );
   readonly selectedPath = this._selectedPath.asReadonly();
   readonly viewAt = this._viewAt.asReadonly();
   readonly expandedDirs = this._expanded.asReadonly();
@@ -607,11 +623,20 @@ export class RepoStore {
     }
 
     const seq = ++this.loadSeq;
+    const sameRepo = this.isSameRepo(this._slug(), slug);
     this._slug.set(slug);
     this._requestedRef.set(ref);
-    this._metadata.set(null);
-    this._entries.set([]);
-    this._truncated.set(false);
+    // Switching to a different repository clears its predecessor's tree/metadata
+    // up front. Reloading the *same* repository (a ref change or retry) keeps the
+    // already-loaded tree in place, so if this load fails the user can still fall
+    // back to exploring what was loaded (see exploreAnyway) instead of losing it.
+    if (!sameRepo) {
+      this._metadata.set(null);
+      this._entries.set([]);
+      this._truncated.set(false);
+      this.treeCache.clear();
+    }
+    this._incomplete.set(false);
     this._selectedPath.set(null);
     this._viewAt.set(null);
     this._files.set(new Map());
@@ -624,7 +649,6 @@ export class RepoStore {
     this._fileMetrics.set(new Map());
     this.blameRuns.clear();
     this.historyCache.clear();
-    this.treeCache.clear();
     this.commitFilesCache.clear();
     this.inflight.clear();
     this._error.set(null);
@@ -679,6 +703,20 @@ export class RepoStore {
     void this.loadRepo(host ? { ...slug, host } : slug, this._requestedRef() ?? undefined, {
       force: true,
     });
+  }
+
+  /**
+   * Dismisses a load error and drops into whatever was already loaded — used when
+   * the provider blocked further API access mid-load but a previous load of the
+   * same repository left a usable tree behind. Marks the repository
+   * {@link incomplete} so the viewer can warn that it isn't fully loaded; the
+   * original error message is kept for that warning. A no-op when there is
+   * nothing to explore.
+   */
+  exploreAnyway(): void {
+    if (this._phase() !== 'error' || this._entries().length === 0) return;
+    this._incomplete.set(true);
+    this._phase.set('ready');
   }
 
   /**
@@ -2790,6 +2828,17 @@ export class RepoStore {
       current.owner.toLowerCase() === slug.owner.toLowerCase() &&
       current.repo.toLowerCase() === slug.repo.toLowerCase() &&
       (this._requestedRef() ?? null) === ref
+    );
+  }
+
+  /** Same repository (provider/host/owner/repo), regardless of the ref being loaded. */
+  private isSameRepo(current: RepoSlug | null, slug: RepoSlug): boolean {
+    return (
+      !!current &&
+      current.provider === slug.provider &&
+      (current.host ?? null) === (slug.host ?? null) &&
+      current.owner.toLowerCase() === slug.owner.toLowerCase() &&
+      current.repo.toLowerCase() === slug.repo.toLowerCase()
     );
   }
 

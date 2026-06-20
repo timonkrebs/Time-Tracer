@@ -550,6 +550,29 @@ describe('ViewerPage (integration)', () => {
     });
   });
 
+  it('lets you explore the loaded tree when a same-repo reload is blocked', async () => {
+    // First load succeeds — the tree is on screen.
+    await harness.navigateByUrl('/r/acme/rocket');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('README.md');
+    });
+
+    // Switching to a ref the provider can't serve fails the reload (its tree
+    // 404s), but the tree already loaded for the default ref survives, so the
+    // error screen offers to explore it instead of dead-ending.
+    await harness.navigateByUrl('/r/acme/rocket?ref=blocked');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('Explore anyway');
+    });
+
+    clickButton('Explore anyway');
+    await vi.waitFor(async () => {
+      const text = await textOnScreen();
+      expect(text).toContain('not fully loaded'); // the warning pill
+      expect(text).toContain('README.md'); // the tree is back and explorable
+    });
+  });
+
   it('shows the commit history and travels to an old version and back', async () => {
     await harness.navigateByUrl('/r/acme/rocket?path=README.md');
     await vi.waitFor(async () => {

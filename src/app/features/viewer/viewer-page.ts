@@ -207,6 +207,17 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
               partial tree
             </span>
           }
+          @if (store.incomplete()) {
+            <span
+              class="shrink-0 rounded-full border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 text-[11px] text-amber-300"
+              [title]="
+                store.error()?.message ??
+                'The provider blocked further loading — some data may be missing.'
+              "
+            >
+              not fully loaded
+            </span>
+          }
         }
 
         <app-theme-toggle />
@@ -258,7 +269,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
             </div>
             <h2 class="text-base font-semibold text-zinc-100">{{ errorTitle() }}</h2>
             <p class="mt-2 text-sm leading-6 text-zinc-400">{{ store.error()?.message }}</p>
-            <div class="mt-6 flex items-center justify-center gap-3">
+            <div class="mt-6 flex flex-wrap items-center justify-center gap-3">
               @if (provider() === 'local') {
                 <button
                   type="button"
@@ -274,6 +285,16 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
                   (click)="store.retry()"
                 >
                   Try again
+                </button>
+              }
+              @if (store.canExplorePartial()) {
+                <button
+                  type="button"
+                  class="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100"
+                  (click)="store.exploreAnyway()"
+                  title="Open the repository with what loaded before the provider blocked further requests."
+                >
+                  Explore anyway
                 </button>
               }
               <a
