@@ -252,6 +252,25 @@ describe('InsightsView', () => {
     await fixture.whenStable();
   }
 
+  it('renders partial insights with a notice when the walk was cut short', async () => {
+    await setState({
+      status: 'ready',
+      scanned: 2,
+      target: 75,
+      result: computeCoChange(COMMITS),
+      hotspots: HOTSPOTS,
+      teamGraph: EMPTY_TEAM_GRAPH,
+      knowledge: EMPTY_KNOWLEDGE,
+      incomplete: "GitHub's unauthenticated API rate limit (60 requests/hour per IP) is exhausted.",
+    });
+
+    const t = text();
+    expect(t).toContain('partial insights'); // the non-blocking notice
+    expect(t).toContain('rate limit'); // carries the provider's reason
+    // The hotspot treemap still renders from the partial data.
+    expect(fixture.nativeElement.querySelector('svg rect')).not.toBeNull();
+  });
+
   it('prompts when there is no result yet, and emits from both buttons', () => {
     expect(text()).toContain('Find files that change together');
     button('Analyze recent history')!.click();
@@ -794,6 +813,28 @@ describe('InsightsView', () => {
       expect(text()).toContain('Busiest day');
       expect(text()).toContain('2024-01-03'); // the busiest day's date
       expect(button('PNG')).toBeDefined(); // each card exports a poster
+    });
+
+    it('features the top code eliminator (most lines deleted) instead of top contributor', async () => {
+      const knowledge = computeKnowledgeRisk(
+        [
+          { authorName: 'Ada', authoredAt: iso(2), files: ['a.ts'], deletions: 200 },
+          { authorName: 'Linus', authoredAt: iso(3), files: ['b.ts'], deletions: 50 },
+        ],
+        new Map([
+          ['a.ts', 100],
+          ['b.ts', 100],
+        ]),
+        { now: NOW },
+      );
+      await setState({ ...PUNCH, knowledge });
+      button('Git Wrapped')!.click();
+      await fixture.whenStable();
+
+      expect(text()).toContain('Top code eliminator');
+      expect(text()).toContain('Ada'); // deleted the most (200 > 50)
+      expect(text()).toContain('200 lines deleted');
+      expect(text()).not.toContain('Top contributor');
     });
 
     it('picks the oldest cohort that still has live lines', async () => {

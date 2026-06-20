@@ -18,6 +18,40 @@ function kc(authoredAt: string, files: string[], authorName = 'Ada'): KnowledgeC
 const opts = { now: NOW };
 
 describe('computeKnowledgeRisk', () => {
+  it('tallies total lines deleted per author for the code-eliminator stat', () => {
+    const model = computeKnowledgeRisk(
+      [
+        { authorName: 'Ada', authoredAt: iso(2), files: ['a.ts'], deletions: 30 },
+        { authorName: 'Ada', authoredAt: iso(5), files: ['b.ts'], deletions: 12 },
+        // A sweep over more files than the expertise gate allows still counts its
+        // deleted lines toward the author's eliminator tally.
+        {
+          authorName: 'Ada',
+          authoredAt: iso(9),
+          files: Array.from({ length: 40 }, (_, i) => `f${i}.ts`),
+          deletions: 500,
+        },
+        { authorName: 'Linus', authoredAt: iso(3), files: ['c.ts'], deletions: 5 },
+        // A commit whose provider didn't report deletions contributes nothing.
+        { authorName: 'Linus', authoredAt: iso(4), files: ['d.ts'] },
+        // Bots are excluded from the tally entirely.
+        { authorName: 'dependabot[bot]', authoredAt: iso(1), files: ['e.ts'], deletions: 999 },
+      ],
+      new Map([
+        ['a.ts', 100],
+        ['b.ts', 100],
+        ['c.ts', 100],
+        ['d.ts', 100],
+      ]),
+      opts,
+    );
+
+    const byName = new Map(model.authors.map((a) => [a.name, a]));
+    expect(byName.get('Ada')!.deletions).toBe(542);
+    expect(byName.get('Linus')!.deletions).toBe(5);
+    expect(byName.has('dependabot[bot]')).toBe(false);
+  });
+
   it('flags a file whose sole author has gone quiet, and spares a co-owned active one', () => {
     const model = computeKnowledgeRisk(
       [

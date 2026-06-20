@@ -227,6 +227,123 @@ describe('RepoStore', () => {
     expect(provider.metadataCalls).toBe(2);
   });
 
+  describe('self-hosted instance host validation', () => {
+    it.each([
+      "javascript:alert('xss')",
+      'javascript://alert(1)',
+      'data:text/html,<script>alert(1)</script>',
+      'file:///etc/passwd',
+    ])('rejects the dangerous host %s without contacting the provider', async (host) => {
+      await store.loadRepo({ provider: 'github', owner: 'acme', repo: 'rocket', host });
+
+      // The host never reaches a fetch(): the provider is not called at all.
+      expect(provider.metadataCalls).toBe(0);
+      expect(store.phase()).toBe('error');
+      // The malicious host is dropped, so nothing can later render it as a link.
+      expect(store.slug()?.host).toBeUndefined();
+    });
+
+    it('normalises a valid scheme-less host to its origin', async () => {
+      await store.loadRepo({
+        provider: 'github',
+        owner: 'acme',
+        repo: 'rocket',
+        host: 'git.example.com/',
+      });
+
+      expect(store.phase()).toBe('ready');
+      expect(store.slug()?.host).toBe('https://git.example.com');
+    });
+
+    it('re-rejects the bad host on retry instead of loading the public repo', async () => {
+      await store.loadRepo({
+        provider: 'github',
+        owner: 'acme',
+        repo: 'rocket',
+        host: "javascript:alert('xss')",
+      });
+      expect(store.phase()).toBe('error');
+      expect(provider.metadataCalls).toBe(0);
+
+      // "Try again" must not silently fall back to the public owner/repo.
+      store.retry();
+      await vi.waitFor(() => expect(store.phase()).toBe('error'));
+      expect(provider.metadataCalls).toBe(0);
+      expect(store.slug()?.host).toBeUndefined();
+    });
+  });
+
+  describe('exploring a partially-loaded repository', () => {
+    it('keeps the loaded tree when a reload of the same repo fails, and explores it on demand', async () => {
+      await store.loadRepo(slug);
+      expect(store.phase()).toBe('ready');
+      expect(store.tree().length).toBeGreaterThan(0);
+
+      // A forced reload (retry / ref change) of the SAME repo is then blocked.
+      provider.metadataResult = () =>
+        Promise.reject(new RepoProviderError('rate limit exhausted', 'rate-limited'));
+      await store.loadRepo(slug, undefined, { force: true });
+
+      expect(store.phase()).toBe('error');
+      // The previously-loaded tree survived the failed reload.
+      expect(store.tree().length).toBeGreaterThan(0);
+      expect(store.canExplorePartial()).toBe(true);
+
+      store.exploreAnyway();
+      expect(store.phase()).toBe('ready');
+      expect(store.incomplete()).toBe(true);
+      expect(store.tree().length).toBeGreaterThan(0);
+    });
+
+    it('restores the loaded ref when exploring after a failed ref switch', async () => {
+      await store.loadRepo(slug); // defaults to the main branch
+      expect(store.ref()).toBe('main');
+
+      // Switching to another ref on the same repo is blocked.
+      provider.metadataResult = () =>
+        Promise.reject(new RepoProviderError('rate limit exhausted', 'rate-limited'));
+      await store.loadRepo(slug, 'develop');
+      expect(store.phase()).toBe('error');
+      expect(store.canExplorePartial()).toBe(true);
+
+      store.exploreAnyway();
+      expect(store.phase()).toBe('ready');
+      // The kept tree is the main tree, so the ref is restored to match it
+      // rather than misrepresenting it as the failed 'develop'.
+      expect(store.ref()).toBe('main');
+    });
+
+    it('clears a different repo on failure, leaving nothing to explore', async () => {
+      await store.loadRepo(slug);
+      expect(store.tree().length).toBeGreaterThan(0);
+
+      provider.metadataResult = () =>
+        Promise.reject(new RepoProviderError('rate limit exhausted', 'rate-limited'));
+      await store.loadRepo({ provider: 'github', owner: 'other', repo: 'repo' });
+
+      expect(store.phase()).toBe('error');
+      expect(store.tree().length).toBe(0);
+      expect(store.canExplorePartial()).toBe(false);
+      // With nothing loaded, exploring is a no-op.
+      store.exploreAnyway();
+      expect(store.phase()).toBe('error');
+    });
+
+    it('clears the incomplete flag once a later load succeeds', async () => {
+      await store.loadRepo(slug);
+      provider.metadataResult = () =>
+        Promise.reject(new RepoProviderError('rate limit exhausted', 'rate-limited'));
+      await store.loadRepo(slug, undefined, { force: true });
+      store.exploreAnyway();
+      expect(store.incomplete()).toBe(true);
+
+      provider.metadataResult = () => Promise.resolve(metadata);
+      await store.loadRepo(slug, undefined, { force: true });
+      expect(store.phase()).toBe('ready');
+      expect(store.incomplete()).toBe(false);
+    });
+  });
+
   it('ignores results of a superseded load (race safety)', async () => {
     const slow = deferred<RepoMetadata>();
     provider.metadataResult = () => slow.promise;
@@ -1573,6 +1690,55 @@ describe('RepoStore', () => {
       expect(state?.knowledge.files.map((f) => f.path)).toEqual(['src/deep/main.ts']);
       // …and the two generated files are reported as held out.
       expect(state?.excludedFiles).toBe(2);
+    });
+
+    it('excludes generated/vendored files from the deletion tally', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c1')]);
+      provider.commitFilesResult = () =>
+        Promise.resolve([
+          { path: 'src/deep/main.ts', status: 'modified', deletions: 5 },
+          { path: 'package-lock.json', status: 'modified', deletions: 900 },
+          { path: 'dist/bundle.js', status: 'removed', deletions: 4000 },
+        ]);
+
+      await store.computeCoChange();
+
+      // Only the real source file's removed lines count toward the eliminator
+      // tally; the lockfile/build-output churn is held out like every metric.
+      expect(store.coChange()?.knowledge.authors[0]?.deletions).toBe(5);
+    });
+
+    it('keeps partial insights explorable when the walk is blocked mid-way', async () => {
+      provider.listCommitsResult = () =>
+        Promise.resolve([commit('c1'), commit('c2'), commit('c3')]);
+      provider.commitFilesResult = (sha) =>
+        sha === 'c3'
+          ? Promise.reject(new RepoProviderError('rate limit exhausted', 'rate-limited'))
+          : Promise.resolve([
+              { path: 'a.ts', status: 'modified' },
+              { path: 'b.ts', status: 'modified' },
+            ]);
+
+      await store.computeCoChange();
+
+      const state = store.coChange();
+      // A blocking error is avoided: the partial results are published instead.
+      expect(state?.status).toBe('ready');
+      expect(state?.incomplete).toContain('rate limit');
+      expect(state?.result.commitsUsed).toBe(2); // the two commits that loaded
+      expect(state?.knowledge.partial).toBe(true); // flagged as missing history
+    });
+
+    it('still surfaces a blocking error when nothing was gathered before the block', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c1')]);
+      provider.commitFilesResult = () =>
+        Promise.reject(new RepoProviderError('rate limit exhausted', 'rate-limited'));
+
+      await store.computeCoChange();
+
+      const state = store.coChange();
+      expect(state?.status).toBe('error');
+      expect(state?.incomplete).toBeUndefined();
     });
 
     it('reports a walk complete when history is exhausted exactly at the cap', async () => {

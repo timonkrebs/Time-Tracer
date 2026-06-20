@@ -29,6 +29,8 @@ export interface KnowledgeCommit {
   /** ISO 8601 author date. */
   readonly authoredAt: string;
   readonly files: readonly string[];
+  /** Lines removed across the commit's files, when the provider reports them. */
+  readonly deletions?: number;
 }
 
 /** A contributor's presence across the analysed history. */
@@ -36,6 +38,8 @@ export interface AuthorPresence {
   readonly name: string;
   /** Commits authored (bots excluded; sweeps and empty commits still count). */
   readonly commits: number;
+  /** Total lines removed across all their commits (the "code eliminator" stat). */
+  readonly deletions: number;
   /** Recency-weighted authoring of real files — their "live" knowledge. */
   readonly knowledge: number;
   /** ISO date of their most recent commit (any commit counts), or null when undated. */
@@ -146,6 +150,7 @@ export function riskLevel(orphanedShare: number): 0 | 1 | 2 | 3 | 4 {
 
 interface AuthorAcc {
   commits: number;
+  deletions: number;
   knowledge: number;
   lastMs: number;
   lastIso: string | null;
@@ -224,11 +229,15 @@ export function computeKnowledgeRisk(
 
     const acc = authorAcc.get(name) ?? {
       commits: 0,
+      deletions: 0,
       knowledge: 0,
       lastMs: -Infinity,
       lastIso: null,
     };
     acc.commits++;
+    // Every commit's removed lines count toward the eliminator tally — sweeps
+    // and big deletions included — independent of the per-file expertise gate.
+    acc.deletions += Math.max(0, commit.deletions ?? 0);
     if (expertise) acc.knowledge += weight;
     if (dated && t > acc.lastMs) {
       acc.lastMs = t;
@@ -257,6 +266,7 @@ export function computeKnowledgeRisk(
     presence.set(name, {
       name,
       commits: acc.commits,
+      deletions: acc.deletions,
       knowledge: acc.knowledge,
       lastActiveAt: acc.lastIso,
       active: inactiveDays < inactivityHalfLifeDays,

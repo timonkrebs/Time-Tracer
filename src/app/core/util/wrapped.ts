@@ -1,7 +1,7 @@
 /**
  * "Git Wrapped" stats — the time-based highlights behind the year-in-review
  * cards (busiest day, longest commit streak). Pure and deterministic; the rest
- * of a card's data (top contributor, hottest file, …) is assembled in the view
+ * of a card's data (top code eliminator, hottest file, …) is assembled in the view
  * from the analyses already on hand.
  *
  * Dates are taken from each commit's own wall-clock (the date as written in the

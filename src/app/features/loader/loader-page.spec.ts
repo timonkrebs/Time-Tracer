@@ -145,6 +145,32 @@ describe('LoaderPage', () => {
     });
   });
 
+  it('rejects a dangerous instance URL instead of navigating', async () => {
+    const element = fixture.nativeElement as HTMLElement;
+    const toggle = Array.from(element.querySelectorAll('button')).find((b) =>
+      (b.textContent ?? '').includes('Self-hosted / custom instance'),
+    )!;
+    toggle.click();
+    await fixture.whenStable();
+
+    const host = element.querySelector<HTMLInputElement>('#custom-host')!;
+    host.value = "javascript:alert('xss')";
+    host.dispatchEvent(new Event('input'));
+    const repo = element.querySelector<HTMLInputElement>('#custom-repo')!;
+    repo.value = 'acme/rocket';
+    repo.dispatchEvent(new Event('input'));
+    await fixture.whenStable();
+
+    const open = Array.from(element.querySelectorAll('button')).find((b) =>
+      (b.textContent ?? '').includes('Open instance repository'),
+    )!;
+    open.click();
+    await fixture.whenStable();
+
+    expect(navigateSpy).not.toHaveBeenCalled();
+    expect(element.textContent).toContain('valid http(s) instance URL');
+  });
+
   it('shows an error for empty input', async () => {
     await submit();
 

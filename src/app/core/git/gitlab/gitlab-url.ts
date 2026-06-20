@@ -1,4 +1,5 @@
 import { ParsedRepoUrl } from '../../models';
+import { normalizeInstanceHost } from '../host-url';
 
 const SEGMENT_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/;
 
@@ -24,8 +25,15 @@ export function parseGitlabUrl(input: string, host?: string): ParsedRepoUrl | nu
   const trimmed = input.trim();
   if (!trimmed) return null;
 
-  const hostname = host ? hostnameOf(host) : null;
-  const origin = host ? normalizeHost(host) : undefined;
+  // A self-hosted host must be a plain http(s) origin; reject dangerous or
+  // malformed schemes (javascript:, data:, file:…) rather than carrying them on.
+  let origin: string | undefined;
+  if (host) {
+    const normalized = normalizeInstanceHost(host);
+    if (!normalized) return null;
+    origin = normalized;
+  }
+  const hostname = origin ? new URL(origin).hostname.toLowerCase() : null;
 
   const ssh = trimmed.match(/^git@([^:]+):(.+?)(?:\.git)?\/?$/i);
   if (ssh) {
@@ -45,7 +53,10 @@ export function parseGitlabUrl(input: string, host?: string): ParsedRepoUrl | nu
 
   // No scheme/host. With a declared custom host, treat the input as a project path.
   if (hostname) {
-    return fromSegments(trimmed.replace(/^\/+/, '').split('/').filter(Boolean).map(decodeSegment), origin);
+    return fromSegments(
+      trimmed.replace(/^\/+/, '').split('/').filter(Boolean).map(decodeSegment),
+      origin,
+    );
   }
 
   return null;
@@ -113,27 +124,4 @@ function decodeSegment(segment: string): string {
   } catch {
     return segment;
   }
-}
-
-function hostnameOf(host: string): string {
-  try {
-    return new URL(maybeScheme(host)).hostname.toLowerCase();
-  } catch {
-    return host
-      .toLowerCase()
-      .replace(/^[a-z]+:\/\//, '')
-      .replace(/\/.*$/, '');
-  }
-}
-
-function normalizeHost(host: string): string {
-  try {
-    return new URL(maybeScheme(host)).origin;
-  } catch {
-    return host.replace(/\/+$/, '');
-  }
-}
-
-function maybeScheme(host: string): string {
-  return /^[a-z][a-z0-9+.-]*:\/\//i.test(host) ? host : `https://${host}`;
 }

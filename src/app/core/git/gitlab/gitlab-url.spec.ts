@@ -59,5 +59,14 @@ describe('parseGitlabUrl', () => {
     it('rejects a URL on a different host', () => {
       expect(parseGitlabUrl('https://gitlab.com/a/b', host)).toBeNull();
     });
+
+    it.each([
+      "javascript:alert('xss')",
+      'javascript://alert(1)',
+      'data:text/html,<script>alert(1)</script>',
+      'file:///etc/passwd',
+    ])('rejects the dangerous instance host %s', (dangerousHost) => {
+      expect(parseGitlabUrl('group/project', dangerousHost)).toBeNull();
+    });
   });
 });

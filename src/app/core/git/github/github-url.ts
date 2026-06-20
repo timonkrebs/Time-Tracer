@@ -1,4 +1,5 @@
 import { ParsedRepoUrl } from '../../models';
+import { normalizeInstanceHost } from '../host-url';
 
 const OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/;
 const REPO_PATTERN = /^[A-Za-z0-9._-]+$/;
@@ -26,8 +27,15 @@ export function parseGithubUrl(input: string, host?: string): ParsedRepoUrl | nu
   const trimmed = input.trim();
   if (!trimmed) return null;
 
-  const hostname = host ? hostnameOf(host) : null;
-  const origin = host ? normalizeHost(host) : undefined;
+  // A custom-instance host must be a plain http(s) origin; reject dangerous or
+  // malformed schemes (javascript:, data:, file:…) rather than carrying them on.
+  let origin: string | undefined;
+  if (host) {
+    const normalized = normalizeInstanceHost(host);
+    if (!normalized) return null;
+    origin = normalized;
+  }
+  const hostname = origin ? new URL(origin).hostname.toLowerCase() : null;
 
   const ssh = trimmed.match(/^git@([^:]+):([^/]+)\/(.+?)(?:\.git)?\/?$/i);
   if (ssh) {
@@ -132,29 +140,4 @@ function decodeSegment(segment: string): string {
   } catch {
     return segment;
   }
-}
-
-/** Hostname of a base origin, tolerant of a missing scheme. */
-function hostnameOf(host: string): string {
-  try {
-    return new URL(maybeScheme(host)).hostname.toLowerCase();
-  } catch {
-    return host
-      .toLowerCase()
-      .replace(/^[a-z]+:\/\//, '')
-      .replace(/\/.*$/, '');
-  }
-}
-
-/** Origin of a base host, tolerant of a missing scheme. */
-function normalizeHost(host: string): string {
-  try {
-    return new URL(maybeScheme(host)).origin;
-  } catch {
-    return host.replace(/\/+$/, '');
-  }
-}
-
-function maybeScheme(host: string): string {
-  return /^[a-z][a-z0-9+.-]*:\/\//i.test(host) ? host : `https://${host}`;
 }

@@ -1,6 +1,7 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 
 import { ProviderRegistry, RepoWebLinks } from '../git/git-provider';
+import { normalizeInstanceHost } from '../git/host-url';
 import { AnalysisRunner } from './analysis-runner';
 import {
   CommitFileChange,
@@ -295,6 +296,12 @@ export interface CoChangeState {
   /** Distinct generated/vendored files held out of the metrics, if any. */
   readonly excludedFiles?: number;
   readonly message?: string;
+  /**
+   * Set when the walk was cut short (e.g. the provider blocked further API
+   * access) but had already gathered results: carries the reason, and the
+   * partial metrics are still published so the panel stays explorable.
+   */
+  readonly incomplete?: string;
 }
 
 /**
@@ -338,6 +345,19 @@ export class RepoStore {
   private readonly analysis = inject(AnalysisRunner);
 
   private loadSeq = 0;
+  /**
+   * A self-hosted instance host that failed validation and was stripped from the
+   * stored slug, kept so {@link retry} can re-submit (and re-reject) it instead
+   * of silently loading the public repository for the same owner/repo.
+   */
+  private rejectedHost: string | null = null;
+  /**
+   * The requested ref of the tree currently in {@link _entries} (the last load
+   * that reached `ready`). When a reload of the same repository fails and the
+   * user explores anyway, the ref is restored to this so the kept tree, the ref
+   * label, and history/links all refer to the same revision.
+   */
+  private lastLoadedRef: string | null = null;
   /** In-flight file fetches keyed like {@link fileKey}, to dedupe callers. */
   private readonly inflight = new Map<string, Promise<FileState>>();
 
@@ -348,6 +368,12 @@ export class RepoStore {
   private readonly _metadata = signal<RepoMetadata | null>(null);
   private readonly _entries = signal<readonly TreeEntry[]>([]);
   private readonly _truncated = signal(false);
+  /**
+   * True when the user chose to explore a repository whose load did not finish
+   * (the provider blocked further API access), so what's shown is whatever was
+   * already loaded — see {@link exploreAnyway}.
+   */
+  private readonly _incomplete = signal(false);
   private readonly _selectedPath = signal<string | null>(null);
   /** Commit sha the selected file is viewed at; null = the loaded snapshot. */
   private readonly _viewAt = signal<string | null>(null);
@@ -405,8 +431,8 @@ export class RepoStore {
   private readonly _coupleFocus = signal<CoChangeState | null>(null);
   /** Bumped to cancel a superseded or cleared focus walk. */
   private focusRun = 0;
-  /** Changed-file lists per commit sha, shared by the co-change walks. */
-  private readonly commitFilesCache = new Map<string, Promise<readonly string[]>>();
+  /** Changed files (with line stats) per commit sha, shared by the co-change walks. */
+  private readonly commitFilesCache = new Map<string, Promise<readonly CommitFileChange[]>>();
   /** Repo-wide code-survival analysis (cohorts + Kaplan–Meier), when started. */
   private readonly _survival = signal<SurvivalState | null>(null);
   /** Cohort-stack granularity for the Age tab (week / month / year). */
@@ -426,6 +452,16 @@ export class RepoStore {
   readonly slug = this._slug.asReadonly();
   readonly metadata = this._metadata.asReadonly();
   readonly truncated = this._truncated.asReadonly();
+  /** True while showing a repository whose load was cut short (see {@link exploreAnyway}). */
+  readonly incomplete = this._incomplete.asReadonly();
+  /**
+   * Whether a failed load left enough behind to explore anyway — a tree from a
+   * previous successful load of the same repository survives a failed reload, so
+   * the error screen can offer to drop into it instead of dead-ending.
+   */
+  readonly canExplorePartial = computed(
+    () => this._phase() === 'error' && this._entries().length > 0,
+  );
   readonly selectedPath = this._selectedPath.asReadonly();
   readonly viewAt = this._viewAt.asReadonly();
   readonly expandedDirs = this._expanded.asReadonly();
@@ -568,16 +604,52 @@ export class RepoStore {
     options?: { force?: boolean },
   ): Promise<void> {
     const ref = requestedRef ?? null;
-    if (!options?.force && this.isCurrentTarget(slug, ref) && this._phase() !== 'error') {
+
+    // The instance host arrives from a user-controlled query param and survives
+    // in shareable deep links, so it is validated here — the one gate every load
+    // passes through — before it can reach a fetch() or be rendered into a link.
+    // Only plain http(s) origins are allowed; a javascript:/data:/file: URL is
+    // dropped and surfaced as a load error instead of silently hitting the
+    // wrong (public) host.
+    let invalidHost = false;
+    if (slug.host !== undefined) {
+      const safeHost = normalizeInstanceHost(slug.host);
+      if (safeHost) {
+        slug = { ...slug, host: safeHost };
+        this.rejectedHost = null;
+      } else {
+        this.rejectedHost = slug.host;
+        slug = { provider: slug.provider, owner: slug.owner, repo: slug.repo };
+        invalidHost = true;
+      }
+    } else {
+      this.rejectedHost = null;
+    }
+
+    if (
+      !invalidHost &&
+      !options?.force &&
+      this.isCurrentTarget(slug, ref) &&
+      this._phase() !== 'error'
+    ) {
       return;
     }
 
     const seq = ++this.loadSeq;
+    const sameRepo = this.isSameRepo(this._slug(), slug);
     this._slug.set(slug);
     this._requestedRef.set(ref);
-    this._metadata.set(null);
-    this._entries.set([]);
-    this._truncated.set(false);
+    // Switching to a different repository clears its predecessor's tree/metadata
+    // up front. Reloading the *same* repository (a ref change or retry) keeps the
+    // already-loaded tree in place, so if this load fails the user can still fall
+    // back to exploring what was loaded (see exploreAnyway) instead of losing it.
+    if (!sameRepo) {
+      this._metadata.set(null);
+      this._entries.set([]);
+      this._truncated.set(false);
+      this.treeCache.clear();
+    }
+    this._incomplete.set(false);
     this._selectedPath.set(null);
     this._viewAt.set(null);
     this._files.set(new Map());
@@ -590,7 +662,6 @@ export class RepoStore {
     this._fileMetrics.set(new Map());
     this.blameRuns.clear();
     this.historyCache.clear();
-    this.treeCache.clear();
     this.commitFilesCache.clear();
     this.inflight.clear();
     this._error.set(null);
@@ -602,6 +673,12 @@ export class RepoStore {
     this._phase.set('metadata');
 
     try {
+      if (invalidHost) {
+        throw new RepoProviderError(
+          'That self-hosted instance URL is not a valid http(s) address.',
+          'unknown',
+        );
+      }
       const provider = this.registry.byId(slug.provider);
       const metadata = await provider.getMetadata(slug);
       if (seq !== this.loadSeq) return;
@@ -612,6 +689,7 @@ export class RepoStore {
       if (seq !== this.loadSeq) return;
       this._entries.set(tree.entries);
       this._truncated.set(tree.truncated);
+      this.lastLoadedRef = ref;
       this._phase.set('ready');
 
       this.recents.record({
@@ -632,7 +710,31 @@ export class RepoStore {
   retry(): void {
     const slug = this._slug();
     if (!slug) return;
-    void this.loadRepo(slug, this._requestedRef() ?? undefined, { force: true });
+    // A rejected self-hosted host was stripped from the stored slug; restore it
+    // so the retry re-validates (and re-rejects) it rather than silently loading
+    // the public repository for the same owner/repo.
+    const host = this.rejectedHost;
+    void this.loadRepo(host ? { ...slug, host } : slug, this._requestedRef() ?? undefined, {
+      force: true,
+    });
+  }
+
+  /**
+   * Dismisses a load error and drops into whatever was already loaded — used when
+   * the provider blocked further API access mid-load but a previous load of the
+   * same repository left a usable tree behind. Marks the repository
+   * {@link incomplete} so the viewer can warn that it isn't fully loaded; the
+   * original error message is kept for that warning. A no-op when there is
+   * nothing to explore.
+   */
+  exploreAnyway(): void {
+    if (this._phase() !== 'error' || this._entries().length === 0) return;
+    // The kept tree belongs to the last load that succeeded; restore its ref so
+    // the ref label, file links and history all match what's actually shown
+    // (the failed reload may have been for a different ref).
+    this._requestedRef.set(this.lastLoadedRef);
+    this._incomplete.set(true);
+    this._phase.set('ready');
   }
 
   /**
@@ -1482,6 +1584,7 @@ export class RepoStore {
       authoredAt: string;
       authorName: string;
       authorEmail: string | null;
+      deletions: number;
     })[] = [];
     // Generated/vendored files are held out of every metric, but a file the
     // analysis is focused on is always kept (the user chose it explicitly).
@@ -1501,6 +1604,7 @@ export class RepoStore {
         authoredAt: commit.authoredAt,
         authorName: commit.authorName,
         authorEmail: commit.authorEmail,
+        deletions: commit.deletions,
         files: commit.files.filter((path) => {
           if (keepFile(path)) return true;
           excluded.add(path);
@@ -1582,7 +1686,7 @@ export class RepoStore {
         // window, so a partial last page never starts fetches it won't consume —
         // those would be wasted provider quota on hosted repos.
         const pageMax = Math.min(commits.length, options.cap - before);
-        const pending: (Promise<readonly string[]> | undefined)[] = new Array(pageMax);
+        const pending: (Promise<readonly CommitFileChange[]> | undefined)[] = new Array(pageMax);
         let started = 0;
         const fill = (limit: number): void => {
           const max = Math.min(pageMax, limit);
@@ -1594,7 +1698,7 @@ export class RepoStore {
         };
         fill(CO_CHANGE_PREFETCH);
         for (let i = 0; i < pageMax; i++) {
-          const files = await pending[i]!;
+          const changes = await pending[i]!;
           pending[i] = undefined;
           if (!live()) return;
           fill(i + 1 + CO_CHANGE_PREFETCH); // keep the request window full
@@ -1604,7 +1708,13 @@ export class RepoStore {
             authoredAt: commit.authoredAt,
             authorName: commit.authorName,
             authorEmail: commit.authorEmail,
-            files,
+            files: changes.map((change) => change.path),
+            // Count removed lines only on files that survive the generated/vendored
+            // filter, so lockfile/build-output churn can't win "top code eliminator".
+            deletions: changes.reduce(
+              (sum, change) => sum + (keepFile(change.path) ? (change.deletions ?? 0) : 0),
+              0,
+            ),
           });
           if (collected.length % 5 === 0) void pump('computing');
         }
@@ -1620,7 +1730,19 @@ export class RepoStore {
       await pump('ready', collected.length === 0 ? empty : undefined);
     } catch (error) {
       if (!live()) return; // a cleared/superseded walk must not resurrect state
-      await pump('error', toRepoProviderError(error).message);
+      const message = toRepoProviderError(error).message;
+      if (collected.length === 0) {
+        await pump('error', message);
+        return;
+      }
+      // Blocked mid-walk but results were already gathered: publish them as a
+      // partial (ready) state with the reason, so the panel stays explorable
+      // instead of replacing every collected metric with a blocking error.
+      await running; // let any in-flight streaming update settle first
+      if (!live()) return;
+      const agg = await this.analysis.run(snapshot('computing')); // forces knowledge.partial
+      if (!live()) return;
+      sink.set({ ...stateFrom('ready', agg), incomplete: message });
     }
   }
 
@@ -2113,14 +2235,11 @@ export class RepoStore {
     }
   }
 
-  /** Changed file paths of a commit, cached per sha (shared across walks). */
-  private commitFilesFor(slug: RepoSlug, sha: string): Promise<readonly string[]> {
+  /** Changed files of a commit (with line stats), cached per sha (shared across walks). */
+  private commitFilesFor(slug: RepoSlug, sha: string): Promise<readonly CommitFileChange[]> {
     const cached = this.commitFilesCache.get(sha);
     if (cached) return cached;
-    const promise = this.registry
-      .byId(slug.provider)
-      .getCommitFiles(slug, sha)
-      .then((changes) => changes.map((change) => change.path));
+    const promise = this.registry.byId(slug.provider).getCommitFiles(slug, sha);
     this.commitFilesCache.set(sha, promise);
     promise.catch(() => this.commitFilesCache.delete(sha));
     return promise;
@@ -2744,6 +2863,17 @@ export class RepoStore {
       current.owner.toLowerCase() === slug.owner.toLowerCase() &&
       current.repo.toLowerCase() === slug.repo.toLowerCase() &&
       (this._requestedRef() ?? null) === ref
+    );
+  }
+
+  /** Same repository (provider/host/owner/repo), regardless of the ref being loaded. */
+  private isSameRepo(current: RepoSlug | null, slug: RepoSlug): boolean {
+    return (
+      !!current &&
+      current.provider === slug.provider &&
+      (current.host ?? null) === (slug.host ?? null) &&
+      current.owner.toLowerCase() === slug.owner.toLowerCase() &&
+      current.repo.toLowerCase() === slug.repo.toLowerCase()
     );
   }
 

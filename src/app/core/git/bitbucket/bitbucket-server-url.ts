@@ -1,4 +1,5 @@
 import { ParsedRepoUrl } from '../../models';
+import { normalizeInstanceHost } from '../host-url';
 
 const KEY_PATTERN = /^~?[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/;
 const REPO_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/;
@@ -21,13 +22,17 @@ export function parseBitbucketServerUrl(input: string, host: string): ParsedRepo
   const trimmed = input.trim();
   if (!trimmed) return null;
 
-  const hostname = hostnameOf(host);
-  const origin = normalizeHost(host);
+  // The instance host must be a plain http(s) origin; reject dangerous or
+  // malformed schemes (javascript:, data:, file:…) rather than carrying them on.
+  const origin = normalizeInstanceHost(host);
+  if (!origin) return null;
+  const hostname = new URL(origin).hostname.toLowerCase();
 
   const ssh = trimmed.match(/^(?:ssh:\/\/)?git@([^:/]+)(?::\d+)?[:/](.+?)(?:\.git)?\/?$/i);
   if (ssh && ssh[1].toLowerCase() === hostname) {
     const segs = ssh[2].split('/').filter(Boolean);
-    if (segs.length >= 2) return validated(segs[segs.length - 2], segs[segs.length - 1], undefined, undefined, origin);
+    if (segs.length >= 2)
+      return validated(segs[segs.length - 2], segs[segs.length - 1], undefined, undefined, origin);
     return null;
   }
 
@@ -116,27 +121,4 @@ function decodeSegment(segment: string): string {
   } catch {
     return segment;
   }
-}
-
-function hostnameOf(host: string): string {
-  try {
-    return new URL(maybeScheme(host)).hostname.toLowerCase();
-  } catch {
-    return host
-      .toLowerCase()
-      .replace(/^[a-z]+:\/\//, '')
-      .replace(/\/.*$/, '');
-  }
-}
-
-function normalizeHost(host: string): string {
-  try {
-    return new URL(maybeScheme(host)).origin;
-  } catch {
-    return host.replace(/\/+$/, '');
-  }
-}
-
-function maybeScheme(host: string): string {
-  return /^[a-z][a-z0-9+.-]*:\/\//i.test(host) ? host : `https://${host}`;
 }

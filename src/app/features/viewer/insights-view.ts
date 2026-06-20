@@ -599,6 +599,15 @@ interface Quadrant {
           }
         </div>
 
+        @if (state()?.incomplete; as note) {
+          <div
+            class="mb-3 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs leading-5 text-amber-300"
+            role="status"
+          >
+            Stopped early — showing partial insights from the commits loaded so far. {{ note }}
+          </div>
+        }
+
         @if (tab() === 'hotspots') {
           @if (state(); as s) {
             @if (s.status === 'error') {
@@ -2911,19 +2920,22 @@ export class InsightsView {
         '#818cf8',
       );
     }
-    // The contributor with the most commits (knowledge.authors is sorted by
-    // recency-weighted knowledge, which isn't the same as the highest count).
-    const topAuthor = s.knowledge.authors.reduce<(typeof s.knowledge.authors)[number] | null>(
-      (best, author) => (!best || author.commits > best.commits ? author : best),
+    // The contributor who removed the most lines across the analysed history
+    // (knowledge.authors is sorted by knowledge, not by lines deleted). Shown
+    // only where the provider reports per-file deletions (GitHub today); on
+    // providers without that stat every author is 0 and the card is omitted by
+    // design rather than falling back to a commit-count card.
+    const topEraser = s.knowledge.authors.reduce<(typeof s.knowledge.authors)[number] | null>(
+      (best, author) => (!best || author.deletions > best.deletions ? author : best),
       null,
     );
-    if (topAuthor) {
+    if (topEraser && topEraser.deletions > 0) {
       add(
-        'top-author',
-        'Top contributor',
-        topAuthor.name,
-        plural(topAuthor.commits, 'commit'),
-        '#34d399',
+        'top-eraser',
+        'Top code eliminator',
+        topEraser.name,
+        `${plural(topEraser.deletions, 'line')} deleted`,
+        '#fb7185',
       );
     }
     const busy = busiestDay(times);
