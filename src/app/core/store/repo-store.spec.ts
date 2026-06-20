@@ -189,6 +189,24 @@ describe('RepoStore', () => {
     expect(provider.metadataCalls).toBe(1);
   });
 
+  it('dedupes a concurrent load whose host differs only by a trailing slash', async () => {
+    // Providers build their API base by stripping trailing slashes, so
+    // `https://ghe.example.com` and `https://ghe.example.com/` name the same
+    // instance. A load already in flight for one must not be re-issued for the
+    // other — that would fetch the identical metadata URL twice.
+    const slow = deferred<RepoMetadata>();
+    provider.metadataResult = () => slow.promise;
+
+    const hosted: RepoSlug = { ...slug, host: 'https://ghe.example.com' };
+    const first = store.loadRepo(hosted);
+    const second = store.loadRepo({ ...hosted, host: 'https://ghe.example.com/' });
+
+    slow.resolve(metadata);
+    await Promise.all([first, second]);
+
+    expect(provider.metadataCalls).toBe(1);
+  });
+
   it('surfaces provider errors with their kind', async () => {
     provider.metadataResult = () => Promise.reject(new RepoProviderError('nope', 'not-found'));
 
