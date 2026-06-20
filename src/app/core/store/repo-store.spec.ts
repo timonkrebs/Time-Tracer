@@ -236,6 +236,23 @@ describe('RepoStore', () => {
       expect(store.phase()).toBe('ready');
       expect(store.slug()?.host).toBe('https://git.example.com');
     });
+
+    it('re-rejects the bad host on retry instead of loading the public repo', async () => {
+      await store.loadRepo({
+        provider: 'github',
+        owner: 'acme',
+        repo: 'rocket',
+        host: "javascript:alert('xss')",
+      });
+      expect(store.phase()).toBe('error');
+      expect(provider.metadataCalls).toBe(0);
+
+      // "Try again" must not silently fall back to the public owner/repo.
+      store.retry();
+      await vi.waitFor(() => expect(store.phase()).toBe('error'));
+      expect(provider.metadataCalls).toBe(0);
+      expect(store.slug()?.host).toBeUndefined();
+    });
   });
 
   it('ignores results of a superseded load (race safety)', async () => {

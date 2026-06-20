@@ -2911,19 +2911,19 @@ export class InsightsView {
         '#818cf8',
       );
     }
-    // The contributor with the most commits (knowledge.authors is sorted by
-    // recency-weighted knowledge, which isn't the same as the highest count).
-    const topAuthor = s.knowledge.authors.reduce<(typeof s.knowledge.authors)[number] | null>(
-      (best, author) => (!best || author.commits > best.commits ? author : best),
+    // The contributor who removed the most lines across the analysed history
+    // (knowledge.authors is sorted by knowledge, not by lines deleted).
+    const topEraser = s.knowledge.authors.reduce<(typeof s.knowledge.authors)[number] | null>(
+      (best, author) => (!best || author.deletions > best.deletions ? author : best),
       null,
     );
-    if (topAuthor) {
+    if (topEraser && topEraser.deletions > 0) {
       add(
-        'top-author',
-        'Top contributor',
-        topAuthor.name,
-        plural(topAuthor.commits, 'commit'),
-        '#34d399',
+        'top-eraser',
+        'Top code eliminator',
+        topEraser.name,
+        `${plural(topEraser.deletions, 'line')} deleted`,
+        '#fb7185',
       );
     }
     const busy = busiestDay(times);

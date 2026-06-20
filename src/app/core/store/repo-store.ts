@@ -339,6 +339,12 @@ export class RepoStore {
   private readonly analysis = inject(AnalysisRunner);
 
   private loadSeq = 0;
+  /**
+   * A self-hosted instance host that failed validation and was stripped from the
+   * stored slug, kept so {@link retry} can re-submit (and re-reject) it instead
+   * of silently loading the public repository for the same owner/repo.
+   */
+  private rejectedHost: string | null = null;
   /** In-flight file fetches keyed like {@link fileKey}, to dedupe callers. */
   private readonly inflight = new Map<string, Promise<FileState>>();
 
@@ -406,8 +412,8 @@ export class RepoStore {
   private readonly _coupleFocus = signal<CoChangeState | null>(null);
   /** Bumped to cancel a superseded or cleared focus walk. */
   private focusRun = 0;
-  /** Changed-file lists per commit sha, shared by the co-change walks. */
-  private readonly commitFilesCache = new Map<string, Promise<readonly string[]>>();
+  /** Changed files (with line stats) per commit sha, shared by the co-change walks. */
+  private readonly commitFilesCache = new Map<string, Promise<readonly CommitFileChange[]>>();
   /** Repo-wide code-survival analysis (cohorts + Kaplan–Meier), when started. */
   private readonly _survival = signal<SurvivalState | null>(null);
   /** Cohort-stack granularity for the Age tab (week / month / year). */
@@ -581,10 +587,14 @@ export class RepoStore {
       const safeHost = normalizeInstanceHost(slug.host);
       if (safeHost) {
         slug = { ...slug, host: safeHost };
+        this.rejectedHost = null;
       } else {
+        this.rejectedHost = slug.host;
         slug = { provider: slug.provider, owner: slug.owner, repo: slug.repo };
         invalidHost = true;
       }
+    } else {
+      this.rejectedHost = null;
     }
 
     if (
@@ -662,7 +672,13 @@ export class RepoStore {
   retry(): void {
     const slug = this._slug();
     if (!slug) return;
-    void this.loadRepo(slug, this._requestedRef() ?? undefined, { force: true });
+    // A rejected self-hosted host was stripped from the stored slug; restore it
+    // so the retry re-validates (and re-rejects) it rather than silently loading
+    // the public repository for the same owner/repo.
+    const host = this.rejectedHost;
+    void this.loadRepo(host ? { ...slug, host } : slug, this._requestedRef() ?? undefined, {
+      force: true,
+    });
   }
 
   /**
@@ -1512,6 +1528,7 @@ export class RepoStore {
       authoredAt: string;
       authorName: string;
       authorEmail: string | null;
+      deletions: number;
     })[] = [];
     // Generated/vendored files are held out of every metric, but a file the
     // analysis is focused on is always kept (the user chose it explicitly).
@@ -1531,6 +1548,7 @@ export class RepoStore {
         authoredAt: commit.authoredAt,
         authorName: commit.authorName,
         authorEmail: commit.authorEmail,
+        deletions: commit.deletions,
         files: commit.files.filter((path) => {
           if (keepFile(path)) return true;
           excluded.add(path);
@@ -1612,7 +1630,7 @@ export class RepoStore {
         // window, so a partial last page never starts fetches it won't consume —
         // those would be wasted provider quota on hosted repos.
         const pageMax = Math.min(commits.length, options.cap - before);
-        const pending: (Promise<readonly string[]> | undefined)[] = new Array(pageMax);
+        const pending: (Promise<readonly CommitFileChange[]> | undefined)[] = new Array(pageMax);
         let started = 0;
         const fill = (limit: number): void => {
           const max = Math.min(pageMax, limit);
@@ -1624,7 +1642,7 @@ export class RepoStore {
         };
         fill(CO_CHANGE_PREFETCH);
         for (let i = 0; i < pageMax; i++) {
-          const files = await pending[i]!;
+          const changes = await pending[i]!;
           pending[i] = undefined;
           if (!live()) return;
           fill(i + 1 + CO_CHANGE_PREFETCH); // keep the request window full
@@ -1634,7 +1652,8 @@ export class RepoStore {
             authoredAt: commit.authoredAt,
             authorName: commit.authorName,
             authorEmail: commit.authorEmail,
-            files,
+            files: changes.map((change) => change.path),
+            deletions: changes.reduce((sum, change) => sum + (change.deletions ?? 0), 0),
           });
           if (collected.length % 5 === 0) void pump('computing');
         }
@@ -2143,14 +2162,11 @@ export class RepoStore {
     }
   }
 
-  /** Changed file paths of a commit, cached per sha (shared across walks). */
-  private commitFilesFor(slug: RepoSlug, sha: string): Promise<readonly string[]> {
+  /** Changed files of a commit (with line stats), cached per sha (shared across walks). */
+  private commitFilesFor(slug: RepoSlug, sha: string): Promise<readonly CommitFileChange[]> {
     const cached = this.commitFilesCache.get(sha);
     if (cached) return cached;
-    const promise = this.registry
-      .byId(slug.provider)
-      .getCommitFiles(slug, sha)
-      .then((changes) => changes.map((change) => change.path));
+    const promise = this.registry.byId(slug.provider).getCommitFiles(slug, sha);
     this.commitFilesCache.set(sha, promise);
     promise.catch(() => this.commitFilesCache.delete(sha));
     return promise;

@@ -796,6 +796,28 @@ describe('InsightsView', () => {
       expect(button('PNG')).toBeDefined(); // each card exports a poster
     });
 
+    it('features the top code eliminator (most lines deleted) instead of top contributor', async () => {
+      const knowledge = computeKnowledgeRisk(
+        [
+          { authorName: 'Ada', authoredAt: iso(2), files: ['a.ts'], deletions: 200 },
+          { authorName: 'Linus', authoredAt: iso(3), files: ['b.ts'], deletions: 50 },
+        ],
+        new Map([
+          ['a.ts', 100],
+          ['b.ts', 100],
+        ]),
+        { now: NOW },
+      );
+      await setState({ ...PUNCH, knowledge });
+      button('Git Wrapped')!.click();
+      await fixture.whenStable();
+
+      expect(text()).toContain('Top code eliminator');
+      expect(text()).toContain('Ada'); // deleted the most (200 > 50)
+      expect(text()).toContain('200 lines deleted');
+      expect(text()).not.toContain('Top contributor');
+    });
+
     it('picks the oldest cohort that still has live lines', async () => {
       await setState(PUNCH);
       // SURVIVAL's 2019 cohort is fully dead by the tip; 2020 is still alive.

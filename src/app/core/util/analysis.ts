@@ -19,6 +19,8 @@ export interface AggregateCommit {
   readonly authorName: string;
   readonly authorEmail: string | null;
   readonly files: readonly string[];
+  /** Lines removed across the commit's files, when the provider reports them. */
+  readonly deletions?: number;
 }
 
 export interface AggregateInput {

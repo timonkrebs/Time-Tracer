@@ -13,10 +13,24 @@
 export function normalizeInstanceHost(host: string): string | null {
   const trimmed = host.trim();
   if (!trimmed) return null;
-  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+
+  // Decide whether the input already carries a URL scheme. A bare `host:port`
+  // (`git.example.com:8443`) looks like `scheme:rest` up to the colon, so a
+  // leading token + `:` only counts as a scheme when it is followed by `//`
+  // (`scheme://…`) or is an opaque `scheme:rest` that plainly is not host:port —
+  // the token has no dot and the colon is not followed by a port number. That
+  // routes the dangerous opaque forms (`javascript:alert`, `data:…`, `file:/etc`,
+  // `ssh:git@…`, `mailto:…`) through URL parsing so their non-http(s) protocol is
+  // rejected below, while host:port and scheme-less hosts get the https default.
+  const scheme = /^([a-z][a-z0-9+.-]*):(\/\/)?/i.exec(trimmed);
+  const hasScheme =
+    !!scheme &&
+    (scheme[2] === '//' ||
+      (!scheme[1].includes('.') && !/^\d/.test(trimmed.slice(scheme[0].length))));
+
   let url: URL;
   try {
-    url = new URL(withScheme);
+    url = new URL(hasScheme ? trimmed : `https://${trimmed}`);
   } catch {
     return null;
   }
