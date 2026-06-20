@@ -608,9 +608,9 @@ export class RepoStore {
     // The instance host arrives from a user-controlled query param and survives
     // in shareable deep links, so it is validated here — the one gate every load
     // passes through — before it can reach a fetch() or be rendered into a link.
-    // Only plain http(s) origins are allowed; a javascript:/data:/file: URL is
-    // dropped and surfaced as a load error instead of silently hitting the
-    // wrong (public) host.
+    // Only public http(s) origins are allowed; a javascript:/data:/file: URL or a
+    // local, private-network or metadata address is dropped and surfaced as a
+    // load error instead of probing the visitor's own network from their browser.
     let invalidHost = false;
     if (slug.host !== undefined) {
       const safeHost = normalizeInstanceHost(slug.host);
@@ -675,7 +675,7 @@ export class RepoStore {
     try {
       if (invalidHost) {
         throw new RepoProviderError(
-          'That self-hosted instance URL is not a valid http(s) address.',
+          'That self-hosted instance URL is not allowed — only public http(s) addresses can be opened, not local, private-network or metadata addresses.',
           'unknown',
         );
       }

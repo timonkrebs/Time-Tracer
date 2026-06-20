@@ -168,7 +168,33 @@ describe('LoaderPage', () => {
     await fixture.whenStable();
 
     expect(navigateSpy).not.toHaveBeenCalled();
-    expect(element.textContent).toContain('valid http(s) instance URL');
+    expect(element.textContent).toContain('private-network and metadata addresses are not allowed');
+  });
+
+  it('refuses a private-network instance host without navigating', async () => {
+    const element = fixture.nativeElement as HTMLElement;
+    const toggle = Array.from(element.querySelectorAll('button')).find((b) =>
+      (b.textContent ?? '').includes('Self-hosted / custom instance'),
+    )!;
+    toggle.click();
+    await fixture.whenStable();
+
+    const host = element.querySelector<HTMLInputElement>('#custom-host')!;
+    host.value = 'http://192.168.1.1';
+    host.dispatchEvent(new Event('input'));
+    const repo = element.querySelector<HTMLInputElement>('#custom-repo')!;
+    repo.value = 'acme/rocket';
+    repo.dispatchEvent(new Event('input'));
+    await fixture.whenStable();
+
+    const open = Array.from(element.querySelectorAll('button')).find((b) =>
+      (b.textContent ?? '').includes('Open instance repository'),
+    )!;
+    open.click();
+    await fixture.whenStable();
+
+    expect(navigateSpy).not.toHaveBeenCalled();
+    expect(element.textContent).toContain('private-network and metadata addresses are not allowed');
   });
 
   it('shows an error for empty input', async () => {
