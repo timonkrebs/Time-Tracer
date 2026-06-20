@@ -2912,7 +2912,10 @@ export class InsightsView {
       );
     }
     // The contributor who removed the most lines across the analysed history
-    // (knowledge.authors is sorted by knowledge, not by lines deleted).
+    // (knowledge.authors is sorted by knowledge, not by lines deleted). Shown
+    // only where the provider reports per-file deletions (GitHub today); on
+    // providers without that stat every author is 0 and the card is omitted by
+    // design rather than falling back to a commit-count card.
     const topEraser = s.knowledge.authors.reduce<(typeof s.knowledge.authors)[number] | null>(
       (best, author) => (!best || author.deletions > best.deletions ? author : best),
       null,

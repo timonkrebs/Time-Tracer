@@ -345,6 +345,13 @@ export class RepoStore {
    * of silently loading the public repository for the same owner/repo.
    */
   private rejectedHost: string | null = null;
+  /**
+   * The requested ref of the tree currently in {@link _entries} (the last load
+   * that reached `ready`). When a reload of the same repository fails and the
+   * user explores anyway, the ref is restored to this so the kept tree, the ref
+   * label, and history/links all refer to the same revision.
+   */
+  private lastLoadedRef: string | null = null;
   /** In-flight file fetches keyed like {@link fileKey}, to dedupe callers. */
   private readonly inflight = new Map<string, Promise<FileState>>();
 
@@ -676,6 +683,7 @@ export class RepoStore {
       if (seq !== this.loadSeq) return;
       this._entries.set(tree.entries);
       this._truncated.set(tree.truncated);
+      this.lastLoadedRef = ref;
       this._phase.set('ready');
 
       this.recents.record({
@@ -715,6 +723,10 @@ export class RepoStore {
    */
   exploreAnyway(): void {
     if (this._phase() !== 'error' || this._entries().length === 0) return;
+    // The kept tree belongs to the last load that succeeded; restore its ref so
+    // the ref label, file links and history all match what's actually shown
+    // (the failed reload may have been for a different ref).
+    this._requestedRef.set(this.lastLoadedRef);
     this._incomplete.set(true);
     this._phase.set('ready');
   }
@@ -1691,7 +1703,12 @@ export class RepoStore {
             authorName: commit.authorName,
             authorEmail: commit.authorEmail,
             files: changes.map((change) => change.path),
-            deletions: changes.reduce((sum, change) => sum + (change.deletions ?? 0), 0),
+            // Count removed lines only on files that survive the generated/vendored
+            // filter, so lockfile/build-output churn can't win "top code eliminator".
+            deletions: changes.reduce(
+              (sum, change) => sum + (keepFile(change.path) ? (change.deletions ?? 0) : 0),
+              0,
+            ),
           });
           if (collected.length % 5 === 0) void pump('computing');
         }

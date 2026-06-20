@@ -277,6 +277,24 @@ describe('RepoStore', () => {
       expect(store.tree().length).toBeGreaterThan(0);
     });
 
+    it('restores the loaded ref when exploring after a failed ref switch', async () => {
+      await store.loadRepo(slug); // defaults to the main branch
+      expect(store.ref()).toBe('main');
+
+      // Switching to another ref on the same repo is blocked.
+      provider.metadataResult = () =>
+        Promise.reject(new RepoProviderError('rate limit exhausted', 'rate-limited'));
+      await store.loadRepo(slug, 'develop');
+      expect(store.phase()).toBe('error');
+      expect(store.canExplorePartial()).toBe(true);
+
+      store.exploreAnyway();
+      expect(store.phase()).toBe('ready');
+      // The kept tree is the main tree, so the ref is restored to match it
+      // rather than misrepresenting it as the failed 'develop'.
+      expect(store.ref()).toBe('main');
+    });
+
     it('clears a different repo on failure, leaving nothing to explore', async () => {
       await store.loadRepo(slug);
       expect(store.tree().length).toBeGreaterThan(0);
@@ -1654,6 +1672,22 @@ describe('RepoStore', () => {
       expect(state?.knowledge.files.map((f) => f.path)).toEqual(['src/deep/main.ts']);
       // …and the two generated files are reported as held out.
       expect(state?.excludedFiles).toBe(2);
+    });
+
+    it('excludes generated/vendored files from the deletion tally', async () => {
+      provider.listCommitsResult = () => Promise.resolve([commit('c1')]);
+      provider.commitFilesResult = () =>
+        Promise.resolve([
+          { path: 'src/deep/main.ts', status: 'modified', deletions: 5 },
+          { path: 'package-lock.json', status: 'modified', deletions: 900 },
+          { path: 'dist/bundle.js', status: 'removed', deletions: 4000 },
+        ]);
+
+      await store.computeCoChange();
+
+      // Only the real source file's removed lines count toward the eliminator
+      // tally; the lockfile/build-output churn is held out like every metric.
+      expect(store.coChange()?.knowledge.authors[0]?.deletions).toBe(5);
     });
 
     it('reports a walk complete when history is exhausted exactly at the cap', async () => {
