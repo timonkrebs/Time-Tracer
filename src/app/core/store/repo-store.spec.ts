@@ -229,10 +229,18 @@ describe('RepoStore', () => {
 
   describe('self-hosted instance host validation', () => {
     it.each([
+      // Dangerous / non-web schemes.
       "javascript:alert('xss')",
       'javascript://alert(1)',
       'data:text/html,<script>alert(1)</script>',
       'file:///etc/passwd',
+      // Local, private-network and cloud-metadata addresses (SSRF targets).
+      'http://localhost',
+      'http://127.0.0.1:8080',
+      'http://192.168.1.1',
+      'http://10.0.0.5',
+      'http://169.254.169.254',
+      'http://[::1]',
     ])('rejects the dangerous host %s without contacting the provider', async (host) => {
       await store.loadRepo({ provider: 'github', owner: 'acme', repo: 'rocket', host });
 

@@ -538,7 +538,11 @@ export class LoaderPage {
       return;
     }
     if (!normalizeInstanceHost(host)) {
-      this.customError.set('Enter a valid http(s) instance URL, e.g. https://git.example.com.');
+      // Rejects dangerous schemes (javascript:/data:/…) and local, private-network
+      // or metadata addresses — the host is fetched straight from this browser.
+      this.customError.set(
+        'Enter a public http(s) instance URL — local, private-network and metadata addresses are not allowed.',
+      );
       return;
     }
     const repo = this.customRepo().trim();

@@ -3,12 +3,20 @@
  * `git.example.com/path` → `https://git.example.com` — assuming `https` when no
  * scheme is given, so a trailing slash or path can't fork the value.
  *
- * Returns `null` for anything that is not a plain web address: an unparseable
- * value, or a non-`http(s)` scheme (`javascript:`, `data:`, `file:`, `ftp:`…).
+ * Returns `null` for anything that is not a plain, publicly-routable web
+ * address: an unparseable value, a non-`http(s)` scheme (`javascript:`,
+ * `data:`, `file:`, `ftp:`…), or a host that points at the visitor's own
+ * machine or network — `localhost` and IP literals in loopback, private
+ * (RFC 1918), carrier-grade-NAT, link-local (incl. the `169.254.169.254`
+ * cloud-metadata address) or unspecified ranges, IPv4 and IPv6 alike.
+ *
  * The instance host is user-controlled — it is typed into the start-page form
  * and travels in a shareable `host` query param — and it is used to build API
- * request URLs and outbound links, so rejecting dangerous schemes here keeps
- * them out of every `fetch()` and `href` at the one place the host is trusted.
+ * request URLs and outbound links. Rejecting these here, at the one place the
+ * host is trusted, keeps a crafted link from turning a `fetch()` into a probe
+ * of the visitor's intranet or metadata service (the browser-side shape of
+ * SSRF). Names that merely *resolve* to such an address (a corporate
+ * `git.internal`) can't be caught without DNS and stay reachable.
  */
 export function normalizeInstanceHost(host: string): string | null {
   const trimmed = host.trim();
@@ -34,11 +42,110 @@ export function normalizeInstanceHost(host: string): string | null {
   } catch {
     return null;
   }
-  return url.protocol === 'http:' || url.protocol === 'https:' ? url.origin : null;
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+  if (isBlockedHostname(url.hostname)) return null;
+  return url.origin;
 }
 
 /** Lowercased hostname of an instance origin, or `null` if it isn't a web address. */
 export function instanceHostname(host: string): string | null {
   const origin = normalizeInstanceHost(host);
   return origin ? new URL(origin).hostname.toLowerCase() : null;
+}
+
+/**
+ * Whether a URL hostname points at a non-public address. The hostname is taken
+ * as the URL parser normalises it — IPv4 shorthands (`127.1`, `0x7f.1`,
+ * decimal) are already expanded to dotted quads and IPv6 literals arrive
+ * bracketed — so this only has to classify the canonical form.
+ */
+export function isBlockedHostname(hostname: string): boolean {
+  const name = hostname.toLowerCase();
+
+  // `localhost` and anything under the reserved `.localhost` TLD (RFC 6761).
+  if (name === 'localhost' || name.endsWith('.localhost')) return true;
+
+  // IPv6 literals arrive bracketed, e.g. `[::1]`.
+  if (name.startsWith('[') && name.endsWith(']')) {
+    return isBlockedIpv6(name.slice(1, -1));
+  }
+
+  if (isIpv4(name)) return isBlockedIpv4(name);
+
+  // A bare hostname we can't resolve here — leave it to the browser.
+  return false;
+}
+
+function isIpv4(host: string): boolean {
+  return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host);
+}
+
+function isBlockedIpv4(host: string): boolean {
+  const [a, b] = host.split('.').map(Number);
+  if (a > 255 || b > 255) return false; // not a real IPv4 — treat as a name
+  return (
+    a === 0 || // 0.0.0.0/8 "this host"
+    a === 127 || // 127.0.0.0/8 loopback
+    a === 10 || // 10.0.0.0/8 private
+    (a === 172 && b >= 16 && b <= 31) || // 172.16.0.0/12 private
+    (a === 192 && b === 168) || // 192.168.0.0/16 private
+    (a === 169 && b === 254) || // 169.254.0.0/16 link-local incl. metadata
+    (a === 100 && b >= 64 && b <= 127) // 100.64.0.0/10 carrier-grade NAT
+  );
+}
+
+function isBlockedIpv6(host: string): boolean {
+  const groups = expandIpv6(host);
+  if (!groups) return false;
+
+  if (groups.every((g) => g === 0)) return true; // :: unspecified
+  if (groups.slice(0, 7).every((g) => g === 0) && groups[7] === 1) return true; // ::1 loopback
+
+  // IPv4-mapped (::ffff:a.b.c.d): classify the embedded IPv4 address.
+  if (groups.slice(0, 5).every((g) => g === 0) && groups[5] === 0xffff) {
+    const a = groups[6] >> 8;
+    const b = groups[6] & 0xff;
+    const c = groups[7] >> 8;
+    const d = groups[7] & 0xff;
+    return isBlockedIpv4(`${a}.${b}.${c}.${d}`);
+  }
+
+  const first = groups[0];
+  if ((first & 0xfe00) === 0xfc00) return true; // fc00::/7 unique local
+  if ((first & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+  return false;
+}
+
+/** Expands an IPv6 literal (with optional `::` and embedded IPv4) to 8 hextets. */
+function expandIpv6(host: string): number[] | null {
+  let text = host;
+
+  // Fold a trailing embedded IPv4 (`::ffff:127.0.0.1`) into two hextets.
+  const v4 = text.match(/(\d{1,3}(?:\.\d{1,3}){3})$/);
+  if (v4) {
+    const octets = v4[1].split('.').map(Number);
+    if (octets.some((n) => n > 255)) return null;
+    const hi = ((octets[0] << 8) | octets[1]).toString(16);
+    const lo = ((octets[2] << 8) | octets[3]).toString(16);
+    text = `${text.slice(0, v4.index)}${hi}:${lo}`;
+  }
+
+  const halves = text.split('::');
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(':') : [];
+  const tail = halves.length === 2 ? (halves[1] ? halves[1].split(':') : []) : null;
+
+  let parts: string[];
+  if (tail === null) {
+    parts = head;
+  } else {
+    const fill = 8 - head.length - tail.length;
+    if (fill < 0) return null;
+    parts = [...head, ...Array<string>(fill).fill('0'), ...tail];
+  }
+  if (parts.length !== 8) return null;
+
+  const nums = parts.map((p) => parseInt(p || '0', 16));
+  if (nums.some((n) => Number.isNaN(n) || n < 0 || n > 0xffff)) return null;
+  return nums;
 }
