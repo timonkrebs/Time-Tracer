@@ -21,6 +21,10 @@ describe('normalizeInstanceHost', () => {
     // redirect a fetch away from the real, public host that follows the `@`.
     ['https://10.0.0.1@gitlab.com/owner/repo', 'https://gitlab.com'],
     ['https://user:pass@git.example.com', 'https://git.example.com'],
+    // A public host whose *name* merely contains numeric labels is still public —
+    // only labels that encode a non-public IP (below) are rejected.
+    ['https://1.2.3.4.example.com', 'https://1.2.3.4.example.com'],
+    ['https://8.8.8.8.nip.io', 'https://8.8.8.8.nip.io'],
   ])('normalises %s to its origin', (input, expected) => {
     expect(normalizeInstanceHost(input)).toBe(expected);
   });
@@ -65,6 +69,14 @@ describe('normalizeInstanceHost', () => {
     ['https://gitlab.com@127.0.0.1', 'userinfo @ — loopback is the real host'],
     ['https://github.com@169.254.169.254/x', 'userinfo @ — metadata is the real host'],
     ['https://gitlab.com@[::1]/', 'userinfo @ — IPv6 loopback is the real host'],
+    // Wildcard-DNS / rebinding hosts encode the address in the name, so a public
+    // name resolving to a private/metadata IP is rejected by the IP it embeds —
+    // dotted, a deeper subdomain, or the dash-joined form.
+    ['http://127.0.0.1.nip.io', 'nip.io loopback'],
+    ['http://app.127.0.0.1.nip.io', 'nip.io loopback subdomain'],
+    ['http://127-0-0-1.sslip.io', 'dash-encoded loopback'],
+    ['http://10.0.0.5.sslip.io', 'embedded 10/8 private'],
+    ['http://169.254.169.254.nip.io', 'embedded metadata address'],
     // Empty / whitespace-only input has no origin.
     ['', 'empty'],
     ['   ', 'whitespace'],
