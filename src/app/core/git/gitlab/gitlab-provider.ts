@@ -259,11 +259,13 @@ export class GitlabProvider implements GitProvider {
       return (await response.json()) as T;
     }
     if (response.status === 401) {
+      // 401 is an authentication failure, not a missing resource — use 'unknown'
+      // so the viewer shows the correct error banner (auth vs. not-found).
       throw new RepoProviderError(
         token
           ? 'GitLab rejected the access token — check it on the start page, or clear it to browse anonymously.'
           : 'GitLab requires authentication for this project — add a personal access token on the start page.',
-        'not-found',
+        'unknown',
       );
     }
     if (response.status === 429) {
