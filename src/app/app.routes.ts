@@ -1,10 +1,13 @@
 import { Routes } from '@angular/router';
 
+/** Shared page title applied to every route. */
+const PAGE_TITLE = 'Time Tracer';
+
 export const routes: Routes = [
   {
     path: '',
     loadComponent: () => import('./features/loader/loader-page').then((m) => m.LoaderPage),
-    title: 'Time Tracer',
+    title: PAGE_TITLE,
   },
   {
     // Query params: `ref` (branch/tag/sha), `path` (selected file),
@@ -12,26 +15,26 @@ export const routes: Routes = [
     path: 'r/:owner/:repo',
     loadComponent: () => import('./features/viewer/viewer-page').then((m) => m.ViewerPage),
     data: { provider: 'github' },
-    title: 'Time Tracer',
+    title: PAGE_TITLE,
   },
   {
     path: 'gl/:owner/:repo',
     loadComponent: () => import('./features/viewer/viewer-page').then((m) => m.ViewerPage),
     data: { provider: 'gitlab' },
-    title: 'Time Tracer',
+    title: PAGE_TITLE,
   },
   {
     path: 'azd/:owner/:repo',
     loadComponent: () => import('./features/viewer/viewer-page').then((m) => m.ViewerPage),
     data: { provider: 'azd' },
-    title: 'Time Tracer',
+    title: PAGE_TITLE,
   },
   {
     // Bitbucket Cloud (bitbucket.org). `:owner` is the workspace id.
     path: 'bb/:owner/:repo',
     loadComponent: () => import('./features/viewer/viewer-page').then((m) => m.ViewerPage),
     data: { provider: 'bitbucket' },
-    title: 'Time Tracer',
+    title: PAGE_TITLE,
   },
   {
     // Bitbucket Server / Data Center. `:owner` is the project key; the instance
@@ -40,13 +43,13 @@ export const routes: Routes = [
     path: 'bbs/:owner/:repo',
     loadComponent: () => import('./features/viewer/viewer-page').then((m) => m.ViewerPage),
     data: { provider: 'bitbucket-server' },
-    title: 'Time Tracer',
+    title: PAGE_TITLE,
   },
   {
     path: 'local/:repo',
     loadComponent: () => import('./features/viewer/viewer-page').then((m) => m.ViewerPage),
     data: { provider: 'local', owner: 'local' },
-    title: 'Time Tracer',
+    title: PAGE_TITLE,
   },
   {
     path: '**',
