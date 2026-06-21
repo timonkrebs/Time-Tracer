@@ -15,8 +15,11 @@
  * request URLs and outbound links. Rejecting these here, at the one place the
  * host is trusted, keeps a crafted link from turning a `fetch()` into a probe
  * of the visitor's intranet or metadata service (the browser-side shape of
- * SSRF). Names that merely *resolve* to such an address (a corporate
- * `git.internal`) can't be caught without DNS and stay reachable.
+ * SSRF). Wildcard-DNS / rebinding names that *encode* the address in the host
+ * (`127.0.0.1.nip.io`, `127-0-0-1.sslip.io`) are caught too; a name that merely
+ * *resolves* to such an address through a private DNS record (a corporate
+ * `git.internal`) can't be — not without resolving it, which is the browser's
+ * job, not ours — and stays reachable.
  */
 export function normalizeInstanceHost(host: string): string | null {
   const trimmed = host.trim();
@@ -72,7 +75,37 @@ export function isBlockedHostname(hostname: string): boolean {
 
   if (isIpv4(name)) return isBlockedIpv4(name);
 
-  // A bare hostname we can't resolve here — leave it to the browser.
+  // Wildcard-DNS / rebinding services (nip.io, sslip.io, …) encode the target in
+  // the *name*, so a public host like `127.0.0.1.nip.io`, `app.10.0.0.1.example`
+  // or the dash form `127-0-0-1.nip.io` resolves straight to that address while
+  // sailing past the literal-IP checks above. Classify any IPv4 the labels embed.
+  if (embedsBlockedIpv4(name)) return true;
+
+  // A bare hostname we can't resolve here — leave it to the browser. A name with
+  // a *public* DNS record pointing into private space (no IP in the name) can't
+  // be caught without resolving it, which the browser does, not us.
+  return false;
+}
+
+/**
+ * Whether a hostname's labels embed a non-public IPv4 the way wildcard-DNS /
+ * rebinding services encode it: four consecutive numeric labels anywhere
+ * (`127.0.0.1.nip.io`, `app.10.0.0.1.example`) or a dash-joined label
+ * (`127-0-0-1.nip.io`). Such a name resolves directly to that IP, so a private,
+ * loopback or metadata target is rejected even though the name itself is public.
+ */
+function embedsBlockedIpv4(name: string): boolean {
+  const labels = name.split('.');
+  // A dash-encoded label, e.g. `127-0-0-1` → `127.0.0.1`.
+  for (const label of labels) {
+    const dashed = /^(\d{1,3})-(\d{1,3})-(\d{1,3})-(\d{1,3})$/.exec(label);
+    if (dashed && isBlockedIpv4(dashed.slice(1).join('.'))) return true;
+  }
+  // Four consecutive numeric labels anywhere, e.g. `…127.0.0.1…`.
+  for (let i = 0; i + 4 <= labels.length; i++) {
+    const quad = labels.slice(i, i + 4);
+    if (quad.every((l) => /^\d{1,3}$/.test(l)) && isBlockedIpv4(quad.join('.'))) return true;
+  }
   return false;
 }
 
