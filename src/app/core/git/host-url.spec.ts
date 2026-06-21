@@ -16,6 +16,11 @@ describe('normalizeInstanceHost', () => {
     // Public IP literals are addresses too.
     ['https://203.0.113.10', 'https://203.0.113.10'],
     ['https://[2606:4700:4700::1111]', 'https://[2606:4700:4700::1111]'],
+    // Userinfo (`user@host`, `user:pass@host`) is not the host: it collapses away
+    // with the origin, so a blocked address smuggled into the userinfo can't
+    // redirect a fetch away from the real, public host that follows the `@`.
+    ['https://10.0.0.1@gitlab.com/owner/repo', 'https://gitlab.com'],
+    ['https://user:pass@git.example.com', 'https://git.example.com'],
   ])('normalises %s to its origin', (input, expected) => {
     expect(normalizeInstanceHost(input)).toBe(expected);
   });
@@ -54,6 +59,12 @@ describe('normalizeInstanceHost', () => {
     ['http://[fe80::1]', 'IPv6 link-local'],
     ['http://[::ffff:127.0.0.1]', 'IPv4-mapped loopback'],
     ['http://[::ffff:192.168.0.1]', 'IPv4-mapped private'],
+    // The userinfo `@` parser-confusion trick: the real host is whatever follows
+    // the last `@`, and that is what gets classified — a public-looking name
+    // parked in the userinfo cannot mask a local/metadata target after it.
+    ['https://gitlab.com@127.0.0.1', 'userinfo @ — loopback is the real host'],
+    ['https://github.com@169.254.169.254/x', 'userinfo @ — metadata is the real host'],
+    ['https://gitlab.com@[::1]/', 'userinfo @ — IPv6 loopback is the real host'],
     // Empty / whitespace-only input has no origin.
     ['', 'empty'],
     ['   ', 'whitespace'],
