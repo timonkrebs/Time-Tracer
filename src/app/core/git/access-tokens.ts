@@ -42,12 +42,23 @@ export class AccessTokens {
   /** Lazily-created reactive cell per key, restored from localStorage. */
   private readonly cells = new Map<string, WritableSignal<string>>();
 
-  /** The stored token for a key, `''` when none. Signal-backed — reactive in views. */
+  /**
+   * The stored token for a key, `''` when none.
+   *
+   * Signal-backed — reads inside `computed()` / `effect()` / templates are
+   * tracked by Angular's reactive graph and will re-run when the token
+   * changes (e.g. when the user saves or clears it on the start page).
+   */
   tokenFor(key: string): string {
     return this.cell(key)();
   }
 
-  /** The stored token for a repository (host- or provider-keyed). */
+  /**
+   * The stored token for a repository (host- or provider-keyed).
+   *
+   * Signal-backed — reactive in templates and computed signals; updates
+   * automatically when the token for the matching host/provider changes.
+   */
   tokenForSlug(slug: Pick<RepoSlug, 'provider' | 'host'>): string {
     return this.tokenFor(tokenKeyForSlug(slug));
   }
