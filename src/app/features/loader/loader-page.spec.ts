@@ -47,6 +47,16 @@ describe('LoaderPage', () => {
     await fixture.whenStable();
   }
 
+  async function openTokens(): Promise<HTMLElement> {
+    const element = fixture.nativeElement as HTMLElement;
+    const toggle = Array.from(element.querySelectorAll('button')).find((b) =>
+      (b.textContent ?? '').includes('Personal access tokens'),
+    )!;
+    toggle.click();
+    await fixture.whenStable();
+    return element;
+  }
+
   it('navigates to the viewer for a valid repository URL', async () => {
     enter('https://github.com/angular/angular/tree/main/packages');
     await submit();
@@ -205,12 +215,7 @@ describe('LoaderPage', () => {
   });
 
   it('stores personal access tokens typed into the tokens section', async () => {
-    const element = fixture.nativeElement as HTMLElement;
-    const toggle = Array.from(element.querySelectorAll('button')).find((b) =>
-      (b.textContent ?? '').includes('Personal access tokens'),
-    )!;
-    toggle.click();
-    await fixture.whenStable();
+    const element = await openTokens();
 
     const githubInput = element.querySelector<HTMLInputElement>('#github-token')!;
     githubInput.value = ' ghp_secret ';
@@ -223,10 +228,42 @@ describe('LoaderPage', () => {
     expect(tokens.tokenFor('github')).toBe('ghp_secret');
     expect(tokens.tokenFor('azd')).toBe('azd-pat');
     expect(localStorage.getItem('time-tracer.token.github')).toBe('ghp_secret');
+  });
 
-    // Clearing the field removes the stored token.
+  it('never renders a stored token back into the field, yet keeps it usable', async () => {
+    // A token saved on a previous visit, then the page is re-created (revisit).
+    TestBed.inject(AccessTokens).setToken('github', 'ghp_storedsecret');
+    fixture = TestBed.createComponent(LoaderPage);
+    await fixture.whenStable();
+    const element = await openTokens();
+
+    const githubInput = element.querySelector<HTMLInputElement>('#github-token')!;
+    // Write-only: the secret is never placed in the DOM…
+    expect(githubInput.value).toBe('');
+    expect(githubInput.type).toBe('password');
+    // …yet the saved state is surfaced so the token stays usable and clearable.
+    expect(element.querySelector('[aria-label="Clear GitHub token"]')).not.toBeNull();
+  });
+
+  it('removes a stored token only through the explicit Clear control', async () => {
+    const tokens = TestBed.inject(AccessTokens);
+    tokens.setToken('github', 'ghp_stored');
+    fixture = TestBed.createComponent(LoaderPage);
+    await fixture.whenStable();
+    const element = await openTokens();
+
+    // Emptying a write-only field must not silently drop the saved token.
+    const githubInput = element.querySelector<HTMLInputElement>('#github-token')!;
     githubInput.value = '';
     githubInput.dispatchEvent(new Event('input'));
+    await fixture.whenStable();
+    expect(tokens.tokenFor('github')).toBe('ghp_stored');
+
+    const clear = element.querySelector<HTMLButtonElement>('[aria-label="Clear GitHub token"]')!;
+    clear.click();
+    await fixture.whenStable();
+    expect(tokens.tokenFor('github')).toBe('');
     expect(localStorage.getItem('time-tracer.token.github')).toBeNull();
+    expect(element.querySelector('[aria-label="Clear GitHub token"]')).toBeNull();
   });
 });

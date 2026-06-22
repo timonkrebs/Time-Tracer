@@ -169,17 +169,36 @@ type CustomFlavor = (typeof CUSTOM_FLAVORS)[number]['id'];
                 stored only in this browser and sent only to the matching provider's API.
               </p>
               <div>
-                <label class="mb-1 block text-xs font-medium text-zinc-400" for="github-token"
-                  >GitHub</label
-                >
+                <div class="mb-1 flex items-center justify-between gap-2">
+                  <label class="block text-xs font-medium text-zinc-400" for="github-token"
+                    >GitHub</label
+                  >
+                  @if (isTokenSaved('github')) {
+                    <span class="flex items-center gap-2 text-[10px] text-emerald-300">
+                      saved
+                      <button
+                        type="button"
+                        class="text-zinc-500 transition hover:text-zinc-300 hover:underline"
+                        (click)="clearToken('github')"
+                        aria-label="Clear GitHub token"
+                      >
+                        Clear
+                      </button>
+                    </span>
+                  }
+                </div>
                 <input
                   id="github-token"
                   type="password"
                   autocomplete="off"
                   spellcheck="false"
-                  placeholder="ghp_… or github_pat_…"
+                  [placeholder]="
+                    isTokenSaved('github')
+                      ? 'Saved — enter a new token to replace'
+                      : 'ghp_… or github_pat_…'
+                  "
                   class="h-9 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 font-mono text-xs text-zinc-100 placeholder:text-zinc-600 outline-none transition focus:border-indigo-400/60 focus:ring-2 focus:ring-indigo-400/20"
-                  [value]="tokens.tokenFor('github')"
+                  [value]="draftFor('github')"
                   (input)="saveToken('github', $event)"
                 />
                 <p class="mt-1 text-[11px] leading-4 text-zinc-600">
@@ -195,17 +214,34 @@ type CustomFlavor = (typeof CUSTOM_FLAVORS)[number]['id'];
                 </p>
               </div>
               <div>
-                <label class="mb-1 block text-xs font-medium text-zinc-400" for="gitlab-token"
-                  >GitLab</label
-                >
+                <div class="mb-1 flex items-center justify-between gap-2">
+                  <label class="block text-xs font-medium text-zinc-400" for="gitlab-token"
+                    >GitLab</label
+                  >
+                  @if (isTokenSaved('gitlab')) {
+                    <span class="flex items-center gap-2 text-[10px] text-emerald-300">
+                      saved
+                      <button
+                        type="button"
+                        class="text-zinc-500 transition hover:text-zinc-300 hover:underline"
+                        (click)="clearToken('gitlab')"
+                        aria-label="Clear GitLab token"
+                      >
+                        Clear
+                      </button>
+                    </span>
+                  }
+                </div>
                 <input
                   id="gitlab-token"
                   type="password"
                   autocomplete="off"
                   spellcheck="false"
-                  placeholder="glpat-…"
+                  [placeholder]="
+                    isTokenSaved('gitlab') ? 'Saved — enter a new token to replace' : 'glpat-…'
+                  "
                   class="h-9 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 font-mono text-xs text-zinc-100 placeholder:text-zinc-600 outline-none transition focus:border-indigo-400/60 focus:ring-2 focus:ring-indigo-400/20"
-                  [value]="tokens.tokenFor('gitlab')"
+                  [value]="draftFor('gitlab')"
                   (input)="saveToken('gitlab', $event)"
                 />
                 <p class="mt-1 text-[11px] leading-4 text-zinc-600">
@@ -221,17 +257,36 @@ type CustomFlavor = (typeof CUSTOM_FLAVORS)[number]['id'];
                 </p>
               </div>
               <div>
-                <label class="mb-1 block text-xs font-medium text-zinc-400" for="bitbucket-token"
-                  >Bitbucket</label
-                >
+                <div class="mb-1 flex items-center justify-between gap-2">
+                  <label class="block text-xs font-medium text-zinc-400" for="bitbucket-token"
+                    >Bitbucket</label
+                  >
+                  @if (isTokenSaved('bitbucket')) {
+                    <span class="flex items-center gap-2 text-[10px] text-emerald-300">
+                      saved
+                      <button
+                        type="button"
+                        class="text-zinc-500 transition hover:text-zinc-300 hover:underline"
+                        (click)="clearToken('bitbucket')"
+                        aria-label="Clear Bitbucket token"
+                      >
+                        Clear
+                      </button>
+                    </span>
+                  }
+                </div>
                 <input
                   id="bitbucket-token"
                   type="password"
                   autocomplete="off"
                   spellcheck="false"
-                  placeholder="access token, or user:app_password"
+                  [placeholder]="
+                    isTokenSaved('bitbucket')
+                      ? 'Saved — enter a new token to replace'
+                      : 'access token, or user:app_password'
+                  "
                   class="h-9 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 font-mono text-xs text-zinc-100 placeholder:text-zinc-600 outline-none transition focus:border-indigo-400/60 focus:ring-2 focus:ring-indigo-400/20"
-                  [value]="tokens.tokenFor('bitbucket')"
+                  [value]="draftFor('bitbucket')"
                   (input)="saveToken('bitbucket', $event)"
                 />
                 <p class="mt-1 text-[11px] leading-4 text-zinc-600">
@@ -241,17 +296,36 @@ type CustomFlavor = (typeof CUSTOM_FLAVORS)[number]['id'];
                 </p>
               </div>
               <div>
-                <label class="mb-1 block text-xs font-medium text-zinc-400" for="azd-token"
-                  >Azure DevOps</label
-                >
+                <div class="mb-1 flex items-center justify-between gap-2">
+                  <label class="block text-xs font-medium text-zinc-400" for="azd-token"
+                    >Azure DevOps</label
+                  >
+                  @if (isTokenSaved('azd')) {
+                    <span class="flex items-center gap-2 text-[10px] text-emerald-300">
+                      saved
+                      <button
+                        type="button"
+                        class="text-zinc-500 transition hover:text-zinc-300 hover:underline"
+                        (click)="clearToken('azd')"
+                        aria-label="Clear Azure DevOps token"
+                      >
+                        Clear
+                      </button>
+                    </span>
+                  }
+                </div>
                 <input
                   id="azd-token"
                   type="password"
                   autocomplete="off"
                   spellcheck="false"
-                  placeholder="Personal access token"
+                  [placeholder]="
+                    isTokenSaved('azd')
+                      ? 'Saved — enter a new token to replace'
+                      : 'Personal access token'
+                  "
                   class="h-9 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 font-mono text-xs text-zinc-100 placeholder:text-zinc-600 outline-none transition focus:border-indigo-400/60 focus:ring-2 focus:ring-indigo-400/20"
-                  [value]="tokens.tokenFor('azd')"
+                  [value]="draftFor('azd')"
                   (input)="saveToken('azd', $event)"
                 />
                 <p class="mt-1 text-[11px] leading-4 text-zinc-600">
@@ -352,18 +426,37 @@ type CustomFlavor = (typeof CUSTOM_FLAVORS)[number]['id'];
                 />
               </div>
               <div>
-                <label class="mb-1 block text-xs font-medium text-zinc-400" for="custom-token"
-                  >Access token (optional)</label
-                >
+                <div class="mb-1 flex items-center justify-between gap-2">
+                  <label class="block text-xs font-medium text-zinc-400" for="custom-token"
+                    >Access token (optional)</label
+                  >
+                  @if (isTokenSaved(customTokenKey())) {
+                    <span class="flex items-center gap-2 text-[10px] text-emerald-300">
+                      saved
+                      <button
+                        type="button"
+                        class="text-zinc-500 transition hover:text-zinc-300 hover:underline"
+                        (click)="clearToken(customTokenKey())"
+                        aria-label="Clear instance token"
+                      >
+                        Clear
+                      </button>
+                    </span>
+                  }
+                </div>
                 <input
                   id="custom-token"
                   type="password"
                   autocomplete="off"
                   spellcheck="false"
-                  placeholder="personal / HTTP access token"
+                  [placeholder]="
+                    isTokenSaved(customTokenKey())
+                      ? 'Saved — enter a new token to replace'
+                      : 'personal / HTTP access token'
+                  "
                   class="h-9 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 font-mono text-xs text-zinc-100 placeholder:text-zinc-600 outline-none transition focus:border-indigo-400/60 focus:ring-2 focus:ring-indigo-400/20"
                   [disabled]="!customHost().trim()"
-                  [value]="customTokenValue()"
+                  [value]="draftFor(customTokenKey())"
                   (input)="saveCustomToken($event)"
                 />
               </div>
@@ -478,6 +571,13 @@ export class LoaderPage {
       ),
   );
 
+  // Token text entered during this visit, keyed by token key. The token fields
+  // are write-only: this is never seeded from storage, so a saved token is
+  // never rendered back into an input — where it would otherwise sit in the
+  // DOM in clear text, readable by extensions or scripts and trivially
+  // unmasked from a password field.
+  private readonly tokenDrafts = signal<Record<string, string>>({});
+
   // Self-hosted / custom-instance form.
   protected readonly customFlavors = CUSTOM_FLAVORS;
   protected readonly customOpen = signal(false);
@@ -486,13 +586,9 @@ export class LoaderPage {
   protected readonly customRepo = signal('');
   protected readonly customError = signal<string | null>(null);
   /** Token key the custom form reads/writes — the instance origin. */
-  private readonly customTokenKey = computed(() => {
+  protected readonly customTokenKey = computed(() => {
     const host = this.customHost().trim();
     return host ? hostKey(host) : '';
-  });
-  protected readonly customTokenValue = computed(() => {
-    const key = this.customTokenKey();
-    return key ? this.tokens.tokenFor(key) : '';
   });
   protected readonly customRepoPlaceholder = computed(() =>
     this.customFlavor() === 'bitbucket-server'
@@ -505,9 +601,36 @@ export class LoaderPage {
     this.error.set(null);
   }
 
-  /** Persists a token as it is typed; an emptied field clears it. */
+  /** The token text typed into a field this visit — never the stored secret. */
+  protected draftFor(key: string): string {
+    return this.tokenDrafts()[key] ?? '';
+  }
+
+  /** Whether a token is stored for a key, surfaced without revealing it. */
+  protected isTokenSaved(key: string): boolean {
+    return !!this.tokens.tokenFor(key);
+  }
+
+  /**
+   * Persists a token as it is typed. Only a non-empty entry replaces the
+   * stored token; removal is explicit (via {@link clearToken}), so emptying a
+   * write-only field can never silently drop an already-saved token.
+   */
   protected saveToken(provider: TokenProviderId, event: Event): void {
-    this.tokens.setToken(provider, (event.target as HTMLInputElement).value);
+    const value = (event.target as HTMLInputElement).value;
+    this.setDraft(provider, value);
+    if (value.trim()) this.tokens.setToken(provider, value);
+  }
+
+  /** Removes a stored token and clears its field. */
+  protected clearToken(key: string): void {
+    if (!key) return;
+    this.setDraft(key, '');
+    this.tokens.setToken(key, '');
+  }
+
+  private setDraft(key: string, value: string): void {
+    this.tokenDrafts.update((drafts) => ({ ...drafts, [key]: value }));
   }
 
   protected async open(event: Event): Promise<void> {
@@ -611,10 +734,13 @@ export class LoaderPage {
     this.customError.set(null);
   }
 
-  /** Persists the custom instance's token under its host key. */
+  /** Persists the custom instance's token under its host key (write-only). */
   protected saveCustomToken(event: Event): void {
     const key = this.customTokenKey();
-    if (key) this.tokens.setToken(key, (event.target as HTMLInputElement).value);
+    if (!key) return;
+    const value = (event.target as HTMLInputElement).value;
+    this.setDraft(key, value);
+    if (value.trim()) this.tokens.setToken(key, value);
   }
 
   /** Hostname of an instance origin, for compact display. */
