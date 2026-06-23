@@ -12,7 +12,7 @@ import {
   RenameState,
 } from '../../core/store/repo-store';
 import { RelatedFile } from '../../core/util/co-change';
-import { LineRange } from '../../core/util/line-range';
+import { LineRange, formatRangeLabel } from '../../core/util/line-range';
 import { relativeTime, shortSha } from '../../core/util/relative-time';
 import { traceToMarkdown } from '../../core/util/trace-export';
 import { CopyButton } from './copy-button';
@@ -542,8 +542,7 @@ export class FileHistory {
   }
 
   protected rangeLabel(range: LineRange | LineTraceState): string {
-    const { start, end } = 'range' in range ? range.range : range;
-    return start === end ? `line ${start}` : `lines ${start}–${end}`;
+    return formatRangeLabel('range' in range ? range.range : range);
   }
 
   protected abbrev(sha: string): string {

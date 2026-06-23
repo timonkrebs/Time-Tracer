@@ -110,7 +110,7 @@ decision or consumer sweep first.
 - **Safety:** ✅ navigate helper is mechanical · ⚠️ component split needs care with the effects.
 
 ### M2 — One typed `storage.ts` for the localStorage boilerplate
-- [ ] **Status: open**
+- [x] **Status: done** — added `core/util/storage.ts` (`readStorage`/`writeStorage`/`removeStorage`); `viewer-page`, `theme`, `access-tokens` and `recent-repos` rewired, dropping ~12 try/catch blocks.
 - **Where:** **12** `restore*`/`persist*` try/catch helpers across `viewer-page.ts`,
   `core/theme/theme.ts`, `core/git/access-tokens.ts`, `core/store/recent-repos.ts`.
 - **Why it matters:** Every reader/writer re-implements the same `try { localStorage… } catch {}`
@@ -120,7 +120,7 @@ decision or consumer sweep first.
 - **Safety:** ✅ Safe.
 
 ### M3 — Shared `git/url-util.ts` for the repeated URL parsers
-- [ ] **Status: open**
+- [x] **Status: done** — added `core/git/url-util.ts` (`decodeSegment`, `hasUrlScheme`, `parseHttpUrl`, `stripTrailingSlash`); 5 URL parsers + 2 providers rewired. (Per-provider host-matching and the segment regexes were intentionally left in place.)
 - **Where:** `decodeSegment` (×6), `tryParseHttpUrl` (×5), `stripTrailingSlash` (×3) and the
   `^[A-Za-z0-9]…$` segment regex (×3) reimplemented across the 7 `*-url.ts` files and providers.
 - **Why it matters:** These are parsing/security primitives; a fix to one copy silently misses the
@@ -161,7 +161,7 @@ decision or consumer sweep first.
 - **Safety:** ⚠️ Behind `repo-store.spec.ts`.
 
 ### M7 — Consolidate UI formatting & the blame-gutter cell
-- [ ] **Status: open**
+- [~] **Status: partial** — `formatRangeLabel` consolidated 4→1 (`line-range.ts`; used by `file-view`, `diff-view`, `file-history`, `trace-export`). **Remaining:** `formatBytes` (×2), `basename` (×5+), `percent`/`pct` naming, the `abbrev/when/date` wrappers, and the `BlameGutterCell` component extraction.
 - **Where:** `rangeLabel` (×4: `file-view.ts:459`, `diff-view.ts:814`, `file-history.ts:544`,
   `trace-export.ts:24`), `formatBytes` (×2: `file-view.ts:34`, `insights-view.ts:157`), basename
   hand-rolled (×5+), `percent`/`pct` with clashing return types, the blame-gutter cell template
@@ -265,10 +265,10 @@ decision or consumer sweep first.
 ## 🟢 Nice-to-have
 
 ### N1 — Remove dead exports
-- [ ] **Status: open** — `changeRegionRange` (`line-range.ts:98`, **zero** references) ·
-  `hunkChangedRange` (`line-range.ts:309`, spec-only) · `instanceHostname` (`host-url.ts:53`,
-  spec-only). Delete (and their spec blocks). **Safety:** ✅ / ⏳ confirm `hunkChangedRange` isn't a
-  planned API.
+- [~] **Status: partial** — `changeRegionRange` and `instanceHostname` (+ its spec) removed.
+  `hunkChangedRange` (`line-range.ts`, spec-only) held back: it has a dedicated test suite and
+  `line-range.ts` is on the roadmap (symbol history) — **confirm it isn't a planned API** and I'll
+  remove it + its spec too. **Safety:** ✅
 
 ### N2 — copy-button feedback
 - [ ] **Status: open** — `copy-button.ts:21-24` "Copied!" isn't announced (`aria-live`); `:41`

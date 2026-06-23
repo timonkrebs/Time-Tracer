@@ -22,6 +22,7 @@ import {
   RepoStore,
 } from '../../core/store/repo-store';
 import { LineRange, formatLineRange, parseLineRange } from '../../core/util/line-range';
+import { readStorage, writeStorage } from '../../core/util/storage';
 import { relativeTime, shortSha } from '../../core/util/relative-time';
 import { ThemeToggle } from '../shared/theme-toggle';
 import { BranchExplorer } from './branch-explorer';
@@ -1660,20 +1661,12 @@ export class ViewerPage {
 
   protected toggleHistory(): void {
     this.historyOpen.update((open) => !open);
-    try {
-      localStorage.setItem(HISTORY_OPEN_KEY, this.historyOpen() ? '1' : '0');
-    } catch {
-      // Best-effort only.
-    }
+    writeStorage(HISTORY_OPEN_KEY, this.historyOpen() ? '1' : '0');
   }
 
   protected toggleOwners(): void {
     this.ownersOpen.update((open) => !open);
-    try {
-      localStorage.setItem(OWNERS_OPEN_KEY, this.ownersOpen() ? '1' : '0');
-    } catch {
-      // Best-effort only.
-    }
+    writeStorage(OWNERS_OPEN_KEY, this.ownersOpen() ? '1' : '0');
   }
 
   /** Blames the selected file's folder (capped) and aggregates its authorship. */
@@ -1754,71 +1747,39 @@ function isEditableTarget(target: EventTarget | null): boolean {
 }
 
 function restoreTreeWidth(): number {
-  try {
-    const stored = Number(localStorage.getItem(TREE_WIDTH_KEY));
-    if (Number.isFinite(stored) && stored >= TREE_WIDTH_MIN && stored <= TREE_WIDTH_MAX) {
-      return stored;
-    }
-  } catch {
-    // localStorage unavailable — fall through to the default.
+  const stored = Number(readStorage(TREE_WIDTH_KEY));
+  if (Number.isFinite(stored) && stored >= TREE_WIDTH_MIN && stored <= TREE_WIDTH_MAX) {
+    return stored;
   }
   return TREE_WIDTH_DEFAULT;
 }
 
 function persistTreeWidth(width: number): void {
-  try {
-    localStorage.setItem(TREE_WIDTH_KEY, String(width));
-  } catch {
-    // Best-effort only.
-  }
+  writeStorage(TREE_WIDTH_KEY, String(width));
 }
 
 function restoreViewMode(): 'file' | 'diff' {
-  try {
-    const stored = localStorage.getItem(VIEW_MODE_KEY);
-    if (stored === 'file' || stored === 'diff') return stored;
-  } catch {
-    // localStorage unavailable — fall through to the default.
-  }
+  const stored = readStorage(VIEW_MODE_KEY);
+  if (stored === 'file' || stored === 'diff') return stored;
   return 'diff';
 }
 
 function persistViewMode(mode: 'file' | 'diff'): void {
-  try {
-    localStorage.setItem(VIEW_MODE_KEY, mode);
-  } catch {
-    // Best-effort only.
-  }
+  writeStorage(VIEW_MODE_KEY, mode);
 }
 
 function restoreHistoryOpen(): boolean {
-  try {
-    return localStorage.getItem(HISTORY_OPEN_KEY) === '1';
-  } catch {
-    return false;
-  }
+  return readStorage(HISTORY_OPEN_KEY) === '1';
 }
 
 function restoreTreeCollapsed(): boolean {
-  try {
-    return localStorage.getItem(TREE_COLLAPSED_KEY) === '1';
-  } catch {
-    return false;
-  }
+  return readStorage(TREE_COLLAPSED_KEY) === '1';
 }
 
 function persistTreeCollapsed(collapsed: boolean): void {
-  try {
-    localStorage.setItem(TREE_COLLAPSED_KEY, collapsed ? '1' : '0');
-  } catch {
-    // Best-effort only.
-  }
+  writeStorage(TREE_COLLAPSED_KEY, collapsed ? '1' : '0');
 }
 
 function restoreOwnersOpen(): boolean {
-  try {
-    return localStorage.getItem(OWNERS_OPEN_KEY) === '1';
-  } catch {
-    return false;
-  }
+  return readStorage(OWNERS_OPEN_KEY) === '1';
 }
