@@ -158,9 +158,12 @@ function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   });
 }
 
-/** Base64 that survives non-ASCII (author names) — UTF-8 then btoa. */
+/** Base64 that survives non-ASCII (author names) — UTF-8 bytes then btoa. */
 function base64Utf8(text: string): string {
-  return btoa(unescape(encodeURIComponent(text)));
+  const bytes = new TextEncoder().encode(text);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
 }
 
 function escapeXml(value: string): string {

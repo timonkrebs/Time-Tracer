@@ -103,7 +103,7 @@ export function forceLayout(
           dy = 0.01;
           dist = Math.hypot(dx, dy);
         }
-        const force = (k * k) / dist / dist;
+        const force = (k * k) / (dist * dist);
         const fx = dx * force;
         const fy = dy * force;
         da.x += fx;

@@ -23,12 +23,15 @@ export class AnalysisRunner {
   constructor() {
     const worker = this.worker;
     if (!worker) return;
-    worker.onmessage = ({ data }: MessageEvent<{ id: number; result: AggregateResult }>) => {
+    worker.onmessage = ({
+      data,
+    }: MessageEvent<{ id: number; result?: AggregateResult; failed?: boolean }>) => {
       const entry = this.pending.get(data.id);
-      if (entry) {
-        this.pending.delete(data.id);
-        entry.resolve(data.result);
-      }
+      if (!entry) return;
+      this.pending.delete(data.id);
+      // A worker that threw asks us to aggregate this request on-thread rather
+      // than leaving its promise unresolved.
+      entry.resolve(data.failed ? aggregateInsights(entry.input) : data.result!);
     };
     // If the worker ever fails, fall back to on-thread aggregation for the
     // in-flight requests and every later one.
