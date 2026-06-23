@@ -1,5 +1,6 @@
 import { ParsedRepoUrl } from '../../models';
 import { normalizeInstanceHost } from '../host-url';
+import { decodeSegment, hasUrlScheme, parseHttpUrl } from '../url-util';
 
 const KEY_PATTERN = /^~?[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/;
 const REPO_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/;
@@ -89,18 +90,12 @@ function stripRefPrefix(ref: string): string {
 
 function tryParseHttpUrl(input: string, hostname: string): URL | null {
   let withScheme: string | null = null;
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(input)) {
+  if (hasUrlScheme(input)) {
     withScheme = input;
   } else if (input.toLowerCase().startsWith(`${hostname}/`)) {
     withScheme = `https://${input}`;
   }
-  if (!withScheme) return null;
-  try {
-    const url = new URL(withScheme);
-    return url.protocol === 'http:' || url.protocol === 'https:' ? url : null;
-  } catch {
-    return null;
-  }
+  return withScheme ? parseHttpUrl(withScheme) : null;
 }
 
 function validated(
@@ -113,12 +108,4 @@ function validated(
   const repo = rawRepo.replace(/\.git$/i, '');
   if (!KEY_PATTERN.test(key) || !REPO_PATTERN.test(repo)) return null;
   return { owner: key, repo, ...(ref ? { ref } : {}), ...(path ? { path } : {}), host };
-}
-
-function decodeSegment(segment: string): string {
-  try {
-    return decodeURIComponent(segment);
-  } catch {
-    return segment;
-  }
 }

@@ -15,6 +15,7 @@ import {
 import { base64ToBytes, bytesToUtf8, isProbablyBinary } from '../../util/decode';
 import { AccessTokens } from '../access-tokens';
 import { GitProvider, RepoWebLinks } from '../git-provider';
+import { stripTrailingSlash } from '../url-util';
 import { parseGithubUrl } from './github-url';
 
 const PUBLIC_API_BASE = 'https://api.github.com';
@@ -372,10 +373,6 @@ function rateLimitReset(response: Response): Date | undefined {
  */
 function apiBase(slug: RepoSlug): string {
   return slug.host ? `${stripTrailingSlash(slug.host)}/api/v3` : PUBLIC_API_BASE;
-}
-
-function stripTrailingSlash(value: string): string {
-  return value.replace(/\/+$/, '');
 }
 
 function enc(segment: string): string {

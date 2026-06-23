@@ -1,5 +1,6 @@
 import { ParsedRepoUrl } from '../../models';
 import { normalizeInstanceHost } from '../host-url';
+import { decodeSegment, hasUrlScheme, parseHttpUrl } from '../url-util';
 
 const SEGMENT_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/;
 
@@ -102,26 +103,12 @@ function fromProjectPath(
 
 function tryParseHttpUrl(input: string, customHostname: string | null): URL | null {
   let withScheme: string | null = null;
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(input)) {
+  if (hasUrlScheme(input)) {
     withScheme = input;
   } else if (/^(www\.)?gitlab\.com\//i.test(input)) {
     withScheme = `https://${input}`;
   } else if (customHostname && input.toLowerCase().startsWith(`${customHostname}/`)) {
     withScheme = `https://${input}`;
   }
-  if (!withScheme) return null;
-  try {
-    const url = new URL(withScheme);
-    return url.protocol === 'http:' || url.protocol === 'https:' ? url : null;
-  } catch {
-    return null;
-  }
-}
-
-function decodeSegment(segment: string): string {
-  try {
-    return decodeURIComponent(segment);
-  } catch {
-    return segment;
-  }
+  return withScheme ? parseHttpUrl(withScheme) : null;
 }

@@ -1,3 +1,4 @@
+import { formatRangeLabel } from './line-range';
 import { shortDate, shortSha } from './relative-time';
 
 /**
@@ -20,8 +21,7 @@ export interface TraceForExport {
 
 /** Renders a line trace as a shareable Markdown summary. */
 export function traceToMarkdown(trace: TraceForExport): string {
-  const { start, end } = trace.range;
-  const range = start === end ? `line ${start}` : `lines ${start}–${end}`;
+  const range = formatRangeLabel(trace.range);
   const header = `### Trace of \`${trace.path}\` ${range}`;
 
   if (trace.commits.length === 0) {

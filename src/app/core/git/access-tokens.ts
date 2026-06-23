@@ -1,6 +1,7 @@
 import { Injectable, WritableSignal, signal } from '@angular/core';
 
 import { RepoSlug } from '../models';
+import { readStorage, removeStorage, writeStorage } from '../util/storage';
 
 /** Public hosted providers with a built-in personal-access-token field. */
 export type TokenProviderId = 'github' | 'gitlab' | 'azd' | 'bitbucket';
@@ -56,14 +57,10 @@ export class AccessTokens {
   setToken(key: string, token: string): void {
     const value = token.trim();
     this.cell(key).set(value);
-    try {
-      if (value) {
-        localStorage.setItem(STORAGE_PREFIX + key, value);
-      } else {
-        localStorage.removeItem(STORAGE_PREFIX + key);
-      }
-    } catch {
-      // Storage unavailable — the token still applies for this session.
+    if (value) {
+      writeStorage(STORAGE_PREFIX + key, value);
+    } else {
+      removeStorage(STORAGE_PREFIX + key);
     }
   }
 
@@ -78,9 +75,5 @@ export class AccessTokens {
 }
 
 function restore(key: string): string {
-  try {
-    return localStorage.getItem(STORAGE_PREFIX + key) ?? '';
-  } catch {
-    return '';
-  }
+  return readStorage(STORAGE_PREFIX + key) ?? '';
 }

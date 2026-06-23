@@ -1,4 +1,5 @@
 import { ParsedRepoUrl } from '../../models';
+import { decodeSegment, hasUrlScheme, parseHttpUrl } from '../url-util';
 
 const SEGMENT_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/;
 
@@ -48,29 +49,15 @@ function fromSegments(segments: string[]): ParsedRepoUrl | null {
 }
 
 function tryParseHttpUrl(input: string): URL | null {
-  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(input)
+  const withScheme = hasUrlScheme(input)
     ? input
     : /^(www\.)?bitbucket\.org\//i.test(input)
       ? `https://${input}`
       : null;
-  if (!withScheme) return null;
-  try {
-    const url = new URL(withScheme);
-    return url.protocol === 'http:' || url.protocol === 'https:' ? url : null;
-  } catch {
-    return null;
-  }
+  return withScheme ? parseHttpUrl(withScheme) : null;
 }
 
 function validated(workspace: string, repo: string, ref?: string, path?: string): ParsedRepoUrl | null {
   if (!SEGMENT_PATTERN.test(workspace) || !SEGMENT_PATTERN.test(repo)) return null;
   return { owner: workspace, repo, ...(ref ? { ref } : {}), ...(path ? { path } : {}) };
-}
-
-function decodeSegment(segment: string): string {
-  try {
-    return decodeURIComponent(segment);
-  } catch {
-    return segment;
-  }
 }

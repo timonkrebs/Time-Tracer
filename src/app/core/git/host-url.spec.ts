@@ -1,4 +1,4 @@
-import { instanceHostname, normalizeInstanceHost } from './host-url';
+import { normalizeInstanceHost } from './host-url';
 
 describe('normalizeInstanceHost', () => {
   it.each([
@@ -82,16 +82,5 @@ describe('normalizeInstanceHost', () => {
     ['   ', 'whitespace'],
   ])('rejects %s (%s)', (input) => {
     expect(normalizeInstanceHost(input)).toBeNull();
-  });
-});
-
-describe('instanceHostname', () => {
-  it('returns the lowercased hostname of a valid host', () => {
-    expect(instanceHostname('https://Git.Example.com/x')).toBe('git.example.com');
-    expect(instanceHostname('git.example.com')).toBe('git.example.com');
-  });
-
-  it('returns null for a dangerous scheme', () => {
-    expect(instanceHostname("javascript:alert('xss')")).toBeNull();
   });
 });

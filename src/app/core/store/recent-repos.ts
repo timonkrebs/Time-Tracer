@@ -1,5 +1,7 @@
 import { Injectable, signal } from '@angular/core';
 
+import { readStorage, writeStorage } from '../util/storage';
+
 export interface RecentRepo {
   readonly owner: string;
   readonly repo: string;
@@ -45,9 +47,9 @@ function sameRepo(a: RecentRepo, b: RecentRepo): boolean {
 }
 
 function load(): RecentRepo[] {
+  const raw = readStorage(STORAGE_KEY);
+  if (!raw) return [];
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
     return parsed
@@ -65,9 +67,5 @@ function load(): RecentRepo[] {
 }
 
 function persist(entries: readonly RecentRepo[]): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
-  } catch {
-    // Storage may be unavailable (private mode, quota) — recents are best-effort.
-  }
+  writeStorage(STORAGE_KEY, JSON.stringify(entries));
 }
