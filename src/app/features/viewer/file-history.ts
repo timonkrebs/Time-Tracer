@@ -13,6 +13,7 @@ import {
 } from '../../core/store/repo-store';
 import { RelatedFile } from '../../core/util/co-change';
 import { LineRange, formatRangeLabel } from '../../core/util/line-range';
+import { basename } from '../../core/util/path-label';
 import { relativeTime, shortSha } from '../../core/util/relative-time';
 import { traceToMarkdown } from '../../core/util/trace-export';
 import { CopyButton } from './copy-button';
@@ -553,9 +554,7 @@ export class FileHistory {
     return relativeTime(iso);
   }
 
-  protected fileName(path: string): string {
-    return path.slice(path.lastIndexOf('/') + 1);
-  }
+  protected readonly fileName = basename;
 
   protected pct(fraction: number): number {
     return Math.round(fraction * 100);

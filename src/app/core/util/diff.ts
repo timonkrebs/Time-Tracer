@@ -55,7 +55,7 @@ const SIZE_GUARD = 25_000_000;
  */
 export function splitLines(text: string): string[] {
   if (text === '') return [];
-  const normalized = (text.charCodeAt(0) === 0xfeff ? text.slice(1) : text).replace(/\r\n/g, '\n');
+  const normalized = (text.charCodeAt(0) === 0xfeff ? text.slice(1) : text).replace(/\r\n?/g, '\n');
   const trimmed = normalized.endsWith('\n') ? normalized.slice(0, -1) : normalized;
   return trimmed.split('\n');
 }

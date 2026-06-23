@@ -161,7 +161,12 @@ decision or consumer sweep first.
 - **Safety:** ⚠️ Behind `repo-store.spec.ts`.
 
 ### M7 — Consolidate UI formatting & the blame-gutter cell
-- [~] **Status: partial** — `formatRangeLabel` consolidated 4→1 (`line-range.ts`; used by `file-view`, `diff-view`, `file-history`, `trace-export`). **Remaining:** `formatBytes` (×2), `basename` (×5+), `percent`/`pct` naming, the `abbrev/when/date` wrappers, and the `BlameGutterCell` component extraction.
+- [~] **Status: partial** — done: `formatRangeLabel` (4→1) and `basename` exported from `path-label`
+  (rewired `file-history` + `ownership-panel`; `file-finder` left as-is — it needs the slash index for
+  its dir/highlight split). **Remaining:** `formatBytes` ⚠️ (the two copies *differ* —
+  `file-view` uses `kB`/`toFixed(1)`, `insights-view` uses `KB`/`round` — so unifying changes
+  rendered output and is a deliberate choice, not a pure dedup); `percent`/`pct` naming; the
+  `abbrev/when/date` wrappers; and the `BlameGutterCell` component extraction.
 - **Where:** `rangeLabel` (×4: `file-view.ts:459`, `diff-view.ts:814`, `file-history.ts:544`,
   `trace-export.ts:24`), `formatBytes` (×2: `file-view.ts:34`, `insights-view.ts:157`), basename
   hand-rolled (×5+), `percent`/`pct` with clashing return types, the blame-gutter cell template
@@ -237,7 +242,9 @@ decision or consumer sweep first.
 - **Safety:** ✅ Safe — self-contained, additive.
 
 ### M14 — Two small robustness gaps (size guard + worker hang)
-- [ ] **Status: open**
+- [x] **Status: done** — AZD re-checks the downloaded blob length in `toRepoFile`; the analysis
+  worker wraps its handler and signals `failed` so the runner falls back on-thread instead of
+  leaving the request's promise pending forever.
 - **Where:** (a) `azd-provider.ts` `getFile`/`getFileAtRef` guard on `entry.size`, which Azure
   DevOps often omits, with **no post-download size check** (Bitbucket cloud/server re-check
   `bytes.length`). (b) `analysis.worker.ts:12-15` `onmessage` has no try/catch — an
@@ -281,8 +288,7 @@ decision or consumer sweep first.
   summary mitigates). Make it focusable / show on focus. **Safety:** ✅
 
 ### N4 — Disable Angular CLI analytics
-- [ ] **Status: open** — `angular.json:6` opts the workspace into CLI telemetry — at odds with the
-  "nothing leaves your machine" positioning. Set `"analytics": false`. **Safety:** ✅
+- [x] **Status: done** — `angular.json` `analytics` set to `false`.
 
 ### N5 — Project metadata tidy
 - [ ] **Status: open** — package name `time-trace-repo-viewer` ≠ "Time Tracer"; `version: 0.0.0`;
@@ -291,12 +297,10 @@ decision or consumer sweep first.
   headers). **Safety:** ⚠️ name change touches multiple targets — do together.
 
 ### N6 — Small util polish
-- [ ] **Status: open** — `force-layout.ts:106` `(k*k)/dist/dist` → `/(dist*dist)` (reads like a
-  typo) · `image-export.ts:163` deprecated `unescape` → `TextEncoder` base64 · two union-find
-  impls (`co-change.ts:186`, `team-graph.ts:386`) → one generic · `couplingConfidence`
-  (`co-change.ts:76`) can return a slight negative → `Math.max(0,…)` · `splitLines` (`diff.ts:56`)
-  normalizes `\r\n` but not lone `\r` · `temporalCloseness` (`team-graph.ts:185`) re-sorts per
-  pair → pre-sort once. **Safety:** ✅ (the team-graph sort needs a perf/spec check ⚠️).
+- [~] **Status: partial** — done: `force-layout` `(k*k)/(dist*dist)`, `image-export`
+  `unescape`→`TextEncoder`, `couplingConfidence` `Math.max(0,…)`, and `splitLines` now normalizes a
+  lone `\r`. **Remaining:** merge the two union-find impls (`co-change.ts`, `team-graph.ts`) into one
+  generic, and pre-sort `temporalCloseness` (`team-graph.ts:185`, ⚠️ perf/spec check).
 
 ### N7 — Provider polish
 - [ ] **Status: open** — `git-provider.ts:24` doc says "unauthenticated APIs" (stale; PATs now
@@ -307,9 +311,9 @@ decision or consumer sweep first.
   (persisted in recents).
 
 ### N8 — Add focused unit specs
-- [ ] **Status: open** — `recent-repos.ts` (localStorage parse/validate/dedup/cap) and
-  `bitbucket-auth.ts` (Basic-vs-Bearer branching) have real logic and no spec. Small, pure, high
-  value. **Safety:** ✅
+- [x] **Status: done** — added `recent-repos.spec.ts` (7 tests: newest-first, cap, case-insensitive
+  dedup, provider/host distinctness, remove, persistence, malformed input) and
+  `bitbucket-auth.spec.ts` (4 tests: empty, Basic, Bearer, trim).
 
 ### N9 — Consistency nits
 - [ ] **Status: open** — History/Blame button order differs between `file-view` (Blame, History)
