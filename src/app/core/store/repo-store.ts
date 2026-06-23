@@ -507,7 +507,7 @@ export class RepoStore {
 
   readonly tree = computed(() => buildTree(this._entries()));
 
-  readonly fileCount = computed(() => this._entries().filter((e) => e.kind === 'file').length);
+  readonly fileCount = computed(() => this.files().length);
   readonly dirCount = computed(() => this._entries().filter((e) => e.kind === 'dir').length);
 
   /** Flat, path-sorted list of file entries — the corpus the file finder ranks. */
@@ -1248,7 +1248,8 @@ export class RepoStore {
       this.historyCache.set(path, entry);
       this.recordMetric(path, commits, entry.hasMore);
       return entry;
-    } catch {
+    } catch (e) {
+      console.warn('[RepoStore] historyFor failed:', e);
       return null;
     }
   }
@@ -2223,7 +2224,7 @@ export class RepoStore {
    * instead of recording the file's lines as falsely deleted.
    */
   private async survivalNewLines(change: CommitFileChange, sha: string): Promise<string[] | null> {
-    if (/remov|delet/i.test(change.status)) return [];
+    // caller (resolveNewLines) already returns [] for removed/deleted statuses
     const slug = this._slug();
     if (!slug) return null;
     try {
@@ -2703,7 +2704,8 @@ export class RepoStore {
       if (commits.length === 0) return null;
       this.cacheCommits(commits);
       return commits[0];
-    } catch {
+    } catch (e) {
+      console.warn('[RepoStore] lastTouch failed:', e);
       return null;
     }
   }
