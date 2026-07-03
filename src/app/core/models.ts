@@ -55,6 +55,14 @@ export interface RepoMetadata {
   readonly isFork: boolean;
 }
 
+/** The repository's branch names, for the viewer's branch selector. */
+export interface RepoBranchList {
+  /** Branch names (no `refs/heads/` prefix), in provider order. */
+  readonly names: readonly string[];
+  /** True when the repository has more branches than the listing cap. */
+  readonly truncated: boolean;
+}
+
 export type TreeEntryKind = 'file' | 'dir' | 'submodule';
 
 /** One flat entry of a repository tree at a given ref. */

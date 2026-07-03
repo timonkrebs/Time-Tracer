@@ -29,6 +29,22 @@ describe('AzdProvider', () => {
     vi.unstubAllGlobals();
   });
 
+  it('lists branch names from the refs endpoint, stripping the prefix', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        value: [{ name: 'refs/heads/develop' }, { name: 'refs/heads/feature/foo' }],
+        count: 2,
+      }),
+    );
+
+    const list = await provider.listBranches(slug);
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://dev.azure.com/fhnw/Services/_apis/git/repositories/A1418-CIT.IAM.EBC/refs?filter=heads/&$top=1000&api-version=7.1',
+    );
+    expect(list).toEqual({ names: ['develop', 'feature/foo'], truncated: false });
+  });
+
   it('reads repository metadata and strips the refs/heads prefix', async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({

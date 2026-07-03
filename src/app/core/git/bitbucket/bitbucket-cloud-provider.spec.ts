@@ -47,6 +47,24 @@ describe('BitbucketCloudProvider', () => {
     expect(metadata).toMatchObject({ fullName: 'acme/rocket', defaultBranch: 'develop' });
   });
 
+  it('lists branch names following the paged next links', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({
+          values: [{ name: 'develop' }, { name: 'main' }],
+          next: 'https://api.bitbucket.org/2.0/repositories/acme/rocket/refs/branches?page=2',
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ values: [{ name: 'release/1.0' }] }));
+
+    const list = await provider.listBranches(slug);
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://api.bitbucket.org/2.0/repositories/acme/rocket/refs/branches?pagelen=100&sort=name',
+    );
+    expect(list).toEqual({ names: ['develop', 'main', 'release/1.0'], truncated: false });
+  });
+
   it('lists the tree and carries the resolved commit as the entry sha', async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({

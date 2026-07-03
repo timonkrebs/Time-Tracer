@@ -4,6 +4,7 @@ import {
   CommitFileChange,
   CommitInfo,
   ParsedRepoUrl,
+  RepoBranchList,
   RepoFile,
   RepoMetadata,
   RepoProviderError,
@@ -24,6 +25,9 @@ const MAX_FILE_SIZE_BYTES = 2_000_000;
 
 /** Listings page at 100 entries; stop after this many pages and mark truncated. */
 const MAX_PAGES = 100;
+
+/** Branch pages are 100 entries; stop after this many pages and mark truncated. */
+const MAX_BRANCH_PAGES = 10;
 
 const SHA_PATTERN = /^[0-9a-f]{7,40}$/i;
 
@@ -104,6 +108,20 @@ export class BitbucketCloudProvider implements GitProvider {
       starCount: 0,
       isFork: data.parent !== undefined,
     };
+  }
+
+  async listBranches(slug: RepoSlug): Promise<RepoBranchList> {
+    const names: string[] = [];
+    let url = `${repoApi(slug)}/refs/branches?pagelen=100&sort=name`;
+    for (let page = 1; ; page++) {
+      const data = await this.getJson<BbPaged<{ name: string }>>(slug, url, {
+        notFound: 'Repository not found — it may not exist or it may be private.',
+      });
+      for (const branch of data.values ?? []) names.push(branch.name);
+      if (!data.next) return { names, truncated: false };
+      if (page >= MAX_BRANCH_PAGES) return { names, truncated: true };
+      url = data.next;
+    }
   }
 
   async getTree(slug: RepoSlug, ref: string): Promise<RepoTree> {

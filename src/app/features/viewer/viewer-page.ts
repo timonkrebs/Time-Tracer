@@ -24,6 +24,7 @@ import {
 import { LineRange, formatLineRange, parseLineRange } from '../../core/util/line-range';
 import { relativeTime, shortSha } from '../../core/util/relative-time';
 import { ThemeToggle } from '../shared/theme-toggle';
+import { BranchPicker } from './branch-picker';
 import { DiffView } from './diff-view';
 import { FileFinder } from './file-finder';
 import { FileHistory } from './file-history';
@@ -56,6 +57,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [
     RouterLink,
+    BranchPicker,
     FileTree,
     FileView,
     FileHistory,
@@ -170,26 +172,13 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
             <span class="truncate font-mono text-sm text-zinc-300">{{ owner() }}/{{ repo() }}</span>
           }
           @if (store.ref(); as currentRef) {
-            <span
-              class="flex shrink-0 items-center gap-1 rounded-full border border-zinc-700 bg-zinc-800 px-2 py-0.5 font-mono text-[11px] text-zinc-400"
-            >
-              <svg
-                class="size-3"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <circle cx="6" cy="6" r="3" />
-                <circle cx="6" cy="18" r="3" />
-                <path d="M6 9v6m12-6a9 9 0 0 1-9 9" />
-                <circle cx="18" cy="6" r="3" />
-              </svg>
-              {{ currentRef }}
-            </span>
+            <app-branch-picker
+              [ref]="currentRef"
+              [defaultBranch]="store.metadata()?.defaultBranch ?? null"
+              [state]="store.branches()"
+              (load)="store.loadBranches()"
+              (refSelect)="onRefSelect($event)"
+            />
           }
         </div>
 
@@ -1098,6 +1087,23 @@ export class ViewerPage {
   protected onInsightsReset(): void {
     this.store.clearCoChange();
     this.store.clearSurvival();
+  }
+
+  /**
+   * A branch was picked in the header selector: reload the repository at that
+   * ref. The selected file survives the switch (it re-opens at the new ref),
+   * while `at`/`view`/`line`/`base` belong to the previous ref's timeline and
+   * are dropped. The default branch is the URL's implicit ref, so picking it
+   * clears the query param and keeps deep links canonical.
+   */
+  protected onRefSelect(ref: string): void {
+    if (ref === this.store.ref()) return;
+    const target = ref === (this.store.metadata()?.defaultBranch ?? null) ? null : ref;
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { ref: target, at: null, view: null, line: null, base: null },
+      queryParamsHandling: 'merge',
+    });
   }
 
   /** A file was picked in the finder: open it and dismiss the overlay. */

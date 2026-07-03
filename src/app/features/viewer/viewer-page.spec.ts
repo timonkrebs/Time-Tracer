@@ -191,6 +191,11 @@ describe('ViewerPage (integration)', () => {
         { path: 'README.md', type: 'blob', sha: 'blob2', size: 14 },
       ],
     },
+    '/repos/acme/rocket/branches': [{ name: 'dev' }, { name: 'main' }],
+    '/repos/acme/rocket/git/trees/dev': {
+      truncated: false,
+      tree: [{ path: 'DEV_NOTES.md', type: 'blob', sha: 'blob-dev', size: 9 }],
+    },
     '/repos/acme/rocket/git/blobs/blob2': {
       sha: 'blob2',
       size: 17,
@@ -456,6 +461,54 @@ describe('ViewerPage (integration)', () => {
       expect(text).toContain('src');
       expect(text).toContain('4 files · 1 folders');
     });
+  });
+
+  it('switches branches through the header selector', async () => {
+    await harness.navigateByUrl('/r/acme/rocket');
+    await vi.waitFor(async () => {
+      expect(await textOnScreen()).toContain('README.md');
+    });
+
+    // Open the branch selector; the list loads lazily on first open.
+    harness.routeNativeElement!.querySelector<HTMLButtonElement>('[title="Switch branch"]')!.click();
+    await vi.waitFor(async () => {
+      const options = harness.routeNativeElement!.querySelectorAll('[role="option"]');
+      expect(options.length).toBe(2);
+      await textOnScreen();
+    });
+
+    // Pick "dev": the URL carries the ref and the tree reloads at that branch.
+    const dev = Array.from(
+      harness.routeNativeElement!.querySelectorAll<HTMLButtonElement>('[role="option"]'),
+    ).find((b) => b.textContent?.includes('dev'))!;
+    dev.click();
+    await vi.waitFor(async () => {
+      expect(router.url).toContain('ref=dev');
+      const text = await textOnScreen();
+      expect(text).toContain('DEV_NOTES.md');
+      expect(text).not.toContain('README.md');
+    });
+
+    // Back to the default branch: the ref param is dropped (canonical URL) and
+    // the cached branch list is reused — no second /branches request.
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    const branchCalls = (): number =>
+      fetchMock.mock.calls.filter((call) => String(call[0]).includes('/branches')).length;
+    expect(branchCalls()).toBe(1);
+    harness.routeNativeElement!.querySelector<HTMLButtonElement>('[title="Switch branch"]')!.click();
+    await vi.waitFor(async () => {
+      await textOnScreen();
+      expect(harness.routeNativeElement!.querySelectorAll('[role="option"]').length).toBe(2);
+    });
+    const main = Array.from(
+      harness.routeNativeElement!.querySelectorAll<HTMLButtonElement>('[role="option"]'),
+    ).find((b) => b.textContent?.includes('main'))!;
+    main.click();
+    await vi.waitFor(async () => {
+      expect(router.url).not.toContain('ref=');
+      expect(await textOnScreen()).toContain('README.md');
+    });
+    expect(branchCalls()).toBe(1);
   });
 
   it('collapses and restores the file tree', async () => {

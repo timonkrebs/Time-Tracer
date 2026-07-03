@@ -50,6 +50,22 @@ describe('GitlabProvider', () => {
     });
   });
 
+  it('lists branch names, paging until a short page arrives', async () => {
+    const fullPage = Array.from({ length: 100 }, (_, i) => ({ name: `branch-${i}` }));
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(fullPage))
+      .mockResolvedValueOnce(jsonResponse([{ name: 'main' }]));
+
+    const list = await provider.listBranches(slug);
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://gitlab.com/api/v4/projects/gitlab-org%2Fgitlab/repository/branches?per_page=100&page=1',
+    );
+    expect(list.names).toHaveLength(101);
+    expect(list.names[100]).toBe('main');
+    expect(list.truncated).toBe(false);
+  });
+
   it('pages through the recursive tree until a short page arrives', async () => {
     const fullPage = Array.from({ length: 100 }, (_, i) => ({
       id: `sha${i}`,
