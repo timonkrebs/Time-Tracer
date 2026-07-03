@@ -204,24 +204,35 @@ export class GitlabProvider implements GitProvider {
   }
 
   async getCommitFiles(slug: RepoSlug, sha: string): Promise<CommitFileChange[]> {
-    const data = await this.request<GitlabDiffItem[]>(
-      slug,
-      `/projects/${projectId(slug)}/repository/commits/${encodeURIComponent(sha)}/diff`,
-      { notFound: `Commit ${sha.slice(0, 7)} was not found in this project.` },
-    );
-    return data.map((item) => ({
-      path: item.new_path,
-      status: item.new_file
-        ? 'added'
-        : item.deleted_file
-          ? 'removed'
-          : item.renamed_file
-            ? 'renamed'
-            : 'modified',
-      ...(item.renamed_file && item.old_path !== item.new_path
-        ? { previousPath: item.old_path }
-        : {}),
-    }));
+    // The diff endpoint is paginated (default page size 20) — without paging,
+    // any commit touching more than one page of files is silently truncated,
+    // quietly skewing every analysis built on changed-file lists (co-change,
+    // hotspots, the survival walk).
+    const changes: CommitFileChange[] = [];
+    for (let page = 1; ; page++) {
+      const data = await this.request<GitlabDiffItem[]>(
+        slug,
+        `/projects/${projectId(slug)}/repository/commits/${encodeURIComponent(sha)}/diff?per_page=100&page=${page}`,
+        { notFound: `Commit ${sha.slice(0, 7)} was not found in this project.` },
+      );
+      for (const item of data) {
+        changes.push({
+          path: item.new_path,
+          status: item.new_file
+            ? 'added'
+            : item.deleted_file
+              ? 'removed'
+              : item.renamed_file
+                ? 'renamed'
+                : 'modified',
+          ...(item.renamed_file && item.old_path !== item.new_path
+            ? { previousPath: item.old_path }
+            : {}),
+        });
+      }
+      if (data.length < 100) break;
+    }
+    return changes;
   }
 
   webLinks(slug: RepoSlug, ref: string, path?: string): RepoWebLinks {
