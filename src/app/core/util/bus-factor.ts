@@ -85,9 +85,24 @@ export function simulateDeparture(
  */
 export function busFactorBoard(model: KnowledgeModel): Contributor[] {
   const ownedByAuthor = new Map<string, number>();
+  // A single departure orphans a file exactly when the leaver is its only
+  // active expert — so every author's bus risk falls out of one pass over the
+  // files, instead of one simulateDeparture (authors × files) per author.
+  const soleExpertOf = new Map<string, number>();
   for (const file of model.files) {
     const owner = file.primaryExpert?.name;
     if (owner) ownedByAuthor.set(owner, (ownedByAuthor.get(owner) ?? 0) + 1);
+    let sole: string | null = null;
+    for (const expert of file.experts) {
+      if (!expert.active) continue;
+      if (sole === null) {
+        sole = expert.name;
+      } else if (sole !== expert.name) {
+        sole = null;
+        break;
+      }
+    }
+    if (sole !== null) soleExpertOf.set(sole, (soleExpertOf.get(sole) ?? 0) + 1);
   }
 
   const board = model.authors.map((author) => ({
@@ -97,7 +112,7 @@ export function busFactorBoard(model: KnowledgeModel): Contributor[] {
     active: author.active,
     lastActiveAt: author.lastActiveAt,
     filesOwned: ownedByAuthor.get(author.name) ?? 0,
-    busRisk: simulateDeparture(model, new Set([author.name])).newlyOrphaned,
+    busRisk: soleExpertOf.get(author.name) ?? 0,
   }));
 
   board.sort(

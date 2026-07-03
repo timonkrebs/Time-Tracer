@@ -2393,13 +2393,26 @@ export class InsightsView {
     return f?.focus ? relatedFiles(f.result, f.focus, MAX_RELATED) : [];
   });
 
-  protected readonly clusters = computed(() =>
+  /**
+   * All connected components, computed once per analysis state. The size band
+   * only filters — splitting it out keeps the union-find over the full pair
+   * list (potentially 10⁵+ pairs after "Load all") off the slider's input
+   * path, which otherwise re-clustered everything per drag tick.
+   */
+  private readonly allClusters = computed(() =>
     clusterCoChange(this.state()?.result.pairs ?? [], {
-      limit: MAX_CLUSTERS,
-      minFiles: this.minClusterSize(),
-      maxFiles: this.maxClusterSize(),
+      limit: Number.POSITIVE_INFINITY,
+      minFiles: 1,
+      maxFiles: Number.POSITIVE_INFINITY,
     }),
   );
+  protected readonly clusters = computed(() => {
+    const min = this.minClusterSize();
+    const max = this.maxClusterSize();
+    return this.allClusters()
+      .filter((cluster) => cluster.files.length >= min && cluster.files.length <= max)
+      .slice(0, MAX_CLUSTERS);
+  });
   protected readonly clusterGraphs = computed(() => this.clusters().map((c) => this.layout(c)));
 
   private readonly hotspots = computed(() => {
@@ -3021,9 +3034,15 @@ export class InsightsView {
   }
 
   constructor() {
-    // Applying a file filter is a coupling action — show that tab.
+    // Applying a file filter is a coupling action — show that tab. Keyed on
+    // the focused *file*: the state object is republished on every streamed
+    // progress update, and reacting to its identity would snap the user back
+    // to Coupling every few commits for the whole walk.
+    let lastFocus: string | undefined;
     effect(() => {
-      if (this.focus()) this.tab.set('coupling');
+      const file = this.focus()?.focus;
+      if (file && file !== lastFocus) this.tab.set('coupling');
+      lastFocus = file;
     });
     // The Age tab is local-only; if it's not offered (e.g. after opening a hosted
     // repo), fall back so a hidden tab can't stay selected.

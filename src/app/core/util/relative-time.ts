@@ -7,13 +7,18 @@ const UNITS: readonly [Intl.RelativeTimeFormatUnit, number][] = [
   ['minute', 60],
 ];
 
+/**
+ * One formatter for the module: the locale is fixed and the constructor is
+ * measurably expensive for something called once per visible row.
+ */
+const rtf = new Intl.RelativeTimeFormat('en');
+
 /** Formats an ISO timestamp as a coarse relative phrase, e.g. `3 years ago`. */
 export function relativeTime(iso: string, now: Date = new Date()): string {
   const then = new Date(iso).getTime();
   if (!Number.isFinite(then)) return '';
   const seconds = Math.max(0, Math.round((now.getTime() - then) / 1000));
   if (seconds < 45) return 'just now';
-  const rtf = new Intl.RelativeTimeFormat('en');
   for (const [unit, span] of UNITS) {
     if (seconds >= span) return rtf.format(-Math.round(seconds / span), unit);
   }
