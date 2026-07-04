@@ -22,7 +22,7 @@ const API_VERSION = 'api-version=7.1';
 /** Files above this size are not fetched into the viewer. */
 const MAX_FILE_SIZE_BYTES = 2_000_000;
 
-/** Branches fetched in one request; more than this marks the list truncated. */
+/** Branches fetched in one request; a full response marks the list truncated. */
 const MAX_BRANCHES = 1000;
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;

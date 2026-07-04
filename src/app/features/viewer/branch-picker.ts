@@ -36,6 +36,7 @@ import { BranchesState } from '../../core/store/repo-store';
       (click)="toggle()"
       aria-haspopup="listbox"
       [attr.aria-expanded]="open()"
+      [attr.aria-label]="'Switch branch — viewing ' + ref()"
       title="Switch branch"
     >
       <svg

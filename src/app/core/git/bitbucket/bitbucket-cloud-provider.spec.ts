@@ -65,6 +65,65 @@ describe('BitbucketCloudProvider', () => {
     expect(list).toEqual({ names: ['develop', 'main', 'release/1.0'], truncated: false });
   });
 
+  it('resolves a slash-containing branch to its hash before listing the tree', async () => {
+    // The /src endpoint decodes %2F and cuts the ref at the slash, so the
+    // branch is resolved through refs/branches (which accepts the encoding)
+    // and the tree is listed at the target hash instead.
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({ name: 'feature/foo', target: { hash: 'cafebabe' } }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          values: [{ path: 'README.md', type: 'commit_file', commit: { hash: 'cafebabe' } }],
+        }),
+      );
+
+    const tree = await provider.getTree(slug, 'feature/foo');
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://api.bitbucket.org/2.0/repositories/acme/rocket/refs/branches/feature%2Ffoo',
+    );
+    expect(String(fetchMock.mock.calls[1][0])).toContain('/src/cafebabe/');
+    expect(tree.entries[0]).toMatchObject({ path: 'README.md', sha: 'cafebabe' });
+  });
+
+  it('falls back to tags when a slash-containing ref is not a branch', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ type: 'error' }, { status: 404 }))
+      .mockResolvedValueOnce(jsonResponse({ name: 'release/1.0', target: { hash: 'feedf00d' } }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          values: [{ path: 'README.md', type: 'commit_file', commit: { hash: 'feedf00d' } }],
+        }),
+      );
+
+    await provider.getTree(slug, 'release/1.0');
+
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      'https://api.bitbucket.org/2.0/repositories/acme/rocket/refs/tags/release%2F1.0',
+    );
+    expect(String(fetchMock.mock.calls[2][0])).toContain('/src/feedf00d/');
+  });
+
+  it('uses the memoised slash-ref resolution for file history', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({ name: 'feature/foo', target: { hash: 'cafebabe' } }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ values: [] }))
+      .mockResolvedValueOnce(jsonResponse({ values: [] }));
+
+    await provider.listCommits(slug, { ref: 'feature/foo', path: 'README.md' });
+    await provider.listCommits(slug, { ref: 'feature/foo', path: 'src/a.ts' });
+
+    // One resolution serves both history calls; filehistory addresses the hash.
+    const urls = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(urls.filter((u) => u.includes('/refs/branches/'))).toHaveLength(1);
+    expect(urls[1]).toContain('/filehistory/cafebabe/README.md');
+    expect(urls[2]).toContain('/filehistory/cafebabe/src/a.ts');
+  });
+
   it('lists the tree and carries the resolved commit as the entry sha', async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({

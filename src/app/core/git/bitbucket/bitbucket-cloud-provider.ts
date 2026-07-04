@@ -124,11 +124,61 @@ export class BitbucketCloudProvider implements GitProvider {
     }
   }
 
+  /**
+   * Commit hashes for slash-containing ref names, per `<owner>/<repo>@<ref>`.
+   * The `/src` and `/filehistory` endpoints address the revision in a path
+   * segment and decode `%2F` before routing, so a branch or tag named with a
+   * slash (`feature/foo`) gets cut at the slash and fails. The `refs/…`
+   * endpoints do accept the encoded name, so such refs are resolved to their
+   * target hash first (see {@link resolveSlashRef}); memoised because the
+   * per-file history calls would otherwise re-resolve on every request.
+   */
+  private readonly slashRefCache = new Map<string, Promise<string>>();
+
+  /** Resolves a slash-containing branch/tag name to its commit hash; other refs pass through. */
+  private resolveSlashRef(slug: RepoSlug, ref: string): Promise<string> {
+    if (!ref.includes('/')) return Promise.resolve(ref);
+    const key = `${slug.owner}/${slug.repo}@${ref}`;
+    let resolved = this.slashRefCache.get(key);
+    if (!resolved) {
+      resolved = this.lookupSlashRef(slug, ref);
+      this.slashRefCache.set(key, resolved);
+      // A failed lookup must not stick — a retry should ask again.
+      resolved.catch(() => this.slashRefCache.delete(key));
+    }
+    return resolved;
+  }
+
+  private async lookupSlashRef(slug: RepoSlug, ref: string): Promise<string> {
+    const encoded = encodeURIComponent(ref);
+    const messages = {
+      notFound: `Ref "${ref}" was not found in this repository.`,
+      notFoundKind: 'invalid-ref' as const,
+    };
+    try {
+      const branch = await this.getJson<{ target?: { hash?: string } }>(
+        slug,
+        `${repoApi(slug)}/refs/branches/${encoded}`,
+        messages,
+      );
+      if (branch.target?.hash) return branch.target.hash;
+    } catch {
+      // Not a branch — a tag name can carry a slash too (release/1.0).
+    }
+    const tag = await this.getJson<{ target?: { hash?: string } }>(
+      slug,
+      `${repoApi(slug)}/refs/tags/${encoded}`,
+      messages,
+    );
+    return tag.target?.hash ?? ref;
+  }
+
   async getTree(slug: RepoSlug, ref: string): Promise<RepoTree> {
+    const target = await this.resolveSlashRef(slug, ref);
     const entries: TreeEntry[] = [];
-    let resolvedCommit = SHA_PATTERN.test(ref) ? ref : '';
+    let resolvedCommit = SHA_PATTERN.test(target) ? target : '';
     let url =
-      `${repoApi(slug)}/src/${encodeURIComponent(ref)}/` +
+      `${repoApi(slug)}/src/${encodeURIComponent(target)}/` +
       `?max_depth=${MAX_PAGES}&pagelen=100`;
     let truncated = false;
 
@@ -138,7 +188,9 @@ export class BitbucketCloudProvider implements GitProvider {
         notFoundKind: 'invalid-ref',
       });
       const values = data.values ?? [];
-      if (!resolvedCommit) resolvedCommit = values.find((v) => v.commit?.hash)?.commit?.hash ?? ref;
+      if (!resolvedCommit) {
+        resolvedCommit = values.find((v) => v.commit?.hash)?.commit?.hash ?? target;
+      }
       for (const item of values) {
         const path = item.path.replace(/^\//, '');
         if (!path) continue;
@@ -205,7 +257,7 @@ export class BitbucketCloudProvider implements GitProvider {
     options: { ref?: string; path?: string; perPage?: number; page?: number } = {},
   ): Promise<CommitInfo[]> {
     const perPage = options.perPage ?? 30;
-    const ref = options.ref ?? '';
+    const ref = options.ref ? await this.resolveSlashRef(slug, options.ref) : '';
     const params = new URLSearchParams({ pagelen: String(perPage) });
     if (options.page) params.set('page', String(options.page));
 
