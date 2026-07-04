@@ -5,6 +5,7 @@ import {
   CommitInfo,
   ParsedRepoUrl,
   RefResolution,
+  RepoBranchList,
   RepoFile,
   RepoMetadata,
   RepoSlug,
@@ -53,6 +54,13 @@ export interface GitProvider {
   resolveRefPath?(slug: RepoSlug, refAndPath: string): Promise<RefResolution | null>;
 
   getMetadata(slug: RepoSlug): Promise<RepoMetadata>;
+
+  /**
+   * The repository's branch names — the choices of the viewer's branch
+   * selector. Capped on providers whose APIs page (the cap is generous);
+   * `truncated` says when the repository holds more.
+   */
+  listBranches(slug: RepoSlug): Promise<RepoBranchList>;
 
   /** Full recursive tree at `ref` (branch, tag or commit sha). */
   getTree(slug: RepoSlug, ref: string): Promise<RepoTree>;

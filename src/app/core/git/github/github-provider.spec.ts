@@ -252,6 +252,29 @@ describe('GithubProvider', () => {
     });
   });
 
+  it('lists branch names from the branches endpoint', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([{ name: 'main' }, { name: 'feature/foo' }]));
+
+    const list = await provider.listBranches(slug);
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://api.github.com/repos/acme/rocket/branches?per_page=100&page=1',
+    );
+    expect(list).toEqual({ names: ['main', 'feature/foo'], truncated: false });
+  });
+
+  it('pages through branches and marks truncation at the page cap', async () => {
+    const fullPage = Array.from({ length: 100 }, (_, i) => ({ name: `branch-${i}` }));
+    // A fresh Response per call — a body can only be read once.
+    fetchMock.mockImplementation(() => Promise.resolve(jsonResponse(fullPage)));
+
+    const list = await provider.listBranches(slug);
+
+    expect(fetchMock).toHaveBeenCalledTimes(10);
+    expect(list.names).toHaveLength(1000);
+    expect(list.truncated).toBe(true);
+  });
+
   it('builds web links with encoded paths', () => {
     const links = provider.webLinks(slug, 'main', 'docs/my file.md');
     expect(links.fileUrl).toBe('https://github.com/acme/rocket/blob/main/docs/my%20file.md');

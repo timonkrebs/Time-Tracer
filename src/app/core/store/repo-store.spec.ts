@@ -5,6 +5,7 @@ import {
   CommitFileChange,
   CommitInfo,
   ParsedRepoUrl,
+  RepoBranchList,
   RepoFile,
   RepoMetadata,
   RepoProviderError,
@@ -86,6 +87,13 @@ class FakeProvider implements GitProvider {
   getMetadata(): Promise<RepoMetadata> {
     this.metadataCalls++;
     return this.metadataResult();
+  }
+  listBranchesCalls = 0;
+  listBranchesResult: () => Promise<RepoBranchList> = () =>
+    Promise.resolve({ names: ['main', 'dev'], truncated: false });
+  listBranches(): Promise<RepoBranchList> {
+    this.listBranchesCalls++;
+    return this.listBranchesResult();
   }
   getTree(_slug: RepoSlug, ref: string): Promise<RepoTree> {
     this.treeCalls++;
@@ -169,6 +177,72 @@ describe('RepoStore', () => {
 
     expect(store.ref()).toBe('v2');
     expect(provider.treeRefs).toEqual(['v2']);
+  });
+
+  describe('branches', () => {
+    it('loads the branch list lazily and sorts it', async () => {
+      await store.loadRepo(slug);
+      // Nothing is fetched until the selector asks for the list.
+      expect(store.branches()).toBeNull();
+      expect(provider.listBranchesCalls).toBe(0);
+
+      provider.listBranchesResult = () =>
+        Promise.resolve({ names: ['zeta', 'main', 'alpha'], truncated: false });
+      await store.loadBranches();
+
+      expect(store.branches()).toEqual({
+        status: 'ready',
+        names: ['alpha', 'main', 'zeta'],
+        truncated: false,
+      });
+    });
+
+    it('keeps the loaded list across a branch switch of the same repository', async () => {
+      await store.loadRepo(slug);
+      await store.loadBranches();
+      expect(provider.listBranchesCalls).toBe(1);
+
+      await store.loadRepo(slug, 'dev');
+      expect(store.branches()?.status).toBe('ready');
+
+      // A repeated request is served from the kept list.
+      await store.loadBranches();
+      expect(provider.listBranchesCalls).toBe(1);
+    });
+
+    it('drops the list when another repository is loaded', async () => {
+      await store.loadRepo(slug);
+      await store.loadBranches();
+
+      await store.loadRepo({ ...slug, repo: 'other' });
+
+      expect(store.branches()).toBeNull();
+    });
+
+    it('surfaces a failed load and allows retrying', async () => {
+      await store.loadRepo(slug);
+      provider.listBranchesResult = () =>
+        Promise.reject(new RepoProviderError('nope', 'rate-limited'));
+      await store.loadBranches();
+      expect(store.branches()).toEqual({ status: 'error', message: 'nope' });
+
+      provider.listBranchesResult = () => Promise.resolve({ names: ['main'], truncated: true });
+      await store.loadBranches();
+      expect(store.branches()).toEqual({ status: 'ready', names: ['main'], truncated: true });
+    });
+
+    it('drops a stale response that lands after switching repositories', async () => {
+      await store.loadRepo(slug);
+      const slow = deferred<RepoBranchList>();
+      provider.listBranchesResult = () => slow.promise;
+      const loading = store.loadBranches();
+
+      await store.loadRepo({ ...slug, repo: 'other' });
+      slow.resolve({ names: ['stale'], truncated: false });
+      await loading;
+
+      expect(store.branches()).toBeNull();
+    });
   });
 
   it('reports local data availability from the provider capability', async () => {

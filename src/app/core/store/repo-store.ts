@@ -90,6 +90,18 @@ const SURVIVAL_RENAME_SIMILARITY = 0.5;
 /** Lifecycle of the per-file commit history panel. */
 export type HistoryStatus = 'idle' | 'loading' | 'loading-more' | 'ready' | 'error';
 
+/** Async state of the repository's branch list (behind the branch selector). */
+export type BranchesState =
+  | { readonly status: 'loading' }
+  | {
+      readonly status: 'ready';
+      /** Branch names, sorted alphabetically. */
+      readonly names: readonly string[];
+      /** True when the repository holds more branches than the provider cap. */
+      readonly truncated: boolean;
+    }
+  | { readonly status: 'error'; readonly message: string };
+
 /** Async state of the changes view for one `<commit, path>` pair. */
 export type DiffState =
   | { readonly status: 'loading' }
@@ -366,6 +378,10 @@ export class RepoStore {
   private readonly _slug = signal<RepoSlug | null>(null);
   private readonly _requestedRef = signal<string | null>(null);
   private readonly _metadata = signal<RepoMetadata | null>(null);
+  /** Branch list for the selector; null until requested (it loads lazily). */
+  private readonly _branches = signal<BranchesState | null>(null);
+  /** Bumped when the branch list is dropped, to cancel a stale fetch. */
+  private branchesRun = 0;
   private readonly _entries = signal<readonly TreeEntry[]>([]);
   private readonly _truncated = signal(false);
   /**
@@ -451,6 +467,8 @@ export class RepoStore {
   readonly error = this._error.asReadonly();
   readonly slug = this._slug.asReadonly();
   readonly metadata = this._metadata.asReadonly();
+  /** Branch list for the selector; null until {@link loadBranches} runs. */
+  readonly branches = this._branches.asReadonly();
   readonly truncated = this._truncated.asReadonly();
   /** True while showing a repository whose load was cut short (see {@link exploreAnyway}). */
   readonly incomplete = this._incomplete.asReadonly();
@@ -648,6 +666,10 @@ export class RepoStore {
       this._entries.set([]);
       this._truncated.set(false);
       this.treeCache.clear();
+      // Branches belong to the repository, not the ref — a branch switch keeps
+      // the already-loaded list instead of refetching it.
+      this.branchesRun++;
+      this._branches.set(null);
     }
     this._incomplete.set(false);
     this._selectedPath.set(null);
@@ -703,6 +725,32 @@ export class RepoStore {
       if (seq !== this.loadSeq) return;
       this._error.set(toRepoProviderError(error));
       this._phase.set('error');
+    }
+  }
+
+  /**
+   * Loads the repository's branch names for the branch selector. Lazy — the
+   * selector calls it when first opened, so browsing costs no extra request.
+   * Cached per repository (branches are ref-independent): a branch switch
+   * reuses the list; only loading another repository clears it. A failed
+   * load can be retried by calling again.
+   */
+  async loadBranches(): Promise<void> {
+    const slug = this._slug();
+    if (!slug) return;
+    const existing = this._branches();
+    if (existing && existing.status !== 'error') return;
+
+    const run = this.branchesRun;
+    this._branches.set({ status: 'loading' });
+    try {
+      const list = await this.registry.byId(slug.provider).listBranches(slug);
+      if (run !== this.branchesRun) return;
+      const names = [...list.names].sort((a, b) => a.localeCompare(b));
+      this._branches.set({ status: 'ready', names, truncated: list.truncated });
+    } catch (error) {
+      if (run !== this.branchesRun) return;
+      this._branches.set({ status: 'error', message: toRepoProviderError(error).message });
     }
   }
 

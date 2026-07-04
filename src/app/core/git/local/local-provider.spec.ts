@@ -51,6 +51,15 @@ describe('LocalGitProvider', () => {
     expect(provider.webLinks()).toBeNull();
   });
 
+  it('lists the local branches', async () => {
+    await git.branch({ fs, dir: '/', ref: 'feature/foo', checkout: false });
+
+    const list = await provider.listBranches(slug);
+
+    expect(list.truncated).toBe(false);
+    expect([...list.names].sort()).toEqual(['feature/foo', 'main']);
+  });
+
   it('walks the tree of a ref', async () => {
     const tree = await provider.getTree(slug, 'main');
     expect(tree.truncated).toBe(false);

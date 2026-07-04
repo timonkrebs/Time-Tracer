@@ -39,6 +39,26 @@ describe('BitbucketServerProvider', () => {
     expect(provider.parseUrl()).toBeNull();
   });
 
+  it('lists branch names following the paged starts', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({
+          values: [{ displayId: 'develop' }, { displayId: 'main' }],
+          isLastPage: false,
+          nextPageStart: 2,
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ values: [{ displayId: 'release/1.0' }], isLastPage: true }));
+
+    const list = await provider.listBranches(slug);
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://bitbucket.example.com/rest/api/1.0/projects/ENG/repos/rocket/branches?orderBy=ALPHABETICAL&limit=100&start=0',
+    );
+    expect(fetchMock.mock.calls[1][0]).toContain('start=2');
+    expect(list).toEqual({ names: ['develop', 'main', 'release/1.0'], truncated: false });
+  });
+
   it('maps metadata with the default branch', async () => {
     fetchMock
       .mockResolvedValueOnce(

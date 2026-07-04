@@ -4,6 +4,7 @@ import {
   CommitFileChange,
   CommitInfo,
   ParsedRepoUrl,
+  RepoBranchList,
   RepoFile,
   RepoMetadata,
   RepoProviderError,
@@ -151,6 +152,17 @@ export class LocalGitProvider implements GitProvider {
       };
     } catch (error) {
       throw this.mapError(error, 'Could not read the local repository.');
+    }
+  }
+
+  async listBranches(slug: RepoSlug): Promise<RepoBranchList> {
+    const fs = this.fs(slug);
+    try {
+      const git = await loadGit();
+      const names = await git.listBranches({ fs, dir: '/' });
+      return { names, truncated: false };
+    } catch (error) {
+      throw this.mapError(error, 'Could not read the branches of the local repository.');
     }
   }
 

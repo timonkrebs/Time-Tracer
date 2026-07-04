@@ -4,6 +4,7 @@ import {
   CommitFileChange,
   CommitInfo,
   ParsedRepoUrl,
+  RepoBranchList,
   RepoFile,
   RepoMetadata,
   RepoProviderError,
@@ -23,6 +24,9 @@ const MAX_FILE_SIZE_BYTES = 2_000_000;
 
 /** Tree pages are 100 entries; stop after this many pages and mark truncated. */
 const MAX_TREE_PAGES = 50;
+
+/** Branch pages are 100 entries; stop after this many pages and mark truncated. */
+const MAX_BRANCH_PAGES = 10;
 
 interface GitlabProjectResponse {
   path: string;
@@ -110,6 +114,20 @@ export class GitlabProvider implements GitProvider {
       starCount: data.star_count,
       isFork: data.forked_from_project !== undefined,
     };
+  }
+
+  async listBranches(slug: RepoSlug): Promise<RepoBranchList> {
+    const names: string[] = [];
+    for (let page = 1; ; page++) {
+      const data = await this.request<{ name: string }[]>(
+        slug,
+        `/projects/${projectId(slug)}/repository/branches?per_page=100&page=${page}`,
+        { notFound: 'Project not found — it may not exist or it may be private.' },
+      );
+      for (const branch of data) names.push(branch.name);
+      if (data.length < 100) return { names, truncated: false };
+      if (page >= MAX_BRANCH_PAGES) return { names, truncated: true };
+    }
   }
 
   async getTree(slug: RepoSlug, ref: string): Promise<RepoTree> {

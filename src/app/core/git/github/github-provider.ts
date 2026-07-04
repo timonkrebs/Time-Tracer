@@ -5,6 +5,7 @@ import {
   CommitInfo,
   ParsedRepoUrl,
   RefResolution,
+  RepoBranchList,
   RepoFile,
   RepoMetadata,
   RepoProviderError,
@@ -21,6 +22,9 @@ const PUBLIC_API_BASE = 'https://api.github.com';
 
 /** Files above this size are not fetched; the UI links to GitHub instead. */
 export const MAX_FILE_SIZE_BYTES = 2_000_000;
+
+/** Branch pages are 100 entries; stop after this many pages and mark truncated. */
+const MAX_BRANCH_PAGES = 10;
 
 interface GithubRepoResponse {
   name: string;
@@ -63,6 +67,10 @@ interface GithubContentsResponse {
 interface GithubMatchingRefResponse {
   /** Fully qualified ref name, e.g. `refs/heads/feature/foo`. */
   ref: string;
+}
+
+interface GithubBranchResponse {
+  name: string;
 }
 
 interface GithubCommitResponse {
@@ -164,6 +172,20 @@ export class GithubProvider implements GitProvider {
       starCount: data.stargazers_count,
       isFork: data.fork,
     };
+  }
+
+  async listBranches(slug: RepoSlug): Promise<RepoBranchList> {
+    const names: string[] = [];
+    for (let page = 1; ; page++) {
+      const data = await this.request<GithubBranchResponse[]>(
+        slug,
+        `/repos/${enc(slug.owner)}/${enc(slug.repo)}/branches?per_page=100&page=${page}`,
+        { notFound: 'Repository not found — it may not exist or it may be private.' },
+      );
+      for (const branch of data) names.push(branch.name);
+      if (data.length < 100) return { names, truncated: false };
+      if (page >= MAX_BRANCH_PAGES) return { names, truncated: true };
+    }
   }
 
   async getTree(slug: RepoSlug, ref: string): Promise<RepoTree> {
