@@ -2394,16 +2394,19 @@ export class InsightsView {
   });
 
   /**
-   * All connected components, computed once per analysis state. The size band
-   * only filters — splitting it out keeps the union-find over the full pair
-   * list (potentially 10⁵+ pairs after "Load all") off the slider's input
-   * path, which otherwise re-clustered everything per drag tick.
+   * All displayable connected components, computed once per analysis state.
+   * The size band only filters — splitting it out keeps the union-find over
+   * the full pair list (potentially 10⁵+ pairs after "Load all") off the
+   * slider's input path, which otherwise re-clustered everything per drag
+   * tick. Bounded by the slider's own floor/ceiling, so components no band
+   * can ever show (notably super-cluster hairballs) are skipped before their
+   * member lists are materialized and sorted.
    */
   private readonly allClusters = computed(() =>
     clusterCoChange(this.state()?.result.pairs ?? [], {
       limit: Number.POSITIVE_INFINITY,
-      minFiles: 1,
-      maxFiles: Number.POSITIVE_INFINITY,
+      minFiles: CLUSTER_SIZE_FLOOR,
+      maxFiles: CLUSTER_SIZE_CEIL,
     }),
   );
   protected readonly clusters = computed(() => {

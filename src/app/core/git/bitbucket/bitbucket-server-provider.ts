@@ -183,15 +183,31 @@ export class BitbucketServerProvider implements GitProvider {
     options: { ref?: string; path?: string; perPage?: number; page?: number } = {},
   ): Promise<CommitInfo[]> {
     const perPage = options.perPage ?? 30;
-    const params = new URLSearchParams({ limit: String(perPage) });
-    params.set('start', String(((options.page ?? 1) - 1) * perPage));
-    if (options.ref) params.set('until', options.ref);
-    if (options.path) params.set('path', options.path);
+    // The instance may cap `limit` below the request (a configurable hard
+    // limit) and report the real paging state via isLastPage/nextPageStart.
+    // Accumulate until the requested window is full or history truly ends —
+    // otherwise a capped instance would both skip commits (the next page's
+    // `start` assumes the full window was served) and end walks early (a
+    // short page reads as end-of-history to callers).
+    const commits: CommitInfo[] = [];
+    let start = ((options.page ?? 1) - 1) * perPage;
+    for (;;) {
+      const params = new URLSearchParams({ limit: String(perPage - commits.length) });
+      params.set('start', String(start));
+      if (options.ref) params.set('until', options.ref);
+      if (options.path) params.set('path', options.path);
 
-    const data = await this.getJson<BbsPaged<BbsCommit>>(slug, `${repoApi(slug)}/commits?${params}`, {
-      notFound: 'No commit history found for this ref or path.',
-    });
-    return (data.values ?? []).map((value) => mapCommit(value, slug));
+      const data = await this.getJson<BbsPaged<BbsCommit>>(
+        slug,
+        `${repoApi(slug)}/commits?${params}`,
+        { notFound: 'No commit history found for this ref or path.' },
+      );
+      const values = data.values ?? [];
+      for (const value of values) commits.push(mapCommit(value, slug));
+      if (commits.length >= perPage || data.isLastPage !== false || values.length === 0) break;
+      start = data.nextPageStart ?? start + values.length;
+    }
+    return commits;
   }
 
   async getCommit(slug: RepoSlug, sha: string): Promise<CommitInfo> {

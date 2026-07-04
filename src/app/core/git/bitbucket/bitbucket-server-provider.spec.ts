@@ -117,6 +117,46 @@ describe('BitbucketServerProvider', () => {
     expect(commits[0].authoredAt).toBe('2025-01-01T00:00:00.000Z');
   });
 
+  it('fills the requested page even when the instance caps the limit', async () => {
+    // A Data Center instance may serve fewer values than requested (hard page
+    // limits) while isLastPage says history continues. The provider must keep
+    // reading from nextPageStart until the window is full — otherwise callers
+    // would both skip commits and mistake the short page for end-of-history.
+    const commit = (id: string) => ({ id, displayId: id, authorTimestamp: 0 });
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({ values: [commit('c1'), commit('c2')], isLastPage: false, nextPageStart: 2 }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ values: [commit('c3'), commit('c4')], isLastPage: false, nextPageStart: 4 }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ values: [commit('c5')], isLastPage: false }));
+
+    const commits = await provider.listCommits(slug, { ref: 'main', perPage: 5 });
+
+    expect(commits.map((c) => c.sha)).toEqual(['c1', 'c2', 'c3', 'c4', 'c5']);
+    const requested = fetchMock.mock.calls.map((call) => {
+      const url = new URL(call[0] as string);
+      return { start: url.searchParams.get('start'), limit: url.searchParams.get('limit') };
+    });
+    expect(requested).toEqual([
+      { start: '0', limit: '5' },
+      { start: '2', limit: '3' },
+      { start: '4', limit: '1' },
+    ]);
+  });
+
+  it('returns a short page as-is when history genuinely ends', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ values: [{ id: 'c1', displayId: 'c1', authorTimestamp: 0 }], isLastPage: true }),
+    );
+
+    const commits = await provider.listCommits(slug, { perPage: 5 });
+
+    expect(commits.map((c) => c.sha)).toEqual(['c1']);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('maps commit changes including renames', async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({
