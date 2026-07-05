@@ -1823,16 +1823,19 @@ describe('RepoStore', () => {
       expect(state?.incomplete).toBeUndefined();
     });
 
+    /** Serves `all` in provider-realistic pages honoring the requested perPage/page. */
+    const pagedCommits = (all: readonly CommitInfo[]) => () => {
+      const { perPage = 30, page = 1 } = provider.listCommitsCalls.at(-1)!;
+      return Promise.resolve(all.slice((page - 1) * perPage, page * perPage));
+    };
+
     it('reports a walk complete when history is exhausted exactly at the cap', async () => {
-      // 75 commits (= CO_CHANGE_COMMIT_CAP) delivered as 30 + 30 + 15; the short
-      // final page marks the end of history, so the result must not be partial.
-      const pages = [
-        Array.from({ length: 30 }, (_, i) => commit(`a${i}`)),
-        Array.from({ length: 30 }, (_, i) => commit(`b${i}`)),
-        Array.from({ length: 15 }, (_, i) => commit(`c${i}`)),
-      ];
-      let call = 0;
-      provider.listCommitsResult = () => Promise.resolve(pages[call++] ?? []);
+      // 75 commits (= CO_CHANGE_COMMIT_CAP) in total: the walk's final page
+      // comes back short, marking the end of history, so the result must not
+      // be partial even though it ends exactly at the cap.
+      provider.listCommitsResult = pagedCommits(
+        Array.from({ length: 75 }, (_, i) => commit(`a${i}`)),
+      );
       provider.commitFilesResult = () =>
         Promise.resolve([{ path: 'src/app.ts', status: 'modified' }]);
 
@@ -1845,16 +1848,12 @@ describe('RepoStore', () => {
     });
 
     it('stays partial when the cap stops partway through a short final page', async () => {
-      // 80 commits as 30 + 30 + 20, cap 75: the final page is short, but the cap
-      // halts the walk after only 15 of its 20 commits — 5 remain unread, so the
+      // 80 commits, cap 75: the last page is short (end of history in sight),
+      // but the cap halts the walk with 5 of its commits unread — so the
       // result is still partial despite the short page.
-      const pages = [
-        Array.from({ length: 30 }, (_, i) => commit(`a${i}`)),
-        Array.from({ length: 30 }, (_, i) => commit(`b${i}`)),
-        Array.from({ length: 20 }, (_, i) => commit(`c${i}`)),
-      ];
-      let call = 0;
-      provider.listCommitsResult = () => Promise.resolve(pages[call++] ?? []);
+      provider.listCommitsResult = pagedCommits(
+        Array.from({ length: 80 }, (_, i) => commit(`a${i}`)),
+      );
       provider.commitFilesResult = () =>
         Promise.resolve([{ path: 'src/app.ts', status: 'modified' }]);
 
@@ -1868,11 +1867,11 @@ describe('RepoStore', () => {
 
     it('reports a walk partial when it stops at the cap with history remaining', async () => {
       // Every page is full, so the walk fills the cap without ever seeing the end.
-      let call = 0;
       provider.listCommitsResult = () => {
-        const page = Array.from({ length: 30 }, (_, i) => commit(`p${call}c${i}`));
-        call++;
-        return Promise.resolve(page);
+        const { perPage = 30, page = 1 } = provider.listCommitsCalls.at(-1)!;
+        return Promise.resolve(
+          Array.from({ length: perPage }, (_, i) => commit(`p${page}c${i}`)),
+        );
       };
       provider.commitFilesResult = () =>
         Promise.resolve([{ path: 'src/app.ts', status: 'modified' }]);

@@ -122,6 +122,22 @@ export class LocalGitProvider implements GitProvider {
    */
   private readonly treeCache = new WeakMap<FsLike, Map<string, readonly TreeChild[]>>();
 
+  /**
+   * isomorphic-git's own object cache, per fs. Without it every `readBlob`/
+   * `readCommit`/`readTree`/`log` call re-reads and re-parses the packfile
+   * index from scratch — and blame, trace and the Age walk issue one such call
+   * per commit. The library never evicts from this cache, but everything it
+   * holds is content-addressed and immutable, and the WeakMap lets the whole
+   * cache die with the fs when the folder is re-picked or disconnected.
+   */
+  private readonly gitCaches = new WeakMap<FsLike, object>();
+
+  private gitCache(fs: FsLike): object {
+    let cache = this.gitCaches.get(fs);
+    if (!cache) this.gitCaches.set(fs, (cache = {}));
+    return cache;
+  }
+
   /** Local repos are opened via the folder picker, never via URL input. */
   canHandle(): boolean {
     return false;
@@ -171,7 +187,12 @@ export class LocalGitProvider implements GitProvider {
     try {
       const git = await loadGit();
       const commitOid = await git.resolveRef({ fs, dir: '/', ref });
-      const { commit } = await git.readCommit({ fs, dir: '/', oid: commitOid });
+      const { commit } = await git.readCommit({
+        fs,
+        dir: '/',
+        oid: commitOid,
+        cache: this.gitCache(fs),
+      });
       const entries: TreeEntry[] = [];
       await this.walkTree(git, fs, commit.tree, '', entries);
       return { entries: await this.withSizes(fs, entries), truncated: false };
@@ -226,7 +247,7 @@ export class LocalGitProvider implements GitProvider {
     prefix: string,
     out: TreeEntry[],
   ): Promise<void> {
-    const { tree } = await git.readTree({ fs, dir: '/', oid: treeOid });
+    const { tree } = await git.readTree({ fs, dir: '/', oid: treeOid, cache: this.gitCache(fs) });
     for (const entry of tree) {
       const path = prefix ? `${prefix}/${entry.path}` : entry.path;
       if (entry.type === 'tree') {
@@ -244,7 +265,12 @@ export class LocalGitProvider implements GitProvider {
     const fs = this.fs(slug);
     try {
       const git = await loadGit();
-      const { blob } = await git.readBlob({ fs, dir: '/', oid: entry.sha });
+      const { blob } = await git.readBlob({
+        fs,
+        dir: '/',
+        oid: entry.sha,
+        cache: this.gitCache(fs),
+      });
       return this.toRepoFile(entry.path, entry.sha, blob);
     } catch (error) {
       throw this.mapError(error, `File "${entry.path}" was not found.`);
@@ -256,7 +282,13 @@ export class LocalGitProvider implements GitProvider {
     try {
       const git = await loadGit();
       const commitOid = await git.resolveRef({ fs, dir: '/', ref });
-      const { blob, oid } = await git.readBlob({ fs, dir: '/', oid: commitOid, filepath: path });
+      const { blob, oid } = await git.readBlob({
+        fs,
+        dir: '/',
+        oid: commitOid,
+        filepath: path,
+        cache: this.gitCache(fs),
+      });
       return this.toRepoFile(path, oid, blob);
     } catch (error) {
       throw this.mapError(
@@ -330,6 +362,7 @@ export class LocalGitProvider implements GitProvider {
       fs,
       dir: '/',
       ref,
+      cache: this.gitCache(fs),
       ...(path ? { filepath: path, force: true } : { depth: wanted }),
     })) as ReadCommitResult[];
     const commits = log.map(mapCommit);
@@ -355,7 +388,12 @@ export class LocalGitProvider implements GitProvider {
     if (primed?.has(ref)) return;
 
     const git = await loadGit();
-    const log = (await git.log({ fs, dir: '/', ref })) as LogCommitResult[];
+    const log = (await git.log({
+      fs,
+      dir: '/',
+      ref,
+      cache: this.gitCache(fs),
+    })) as LogCommitResult[];
     const treeOf = new Map(log.map((entry) => [entry.oid, entry.commit.tree]));
     const readTree = (oid: string): Promise<readonly TreeChild[]> =>
       this.readTreeCached(git, fs, oid);
@@ -398,7 +436,8 @@ export class LocalGitProvider implements GitProvider {
     if (!perFs) this.treeCache.set(fs, (perFs = new Map()));
     let entries = perFs.get(oid);
     if (!entries) {
-      entries = (await git.readTree({ fs, dir: '/', oid })).tree as TreeChild[];
+      entries = (await git.readTree({ fs, dir: '/', oid, cache: this.gitCache(fs) }))
+        .tree as TreeChild[];
       perFs.set(oid, entries);
     }
     return entries;
@@ -461,7 +500,12 @@ export class LocalGitProvider implements GitProvider {
     const fs = this.fs(slug);
     try {
       const git = await loadGit();
-      const result = (await git.readCommit({ fs, dir: '/', oid: sha })) as ReadCommitResult;
+      const result = (await git.readCommit({
+        fs,
+        dir: '/',
+        oid: sha,
+        cache: this.gitCache(fs),
+      })) as ReadCommitResult;
       return mapCommit(result);
     } catch (error) {
       throw this.mapError(error, `Commit ${sha.slice(0, 7)} was not found in this repository.`);
@@ -472,14 +516,15 @@ export class LocalGitProvider implements GitProvider {
     const fs = this.fs(slug);
     try {
       const git = await loadGit();
-      const { commit } = await git.readCommit({ fs, dir: '/', oid: sha });
+      const cache = this.gitCache(fs);
+      const { commit } = await git.readCommit({ fs, dir: '/', oid: sha, cache });
       const parentOid = commit.parent[0];
       // Diff the two root trees with oid pruning (identical subtrees are skipped),
       // so the cost is proportional to what the commit changed — not to the whole
       // tree, as a full `git.walk` of both trees would be. This is the per-commit
       // primitive the co-change and Age walks call for every commit.
       const parentTree = parentOid
-        ? (await git.readCommit({ fs, dir: '/', oid: parentOid })).commit.tree
+        ? (await git.readCommit({ fs, dir: '/', oid: parentOid, cache })).commit.tree
         : null;
       const readTree = (oid: string): Promise<readonly TreeChild[]> =>
         this.readTreeCached(git, fs, oid);

@@ -182,7 +182,7 @@ function temporalCloseness(
   recencyHalfLifeMs: number,
 ): number {
   if (timesA.length === 0 || timesB.length === 0) return 0;
-  const a = [...timesA].sort((x, y) => x - y);
+  const a = timesA; // sorted by the caller, once per author per file
   const score = (ta: number, tb: number): number =>
     2 ** (-Math.abs(ta - tb) / proximityHalfLifeMs) *
     2 ** (-(latest - Math.max(ta, tb)) / recencyHalfLifeMs);
@@ -268,6 +268,9 @@ export function computeTeamGraph(
   const pairs = new Map<string, PairAccum>();
   for (const perAuthor of editsByFile.values()) {
     if (perAuthor.size < 2) continue;
+    // Sort every author's edit times once — temporalCloseness binary-searches
+    // them per pair, and an author on a hot file has many pair partners.
+    for (const times of perAuthor.values()) times.sort((x, y) => x - y);
     const ids = [...perAuthor.keys()].sort();
     for (let i = 0; i < ids.length; i++) {
       for (let j = i + 1; j < ids.length; j++) {

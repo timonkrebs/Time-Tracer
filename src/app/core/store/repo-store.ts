@@ -50,6 +50,14 @@ import { ancestorsOf, buildTree } from '../util/tree';
 import { RecentRepos } from './recent-repos';
 
 const HISTORY_PAGE_SIZE = 30;
+/**
+ * Page size for the bulk analysis walks (co-change, survival), which page
+ * with their own local counters. Every hosted provider accepts 100, so a
+ * full-history walk spends a third of the round trips (and rate budget) the
+ * UI page size would. The History panel keeps {@link HISTORY_PAGE_SIZE} —
+ * its page numbers are cached and continued across loads.
+ */
+const WALK_PAGE_SIZE = 100;
 /** Files the creating commit deleted that get a content comparison. */
 const RENAME_DELETED_CAP = 8;
 /** Files compared per hunk-origin search, by scope. */
@@ -86,6 +94,18 @@ const SURVIVAL_PUBLISH_MS = 600;
 const SURVIVAL_RENAME_PAIR_LIMIT = 200;
 /** Minimum content similarity (0..1) to treat an unflagged remove+add as a rename. */
 const SURVIVAL_RENAME_SIMILARITY = 0.5;
+
+/** Walk steps between yields to the renderer (see {@link yieldToBrowser}). */
+const WALK_YIELD_EVERY = 16;
+
+/**
+ * Hands control back to the event loop. The blame/trace walks pause only at
+ * `await`s — and when every version is already cached (a local repo, or a
+ * re-walk after paging) those resolve as microtasks, so the whole walk runs
+ * as one unbroken block and none of its streamed progress ever paints. A
+ * macrotask every few steps keeps the tab responsive.
+ */
+const yieldToBrowser = (): Promise<void> => new Promise((resolve) => setTimeout(resolve));
 
 /** Lifecycle of the per-file commit history panel. */
 export type HistoryStatus = 'idle' | 'loading' | 'loading-more' | 'ready' | 'error';
@@ -1042,6 +1062,10 @@ export class RepoStore {
     let newerLines = blamedLines;
 
     for (let i = anchor; pending > 0; i++) {
+      if ((i - anchor) % WALK_YIELD_EVERY === WALK_YIELD_EVERY - 1) {
+        await yieldToBrowser();
+        if (seq !== this.loadSeq) return;
+      }
       const newer = history[i];
       const older = history[i + 1];
 
@@ -1285,12 +1309,17 @@ export class RepoStore {
     if (cached) return cached;
     const slug = this._slug();
     if (!slug || this._phase() !== 'ready') return null;
+    const seq = this.loadSeq;
     try {
       const commits = await this.registry.byId(slug.provider).listCommits(slug, {
         ref: this.ref() ?? undefined,
         path,
         perPage: HISTORY_PAGE_SIZE,
       });
+      // A navigation away cleared the caches; writing this stale response would
+      // file the old repo's history under a bare path key ("README.md"…) that
+      // the new repo then serves as its own.
+      if (seq !== this.loadSeq) return null;
       this.cacheCommits(commits);
       const entry = { commits, hasMore: commits.length === HISTORY_PAGE_SIZE, page: 1 };
       this.historyCache.set(path, entry);
@@ -1636,32 +1665,31 @@ export class RepoStore {
     })[] = [];
     // Generated/vendored files are held out of every metric, but a file the
     // analysis is focused on is always kept (the user chose it explicitly).
-    const keepFile = (path: string): boolean => path === options.focus || !isGeneratedFile(path);
+    // Decisions are memoized — the same paths recur commit after commit, and
+    // the gitignore-style test runs a battery of regexes per fresh path.
+    const keepCache = new Map<string, boolean>();
+    const keepFile = (path: string): boolean => {
+      let keep = keepCache.get(path);
+      if (keep === undefined) {
+        keep = path === options.focus || !isGeneratedFile(path);
+        keepCache.set(path, keep);
+      }
+      return keep;
+    };
+    // Excluded paths seen so far (counted so the header can note them).
+    const excluded = new Set<string>();
     // Set once the provider runs out of history, so a walk that ends exactly at
     // the cap is reported complete rather than partial.
     let exhausted = false;
 
-    // Snapshot the walk so far as worker input: drop generated/vendored files
-    // (counted so the header can note them) and mark the knowledge partial while
-    // older history may still be unread.
-    let excludedCount = 0;
+    // Snapshot the walk so far as worker input. Generated/vendored files were
+    // already dropped at collect time, so this is O(1) — the worker's
+    // structured clone (or the sync fallback's pure read) takes the live
+    // array as-is. `partial` marks the knowledge model while older history
+    // may still be unread.
     const snapshot = (status: CoChangeState['status']): AggregateInput => {
-      const excluded = new Set<string>();
-      const commits = collected.map((commit) => ({
-        sha: commit.sha,
-        authoredAt: commit.authoredAt,
-        authorName: commit.authorName,
-        authorEmail: commit.authorEmail,
-        deletions: commit.deletions,
-        files: commit.files.filter((path) => {
-          if (keepFile(path)) return true;
-          excluded.add(path);
-          return false;
-        }),
-      }));
-      excludedCount = excluded.size;
       const partial = status !== 'ready' || (!exhausted && collected.length >= options.cap);
-      return { commits, sizes, focus: options.focus, minSupport: options.minSupport, partial };
+      return { commits: collected, sizes, focus: options.focus, minSupport: options.minSupport, partial };
     };
 
     const stateFrom = (
@@ -1681,7 +1709,7 @@ export class RepoStore {
       knowledge: agg.knowledge,
       forecast: options.focus ? undefined : agg.forecast,
       commitTimes: options.focus ? undefined : collected.map((commit) => commit.authoredAt),
-      excludedFiles: excludedCount || undefined,
+      excludedFiles: excluded.size || undefined,
       message,
     });
 
@@ -1718,7 +1746,7 @@ export class RepoStore {
         const commits = await provider.listCommits(slug, {
           ref,
           path: options.path,
-          perPage: HISTORY_PAGE_SIZE,
+          perPage: WALK_PAGE_SIZE,
           page,
         });
         if (!live()) return;
@@ -1751,25 +1779,34 @@ export class RepoStore {
           if (!live()) return;
           fill(i + 1 + CO_CHANGE_PREFETCH); // keep the request window full
           const commit = commits[i];
+          // Filter generated/vendored files here, once per commit — not in
+          // `snapshot()`, which would redo it over the whole window per pump.
+          // Deletions likewise count only surviving files, so lockfile/build-
+          // output churn can't win "top code eliminator".
+          const files: string[] = [];
+          let deletions = 0;
+          for (const change of changes) {
+            if (keepFile(change.path)) {
+              files.push(change.path);
+              deletions += change.deletions ?? 0;
+            } else {
+              excluded.add(change.path);
+            }
+          }
           collected.push({
             sha: commit.sha,
             authoredAt: commit.authoredAt,
             authorName: commit.authorName,
             authorEmail: commit.authorEmail,
-            files: changes.map((change) => change.path),
-            // Count removed lines only on files that survive the generated/vendored
-            // filter, so lockfile/build-output churn can't win "top code eliminator".
-            deletions: changes.reduce(
-              (sum, change) => sum + (keepFile(change.path) ? (change.deletions ?? 0) : 0),
-              0,
-            ),
+            files,
+            deletions,
           });
           if (collected.length % 5 === 0) void pump('computing');
         }
         // A short page is the end of history — but only when the cap didn't
         // stop us partway through it. If we broke at the cap mid-page, older
         // commits from this same page are still unread: the walk is partial.
-        if (collected.length - before === commits.length && commits.length < HISTORY_PAGE_SIZE) {
+        if (collected.length - before === commits.length && commits.length < WALK_PAGE_SIZE) {
           exhausted = true;
           break;
         }
@@ -1864,14 +1901,14 @@ export class RepoStore {
       // 1. Page the whole history (cheap metadata), then walk it oldest-first.
       const commits: CommitInfo[] = [];
       for (let page = 1; ; page++) {
-        const batch = await provider.listCommits(slug, { ref, perPage: HISTORY_PAGE_SIZE, page });
+        const batch = await provider.listCommits(slug, { ref, perPage: WALK_PAGE_SIZE, page });
         if (!live()) return;
         if (batch.length === 0) break;
         this.cacheCommits(batch);
         commits.push(...batch);
         total = commits.length;
         publish('reading', `Reading history… ${commits.length} commits`);
-        if (batch.length < HISTORY_PAGE_SIZE) break;
+        if (batch.length < WALK_PAGE_SIZE) break;
       }
       if (commits.length === 0) {
         publish('ready', 'No commit history found.');
@@ -2131,10 +2168,20 @@ export class RepoStore {
           looseRemoved.length * looseAdded.length <= SURVIVAL_RENAME_PAIR_LIMIT
         ) {
           const candidates: { added: Resolved; source: Resolved; score: number }[] = [];
+          const sourceTexts = looseRemoved.map((source) => source.oldLines.join('\n'));
           for (const added of looseAdded) {
+            const newCount = added.newLines!.length;
             const newText = added.newLines!.join('\n');
-            for (const source of looseRemoved) {
-              const score = lineSimilarity(source.oldLines.join('\n'), newText);
+            for (let i = 0; i < looseRemoved.length; i++) {
+              const source = looseRemoved[i];
+              // lineSimilarity is bounded by the line-count ratio (shared lines
+              // can't outnumber the shorter file), so a pair whose sizes are too
+              // far apart can never reach the threshold — skip it without paying
+              // for a full Myers diff of two large, unrelated files.
+              const shorter = Math.min(source.oldLines.length, newCount);
+              const longer = Math.max(source.oldLines.length, newCount);
+              if (shorter < longer * SURVIVAL_RENAME_SIMILARITY) continue;
+              const score = lineSimilarity(sourceTexts[i], newText);
               if (score >= SURVIVAL_RENAME_SIMILARITY) candidates.push({ added, source, score });
             }
           }
@@ -2333,6 +2380,10 @@ export class RepoStore {
     let newerLines: readonly string[] | null = null;
     let r = range;
     for (let i = index; ; i++) {
+      if ((i - index) % WALK_YIELD_EVERY === WALK_YIELD_EVERY - 1) {
+        await yieldToBrowser();
+        if (!live()) return;
+      }
       const newer = this._history()[i];
       const older = this._history()[i + 1];
 
@@ -2744,12 +2795,13 @@ export class RepoStore {
   async lastTouch(path: string, ref: string): Promise<CommitInfo | null> {
     const slug = this._slug();
     if (!slug) return null;
+    const seq = this.loadSeq;
     try {
       const commits = await this.registry
         .byId(slug.provider)
         .listCommits(slug, { ref, path, perPage: 1 });
       if (commits.length === 0) return null;
-      this.cacheCommits(commits);
+      if (seq === this.loadSeq) this.cacheCommits(commits);
       return commits[0];
     } catch {
       return null;
