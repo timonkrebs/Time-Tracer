@@ -68,10 +68,12 @@ renames — see the feature list and roadmap below for what's done and what's ne
   **one request** (a window of the viewed ref's history); **+ Add branch** overlays any other
   branch and **← Older commits** pages every loaded branch further back, one request per branch
   each. **Commit sizes** (opt-in — one request per commit, shared with the Insights cache, so an
-  analysed repo sizes for free; automatic for local repositories) fills each dot by **how much
-  the commit changed**: lines added+removed where the provider reports line stats (GitHub), files
-  touched elsewhere, log-scaled against the largest loaded commit — heavy commits read as full
-  discs, docs tweaks as near-empty rings, merges stay solid. Azure DevOps omits parent links from
+  analysed repo sizes for free; automatic for local repositories) fills each dot **from the
+  bottom, gauge-style,** by **how much the commit changed**: lines added+removed where the
+  provider reports line stats (GitHub), files touched elsewhere, log-scaled — heavy commits read
+  as full dots, docs tweaks as near-empty rings. **Merges (double ring) gauge against other
+  merges only**: their first-parent diff spans the whole merged branch, so their fills compare
+  PR against PR while regular commits compare against regular commits. Azure DevOps omits parent links from
   its bulk listing; the explorer says so ("unlinked commits") and offers **Connect commits** to
   fetch them one commit at a time. Clicking a commit opens a detail bar — full message, author,
   copyable sha, `+added −removed · files`, hop-to-parent chips — with **Browse this commit**,

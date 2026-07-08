@@ -1479,12 +1479,13 @@ export class RepoStore {
 
   /**
    * Loads per-commit change sizes for the Branch Explorer's fill levels: for
-   * every non-merge commit in the graph, the lines it changed (files touched
-   * where the provider reports no line stats). One request per commit not
-   * already in the shared per-sha cache, capped at {@link GRAPH_SIZE_CAP} per
-   * run and streamed as fetches land — so the fills appear progressively.
-   * Merges are skipped: their diff against the first parent re-counts the
-   * whole merged branch, which would dwarf every real commit.
+   * every commit in the graph, the lines it changed (files touched where the
+   * provider reports no line stats). One request per commit not already in
+   * the shared per-sha cache, capped at {@link GRAPH_SIZE_CAP} per run and
+   * streamed as fetches land — so the fills appear progressively. Merges are
+   * sized too — their diff against the first parent spans the whole merged
+   * branch, so the UI normalises them against other merges only, never
+   * against regular commits (which they would dwarf).
    *
    * Calling again after more commits were paged in sizes only what is still
    * missing; already-fetched sizes are kept. A failure stops the run (no
@@ -1500,7 +1501,7 @@ export class RepoStore {
     const have = this._graphSizes()?.sizes ?? new Map<string, CommitSizeStats>();
     // Newest first — the commits in view (the graph anchors right) fill first.
     const eligible = graph.commits
-      .filter((commit) => commit.parentShas.length <= 1 && !have.has(commit.sha))
+      .filter((commit) => !have.has(commit.sha))
       .sort((a, b) => Date.parse(b.authoredAt) - Date.parse(a.authoredAt));
     const batch = eligible.slice(0, GRAPH_SIZE_CAP);
     const capped = eligible.length > batch.length;

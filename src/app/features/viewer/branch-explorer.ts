@@ -36,8 +36,8 @@ const PAD_L = 20;
 const PAD_R = 120;
 const PAD_T = 30;
 const PAD_B = 16;
-/** Commit dot radius. */
-const DOT_R = 5;
+/** Commit dot radius (large enough for the fill level to read at a glance). */
+const DOT_R = 6.5;
 
 /** Categorical lane colours (same accents the Insights team graph uses). */
 const LANE_COLORS = [
@@ -51,15 +51,24 @@ const LANE_COLORS = [
   '#22d3ee',
 ];
 
+/** Bottom-up fill level inside a dot: a rect clipped to the ring's inside. */
+interface DotFill {
+  readonly r: number;
+  readonly y: number;
+  readonly height: number;
+}
+
 interface DotView {
   readonly sha: string;
   readonly x: number;
   readonly y: number;
   readonly color: string;
-  /** Merges (and unsized branch tips) render solid; plain commits as rings. */
+  /** Unsized merges and branch tips render solid; everything else as rings. */
   readonly filled: boolean;
-  /** Inner fill-level disc radius (0 = none) — the commit's change size. */
-  readonly innerR: number;
+  /** Merges carry a second outer ring so they stay recognisable when sized. */
+  readonly isMerge: boolean;
+  /** Fill level (change size), rising from the bottom like a gauge. */
+  readonly fill: DotFill | null;
   readonly clipped: boolean;
   readonly labels: readonly LabelChip[];
   readonly title: string;
@@ -106,6 +115,13 @@ interface GraphView {
   readonly pills: readonly PillView[];
   readonly commitCount: number;
   readonly laneCount: number;
+}
+
+/** Normalisation for the fill levels — merges and regular commits separately. */
+interface SizeScale {
+  readonly useLines: boolean;
+  readonly maxPlain: number;
+  readonly maxMerge: number;
 }
 
 /**
@@ -177,7 +193,7 @@ interface GraphView {
       @if (sizesLegend(); as legend) {
         <span
           class="hidden text-[11px] text-zinc-600 lg:block"
-          title="Each dot's inner fill shows how much the commit changed, on a log scale relative to the largest loaded commit. Merges stay solid — their diff spans the whole merged branch."
+          title="Each dot fills from the bottom by how much the commit changed, on a log scale. Merges (double ring) are compared against other merges only — their diff spans the whole merged branch; regular commits against regular commits."
         >
           {{ legend }}
         </span>
@@ -451,6 +467,16 @@ interface GraphView {
                       stroke-width="2"
                     />
                   }
+                  @if (dot.isMerge && !dot.filled) {
+                    <circle
+                      [attr.cx]="dot.x"
+                      [attr.cy]="dot.y"
+                      [attr.r]="dotRadius + 2"
+                      fill="none"
+                      [attr.stroke]="dot.color"
+                      stroke-width="1"
+                    />
+                  }
                   <circle
                     [attr.cx]="dot.x"
                     [attr.cy]="dot.y"
@@ -459,12 +485,17 @@ interface GraphView {
                     [attr.stroke]="dot.color"
                     stroke-width="2"
                   />
-                  @if (dot.innerR > 0) {
-                    <circle
-                      [attr.cx]="dot.x"
-                      [attr.cy]="dot.y"
-                      [attr.r]="dot.innerR"
+                  @if (dot.fill; as fill) {
+                    <clipPath [attr.id]="'dot-fill-' + dot.sha">
+                      <circle [attr.cx]="dot.x" [attr.cy]="dot.y" [attr.r]="fill.r" />
+                    </clipPath>
+                    <rect
+                      [attr.x]="dot.x - fill.r"
+                      [attr.y]="fill.y"
+                      [attr.width]="2 * fill.r"
+                      [attr.height]="fill.height"
                       [attr.fill]="dot.color"
+                      [attr.clip-path]="'url(#dot-fill-' + dot.sha + ')'"
                     />
                   }
                 </g>
@@ -667,13 +698,17 @@ export class BranchExplorer {
   protected readonly sizesMessage = computed(() => this.sizes()?.message ?? null);
 
   /**
-   * Fill-level scale across the loaded window: lines changed where the
-   * provider reports line stats (GitHub), otherwise files touched. Null until
-   * sizes exist.
+   * Fill-level scales across the loaded window: lines changed where the
+   * provider reports line stats (GitHub), otherwise files touched. Merges get
+   * their own pool — their diff against the first parent spans the whole
+   * merged branch, so a merge's fill only means something next to other
+   * merges, and it would dwarf every regular commit in a shared scale.
+   * Null until sizes exist.
    */
-  private readonly sizeScale = computed<{ useLines: boolean; max: number } | null>(() => {
+  private readonly sizeScale = computed<SizeScale | null>(() => {
     const sizes = this.sizes()?.sizes;
     if (!sizes || sizes.size === 0) return null;
+    const commits = this.commitsBySha();
     let useLines = false;
     for (const size of sizes.values()) {
       if (size.additions + size.deletions > 0) {
@@ -681,12 +716,17 @@ export class BranchExplorer {
         break;
       }
     }
-    let max = 0;
-    for (const size of sizes.values()) {
+    let maxPlain = 0;
+    let maxMerge = 0;
+    for (const [sha, size] of sizes) {
       const value = useLines ? size.additions + size.deletions : size.files;
-      if (value > max) max = value;
+      if ((commits.get(sha)?.parentShas.length ?? 0) > 1) {
+        if (value > maxMerge) maxMerge = value;
+      } else if (value > maxPlain) {
+        maxPlain = value;
+      }
     }
-    return max > 0 ? { useLines, max } : null;
+    return maxPlain > 0 || maxMerge > 0 ? { useLines, maxPlain, maxMerge } : null;
   });
 
   protected readonly sizesLegend = computed<string | null>(() => {
@@ -695,14 +735,14 @@ export class BranchExplorer {
     return scale.useLines ? 'dot fill = lines changed' : 'dot fill = files touched';
   });
 
-  /** Commits (non-merge) the next sizing run would fetch. */
+  /** Commits the next sizing run would fetch. */
   private readonly sizesPending = computed(() => {
     const state = this.readyState();
     if (!state) return 0;
     const have = this.sizes()?.sizes;
     let pending = 0;
     for (const commit of state.commits) {
-      if (commit.parentShas.length <= 1 && !have?.has(commit.sha)) pending++;
+      if (!have?.has(commit.sha)) pending++;
     }
     return pending;
   });
@@ -953,27 +993,32 @@ function dotView(
   color: string,
   commits: ReadonlyMap<string, CommitInfo>,
   sizes: ReadonlyMap<string, CommitSizeStats> | null,
-  scale: { useLines: boolean; max: number } | null,
+  scale: SizeScale | null,
 ): DotView {
   const commit = commits.get(node.sha);
   let title = commit
     ? `${shortSha(commit.sha)} · ${commit.summary}\n${commit.authorName} · ${relativeTime(commit.authoredAt)}`
     : shortSha(node.sha);
 
-  // Fill level: the commit's change size on a log scale relative to the
-  // largest sized commit (change sizes are heavy-tailed — one lockfile bump
-  // must not flatten everything else to empty). Merges are never sized.
+  // Fill level: the commit's change size as a bottom-up gauge, log-scaled
+  // (change sizes are heavy-tailed — one lockfile bump must not flatten
+  // everything else to empty). Merges gauge against the largest merge,
+  // regular commits against the largest regular commit.
   const size = sizes?.get(node.sha) ?? null;
-  let innerR = 0;
-  if (size && scale && !node.isMerge) {
+  let fill: DotFill | null = null;
+  if (size && scale) {
+    const max = node.isMerge ? scale.maxMerge : scale.maxPlain;
     const value = scale.useLines ? size.additions + size.deletions : size.files;
-    if (value > 0) {
-      innerR = Math.max(1.2, (DOT_R - 2) * (Math.log1p(value) / Math.log1p(scale.max)));
+    if (value > 0 && max > 0) {
+      const fraction = Math.min(1, Math.max(0.15, Math.log1p(value) / Math.log1p(max)));
+      const r = DOT_R - 1; // inside the ring's stroke
+      fill = { r, y: y - r + (1 - fraction) * 2 * r, height: fraction * 2 * r };
     }
     title +=
       size.additions + size.deletions > 0
         ? `\n+${size.additions} −${size.deletions} · ${size.files} files`
         : `\n${size.files} ${size.files === 1 ? 'file' : 'files'}`;
+    if (node.isMerge) title += ' (whole merge)';
   }
 
   const labels: LabelChip[] = node.labels.map((text, index) => {
@@ -990,9 +1035,11 @@ function dotView(
     x,
     y,
     color,
-    // A sized tip trades its solid disc for a fill level; the chip still marks it.
-    filled: node.isMerge || (node.labels.length > 0 && !size),
-    innerR,
+    // Sized merges and tips trade their solid disc for a gauge; the double
+    // ring (merges) and name chip (tips) keep them recognisable.
+    filled: !size && (node.isMerge || node.labels.length > 0),
+    isMerge: node.isMerge,
+    fill,
     clipped: node.clipped,
     labels,
     title,

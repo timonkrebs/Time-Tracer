@@ -1832,7 +1832,7 @@ describe('RepoStore', () => {
       expect(store.branchGraph()).toBeNull();
     });
 
-    it('sizes non-merge commits and skips merges', async () => {
+    it('sizes every commit, merges included', async () => {
       await store.loadRepo(slug);
       answer({ main: [[commit('m', ['c2', 'f2']), commit('c2', ['c1']), commit('c1')]] });
       await store.loadBranchGraph();
@@ -1845,9 +1845,9 @@ describe('RepoStore', () => {
       expect(sizes?.status).toBe('ready');
       expect(sizes?.sizes.get('c2')).toEqual({ additions: 5, deletions: 2, files: 1 });
       expect(sizes?.sizes.get('c1')).toEqual({ additions: 5, deletions: 2, files: 1 });
-      // The merge commit is never sized — its diff spans the whole merged branch.
-      expect(sizes?.sizes.has('m')).toBe(false);
-      expect(sizes?.scanned).toBe(2);
+      // Merges are sized too — the UI gauges them against other merges only.
+      expect(sizes?.sizes.get('m')).toEqual({ additions: 5, deletions: 2, files: 1 });
+      expect(sizes?.scanned).toBe(3);
     });
 
     it('sizes only what is still missing on a second run', async () => {

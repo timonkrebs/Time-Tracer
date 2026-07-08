@@ -54,17 +54,18 @@ const BRANCHES: BranchesState = {
   truncated: false,
 };
 
-/** Change sizes for MERGE_STATE's non-merge commits (m is never sized). */
+/** Change sizes for MERGE_STATE (the merge m gauges against other merges). */
 const SIZES: GraphSizesState = {
   status: 'ready',
   sizes: new Map([
+    ['m', { additions: 480, deletions: 120, files: 12 }],
     ['c1', { additions: 100, deletions: 50, files: 3 }],
     ['c2', { additions: 2, deletions: 1, files: 1 }],
     ['f1', { additions: 10, deletions: 0, files: 2 }],
     ['f2', { additions: 0, deletions: 0, files: 0 }],
   ]),
-  scanned: 4,
-  total: 4,
+  scanned: 5,
+  total: 5,
   capped: false,
 };
 
@@ -114,16 +115,16 @@ describe('BranchExplorer', () => {
     return fixture.nativeElement as HTMLElement;
   }
 
-  /** Commit dots (groups holding a circle); pills hold a rect instead. */
+  /** Commit dots vs collapsed-run pills, told apart by their labels. */
   function dots(): SVGGElement[] {
-    return Array.from(root().querySelectorAll('svg g[role="button"]')).filter((g) =>
-      g.querySelector('circle'),
+    return Array.from(root().querySelectorAll('svg g[role="button"]')).filter(
+      (g) => !(g as SVGGElement).getAttribute('aria-label')?.includes('click to expand'),
     ) as SVGGElement[];
   }
 
   function pills(): SVGGElement[] {
     return Array.from(root().querySelectorAll('svg g[role="button"]')).filter((g) =>
-      g.querySelector('rect'),
+      (g as SVGGElement).getAttribute('aria-label')?.includes('click to expand'),
     ) as SVGGElement[];
   }
 
@@ -235,12 +236,16 @@ describe('BranchExplorer', () => {
     fixture.componentRef.setInput('sizes', SIZES);
     await fixture.whenStable();
 
-    // c1 (the largest change) carries an inner fill disc inside its ring.
+    // c1 (the largest regular change) carries a bottom-up fill gauge.
     const c1 = dots().find((g) => g.getAttribute('aria-label')?.startsWith('c1 ·'))!;
-    expect(c1.querySelectorAll('circle').length).toBe(2);
+    expect(c1.querySelector('rect')).toBeTruthy();
     // f2 changed nothing — an empty ring.
     const f2 = dots().find((g) => g.getAttribute('aria-label')?.startsWith('f2 ·'))!;
-    expect(f2.querySelectorAll('circle').length).toBe(1);
+    expect(f2.querySelector('rect')).toBeNull();
+    // The merge gauges against other merges and keeps a marker double ring.
+    const m = dots().find((g) => g.getAttribute('aria-label')?.startsWith('m ·'))!;
+    expect(m.querySelector('rect')).toBeTruthy();
+    expect(m.querySelectorAll('circle').length).toBe(3); // double ring + ring + clip
     expect(root().textContent).toContain('dot fill = lines changed');
   });
 
@@ -252,7 +257,7 @@ describe('BranchExplorer', () => {
       scanned: 2,
     } satisfies GraphSizesState);
     await fixture.whenStable();
-    expect(root().textContent).toContain('Sizing 2/4…');
+    expect(root().textContent).toContain('Sizing 2/5…');
 
     fixture.componentRef.setInput('sizes', SIZES);
     const c1 = dots().find((g) => g.getAttribute('aria-label')?.startsWith('c1 ·'))!;
