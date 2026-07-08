@@ -58,6 +58,12 @@ const HISTORY_PAGE_SIZE = 30;
  * its page numbers are cached and continued across loads.
  */
 const WALK_PAGE_SIZE = 100;
+/**
+ * Commits fetched per branch page for the Branch Explorer graph — one request
+ * per page, so the initial graph costs a single request and every "load older"
+ * or added branch costs one more per branch.
+ */
+export const GRAPH_PAGE_SIZE = 100;
 /** Files the creating commit deleted that get a content comparison. */
 const RENAME_DELETED_CAP = 8;
 /** Files compared per hunk-origin search, by scope. */
@@ -119,6 +125,26 @@ export type BranchesState =
       readonly names: readonly string[];
       /** True when the repository holds more branches than the provider cap. */
       readonly truncated: boolean;
+    }
+  | { readonly status: 'error'; readonly message: string };
+
+/**
+ * Async state of the Branch Explorer's commit graph: a window of recent
+ * commits per loaded branch, merged into one DAG by sha. `loading-more` keeps
+ * the current graph on screen while another branch or an older page arrives.
+ */
+export type BranchGraphState =
+  | { readonly status: 'loading' }
+  | {
+      readonly status: 'loading-more' | 'ready';
+      /** Loaded commits across every loaded branch, deduped by sha. */
+      readonly commits: readonly CommitInfo[];
+      /** Loaded branch tips in load order (the viewed ref first): name → head sha. */
+      readonly heads: ReadonlyMap<string, string>;
+      /** True when at least one loaded branch has older commits to page in. */
+      readonly hasMore: boolean;
+      /** A partial failure (e.g. one branch failed); the graph stays usable. */
+      readonly message?: string;
     }
   | { readonly status: 'error'; readonly message: string };
 
@@ -445,6 +471,17 @@ export class RepoStore {
   private readonly _historyHasMore = signal(false);
   private historyPage = 1;
 
+  /** The Branch Explorer's commit graph, when opened. */
+  private readonly _branchGraph = signal<BranchGraphState | null>(null);
+  /** Bumped to cancel a superseded or cleared graph load. */
+  private graphRun = 0;
+  /** Graph paging per loaded branch: last fetched page + whether more exist. */
+  private readonly graphPages = new Map<string, { page: number; hasMore: boolean }>();
+  /** Graph commits by sha, in discovery order (the layout dedupes anyway). */
+  private readonly graphCommits = new Map<string, CommitInfo>();
+  /** Loaded branch tips in load order (the viewed ref first). */
+  private readonly graphHeads = new Map<string, string>();
+
   /** The active per-hunk history filter, if any (one at a time). */
   private readonly _lineTrace = signal<LineTraceState | null>(null);
   /** Bumped to cancel a superseded or cleared trace walk. */
@@ -509,6 +546,8 @@ export class RepoStore {
   readonly historyStatus = this._historyStatus.asReadonly();
   readonly historyError = this._historyError.asReadonly();
   readonly historyHasMore = this._historyHasMore.asReadonly();
+  /** Branch Explorer graph; null until {@link loadBranchGraph} runs. */
+  readonly branchGraph = this._branchGraph.asReadonly();
   readonly lineTrace = this._lineTrace.asReadonly();
   readonly traceOrigins = this._traceOrigins.asReadonly();
   readonly folderOwnership = this._folderOwnership.asReadonly();
@@ -712,6 +751,7 @@ export class RepoStore {
     this.clearFolderOwnership();
     this.clearCoChange();
     this.clearSurvival();
+    this.clearBranchGraph();
     this._phase.set('metadata');
 
     try {
@@ -1302,6 +1342,124 @@ export class RepoStore {
     void this.loadHistory(path);
   }
 
+  /**
+   * Loads the first window of the viewed ref's history for the Branch
+   * Explorer — a single request. No-ops when a graph is already loaded or
+   * loading; calling again after an error retries from scratch.
+   */
+  async loadBranchGraph(): Promise<void> {
+    const slug = this._slug();
+    const ref = this.ref();
+    if (!slug || !ref || this._phase() !== 'ready') return;
+    const existing = this._branchGraph();
+    if (existing && existing.status !== 'error') return;
+
+    const run = ++this.graphRun;
+    this.graphPages.clear();
+    this.graphCommits.clear();
+    this.graphHeads.clear();
+    this._branchGraph.set({ status: 'loading' });
+    try {
+      const commits = await this.registry
+        .byId(slug.provider)
+        .listCommits(slug, { ref, perPage: GRAPH_PAGE_SIZE });
+      if (run !== this.graphRun) return;
+      this.mergeGraphPage(ref, commits, 1);
+      this.publishGraph('ready');
+    } catch (error) {
+      if (run !== this.graphRun) return;
+      this._branchGraph.set({ status: 'error', message: toRepoProviderError(error).message });
+    }
+  }
+
+  /**
+   * Adds another branch's recent history to the Branch Explorer graph (one
+   * request). Where the branch shares commits with what is already loaded,
+   * the histories join into one DAG; a failure keeps the current graph and
+   * surfaces the message on it.
+   */
+  async addGraphBranch(name: string): Promise<void> {
+    const slug = this._slug();
+    if (!slug || this._branchGraph()?.status !== 'ready' || this.graphHeads.has(name)) return;
+
+    const run = this.graphRun;
+    this.publishGraph('loading-more');
+    try {
+      const commits = await this.registry
+        .byId(slug.provider)
+        .listCommits(slug, { ref: name, perPage: GRAPH_PAGE_SIZE });
+      if (run !== this.graphRun) return;
+      this.mergeGraphPage(name, commits, 1);
+      this.publishGraph('ready');
+    } catch (error) {
+      if (run !== this.graphRun) return;
+      this.publishGraph('ready', `${name}: ${toRepoProviderError(error).message}`);
+    }
+  }
+
+  /**
+   * Pages one more window of older commits into every loaded graph branch
+   * that has more — one request per such branch. A mid-way failure keeps
+   * whatever merged and surfaces the message on the graph.
+   */
+  async loadMoreBranchGraph(): Promise<void> {
+    const slug = this._slug();
+    if (!slug || this._branchGraph()?.status !== 'ready') return;
+    const pending = [...this.graphPages.entries()].filter(([, paging]) => paging.hasMore);
+    if (pending.length === 0) return;
+
+    const run = this.graphRun;
+    this.publishGraph('loading-more');
+    const provider = this.registry.byId(slug.provider);
+    let failure: string | undefined;
+    for (const [branch, paging] of pending) {
+      try {
+        const commits = await provider.listCommits(slug, {
+          ref: branch,
+          perPage: GRAPH_PAGE_SIZE,
+          page: paging.page + 1,
+        });
+        if (run !== this.graphRun) return;
+        this.mergeGraphPage(branch, commits, paging.page + 1);
+      } catch (error) {
+        if (run !== this.graphRun) return;
+        failure = toRepoProviderError(error).message;
+        break;
+      }
+    }
+    this.publishGraph('ready', failure);
+  }
+
+  /** Drops the Branch Explorer graph and cancels any load in flight. */
+  clearBranchGraph(): void {
+    this.graphRun++;
+    this._branchGraph.set(null);
+    this.graphPages.clear();
+    this.graphCommits.clear();
+    this.graphHeads.clear();
+  }
+
+  /** Folds one fetched page into the graph's DAG and paging bookkeeping. */
+  private mergeGraphPage(branch: string, commits: readonly CommitInfo[], page: number): void {
+    for (const commit of commits) {
+      if (!this.graphCommits.has(commit.sha)) this.graphCommits.set(commit.sha, commit);
+    }
+    this.cacheCommits(commits);
+    // The first page's first commit is the branch tip (providers list newest first).
+    if (page === 1 && commits.length > 0) this.graphHeads.set(branch, commits[0].sha);
+    this.graphPages.set(branch, { page, hasMore: commits.length === GRAPH_PAGE_SIZE });
+  }
+
+  private publishGraph(status: 'ready' | 'loading-more', message?: string): void {
+    this._branchGraph.set({
+      status,
+      commits: [...this.graphCommits.values()],
+      heads: new Map(this.graphHeads),
+      hasMore: [...this.graphPages.values()].some((paging) => paging.hasMore),
+      ...(message ? { message } : {}),
+    });
+  }
+
   private async historyFor(
     path: string,
   ): Promise<{ commits: readonly CommitInfo[]; hasMore: boolean; page: number } | null> {
@@ -1689,7 +1847,13 @@ export class RepoStore {
     // may still be unread.
     const snapshot = (status: CoChangeState['status']): AggregateInput => {
       const partial = status !== 'ready' || (!exhausted && collected.length >= options.cap);
-      return { commits: collected, sizes, focus: options.focus, minSupport: options.minSupport, partial };
+      return {
+        commits: collected,
+        sizes,
+        focus: options.focus,
+        minSupport: options.minSupport,
+        partial,
+      };
     };
 
     const stateFrom = (

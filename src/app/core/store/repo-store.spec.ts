@@ -1721,6 +1721,118 @@ describe('RepoStore', () => {
     });
   });
 
+  describe('branch graph (loadBranchGraph)', () => {
+    /** listCommits stub answering per requested ref/page. */
+    function answer(pages: Record<string, CommitInfo[][]>): void {
+      provider.listCommitsResult = () => {
+        const options = provider.listCommitsCalls.at(-1)!;
+        const branch = pages[options.ref ?? ''] ?? [];
+        return Promise.resolve(branch[(options.page ?? 1) - 1] ?? []);
+      };
+    }
+
+    it('loads one page of the viewed ref and records its tip', async () => {
+      await store.loadRepo(slug);
+      answer({ main: [[commit('m2', ['m1']), commit('m1')]] });
+
+      await store.loadBranchGraph();
+
+      const graph = store.branchGraph();
+      expect(graph?.status).toBe('ready');
+      if (graph?.status !== 'ready') return;
+      expect(graph.commits.map((c) => c.sha)).toEqual(['m2', 'm1']);
+      expect([...graph.heads.entries()]).toEqual([['main', 'm2']]);
+      expect(graph.hasMore).toBe(false);
+      expect(provider.listCommitsCalls).toEqual([{ ref: 'main', perPage: 100 }]);
+    });
+
+    it('no-ops when a graph is already loaded', async () => {
+      await store.loadRepo(slug);
+      answer({ main: [[commit('m1')]] });
+      await store.loadBranchGraph();
+      await store.loadBranchGraph();
+
+      expect(provider.listCommitsCalls.length).toBe(1);
+    });
+
+    it('reports more history when a full page arrives, and pages it in', async () => {
+      await store.loadRepo(slug);
+      const first = Array.from({ length: 100 }, (_, i) =>
+        commit(`m${100 - i}`, 100 - i > 1 ? [`m${100 - i - 1}`] : []),
+      );
+      answer({ main: [first, [commit('m0')]] });
+
+      await store.loadBranchGraph();
+      let graph = store.branchGraph();
+      expect(graph?.status === 'ready' && graph.hasMore).toBe(true);
+
+      await store.loadMoreBranchGraph();
+      graph = store.branchGraph();
+      expect(graph?.status).toBe('ready');
+      if (graph?.status !== 'ready') return;
+      expect(graph.commits.length).toBe(101);
+      expect(graph.hasMore).toBe(false);
+      expect(provider.listCommitsCalls.at(-1)).toEqual({ ref: 'main', perPage: 100, page: 2 });
+    });
+
+    it('merges an added branch into one deduped DAG', async () => {
+      await store.loadRepo(slug);
+      answer({
+        main: [[commit('m2', ['m1']), commit('m1')]],
+        dev: [[commit('d1', ['m1']), commit('m1')]],
+      });
+
+      await store.loadBranchGraph();
+      await store.addGraphBranch('dev');
+
+      const graph = store.branchGraph();
+      expect(graph?.status).toBe('ready');
+      if (graph?.status !== 'ready') return;
+      expect(graph.commits.map((c) => c.sha).sort()).toEqual(['d1', 'm1', 'm2']);
+      expect([...graph.heads.entries()]).toEqual([
+        ['main', 'm2'],
+        ['dev', 'd1'],
+      ]);
+    });
+
+    it('keeps the graph usable when an added branch fails', async () => {
+      await store.loadRepo(slug);
+      answer({ main: [[commit('m1')]] });
+      await store.loadBranchGraph();
+
+      provider.listCommitsResult = () => Promise.reject(new RepoProviderError('nope', 'not-found'));
+      await store.addGraphBranch('ghost');
+
+      const graph = store.branchGraph();
+      expect(graph?.status).toBe('ready');
+      if (graph?.status !== 'ready') return;
+      expect(graph.commits.map((c) => c.sha)).toEqual(['m1']);
+      expect(graph.message).toContain('ghost');
+    });
+
+    it('surfaces a failed initial load and retries on the next call', async () => {
+      await store.loadRepo(slug);
+      provider.listCommitsResult = () =>
+        Promise.reject(new RepoProviderError('rate limited', 'rate-limited'));
+      await store.loadBranchGraph();
+      expect(store.branchGraph()).toEqual({ status: 'error', message: 'rate limited' });
+
+      answer({ main: [[commit('m1')]] });
+      await store.loadBranchGraph();
+      expect(store.branchGraph()?.status).toBe('ready');
+    });
+
+    it('is dropped when another ref is loaded', async () => {
+      await store.loadRepo(slug);
+      answer({ main: [[commit('m1')]] });
+      await store.loadBranchGraph();
+      expect(store.branchGraph()).not.toBeNull();
+
+      await store.loadRepo(slug, 'dev');
+      expect(store.branchGraph()).toBeNull();
+    });
+  });
+
   describe('co-change (computeCoChange)', () => {
     beforeEach(async () => {
       await store.loadRepo(slug);
@@ -1869,9 +1981,7 @@ describe('RepoStore', () => {
       // Every page is full, so the walk fills the cap without ever seeing the end.
       provider.listCommitsResult = () => {
         const { perPage = 30, page = 1 } = provider.listCommitsCalls.at(-1)!;
-        return Promise.resolve(
-          Array.from({ length: perPage }, (_, i) => commit(`p${page}c${i}`)),
-        );
+        return Promise.resolve(Array.from({ length: perPage }, (_, i) => commit(`p${page}c${i}`)));
       };
       provider.commitFilesResult = () =>
         Promise.resolve([{ path: 'src/app.ts', status: 'modified' }]);

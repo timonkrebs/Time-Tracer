@@ -54,9 +54,19 @@ renames — see the feature list and roadmap below for what's done and what's ne
   run-aware scoring and the matched characters highlighted; arrow keys move, Enter opens, Escape
   dismisses. It searches the tree already in memory, so it costs no extra API requests.
 - **Keyboard shortcuts**: drive the viewer without the mouse — `←`/`→` step to the older/newer
-  commit, `b` toggles blame, `h` history, `o` owners, `t` the file tree, `Ctrl/⌘ P` opens the
-  finder, and `Esc` closes the side panels. Shortcuts stand down while a field is focused or the
-  finder is open, and the relevant buttons show their key in the tooltip.
+  commit, `b` toggles blame, `h` history, `o` owners, `t` the file tree, `g` the Branch Explorer,
+  `Ctrl/⌘ P` opens the finder, and `Esc` closes the side panels. Shortcuts stand down while a
+  field is focused or the finder is open, and the relevant buttons show their key in the tooltip.
+- **Branch Explorer** (the merge-icon toggle in the header, `g`, deep-linked via `?graph=1`) — a
+  horizontal commit graph in the spirit of [gmaster](https://gmaster.io)'s branch explorer. Every
+  branch is a lane with the branch name pinned at the left while you scroll; commits flow left →
+  right; each merged feature branch gets its own unnamed lane (its first-parent chain), so merges
+  read as curves that fork off and rejoin their target. Long linear runs collapse into an
+  "N commits" pill that expands on click. The initial graph costs **one request** (a window of
+  the viewed ref's history); **+ Add branch** overlays any other branch and **← Older commits**
+  pages every loaded branch further back, one request per branch each. Clicking a commit opens a
+  detail bar — full message, author, copyable sha, hop-to-parent chips — with **Browse this
+  commit**, which time-travels the whole file tree to that sha.
 - **Per-file commit history**: a History panel lists the commits that touched the selected file
   (paginated — page through older commits or **Load all** at once), with author and relative date.
   Its open/closed state is remembered, so it can stay open permanently across files and sessions.
@@ -332,3 +342,8 @@ npm run build      # production build into dist/
     half-life against Bernhardsson's "half-life of code" benchmark (≈6-year half-life, ≈40% alive at
     10 years) — all from the same commit walk; next: a contributor leaderboard with a bus-factor
     "what if they left?" simulation, and a hierarchically zoomable treemap.
+23. ~~**Branch Explorer** — a horizontal, gmaster-style commit graph: branches as lanes, merges as
+    curves, collapsible linear runs.~~ ✅ Done (`core/util/branch-graph.ts` lays out first-parent
+    lanes and merged side branches from one `listCommits` window per branch; `?graph=1` /
+    the `g` shortcut, add branches and page older history on demand, time-travel the tree from
+    any commit).
