@@ -5,6 +5,7 @@ import {
   CommitNode,
   GraphCommit,
   layoutBranchGraph,
+  mergedBranchName,
 } from './branch-graph';
 
 /** Builds a commit with an author date derived from a numeric tick. */
@@ -33,7 +34,9 @@ describe('layoutBranchGraph', () => {
       new Map([['main', 'c3']]),
     );
 
-    expect(graph.lanes).toEqual([{ index: 0, label: 'main', headSha: 'c3', size: 3 }]);
+    expect(graph.lanes).toEqual([
+      { index: 0, label: 'main', inferred: false, headSha: 'c3', size: 3 },
+    ]);
     expect(graph.columnCount).toBe(3);
     expect(graph.commitCount).toBe(3);
     expect(commitNode(graph, 'c1').column).toBe(0);
@@ -60,8 +63,20 @@ describe('layoutBranchGraph', () => {
     );
 
     expect(graph.lanes.length).toBe(2);
-    expect(graph.lanes[0]).toEqual({ index: 0, label: 'main', headSha: 'm', size: 3 });
-    expect(graph.lanes[1]).toEqual({ index: 1, label: null, headSha: 'f2', size: 2 });
+    expect(graph.lanes[0]).toEqual({
+      index: 0,
+      label: 'main',
+      inferred: false,
+      headSha: 'm',
+      size: 3,
+    });
+    expect(graph.lanes[1]).toEqual({
+      index: 1,
+      label: null,
+      inferred: true,
+      headSha: 'f2',
+      size: 2,
+    });
 
     const m = commitNode(graph, 'm');
     expect(m.isMerge).toBe(true);
@@ -255,6 +270,20 @@ describe('layoutBranchGraph', () => {
     expect(graph.columnCount).toBe(2);
   });
 
+  it('recovers merged branch names from the summaries the hosts write', () => {
+    expect(mergedBranchName('Merge pull request #56 from timonkrebs/claude/branch-explorer')).toBe(
+      'claude/branch-explorer',
+    );
+    expect(mergedBranchName("Merge branch 'feature/foo' into main")).toBe('feature/foo');
+    expect(mergedBranchName('Merge branch feature/foo')).toBe('feature/foo');
+    expect(mergedBranchName("Merge remote-tracking branch 'origin/fix/bar'")).toBe('fix/bar');
+    expect(mergedBranchName('Merged in hotfix/baz (pull request #7)')).toBe('hotfix/baz');
+    // Azure DevOps records no branch name; ordinary commits are not merges.
+    expect(mergedBranchName('Merged PR 123: fix the thing')).toBeNull();
+    expect(mergedBranchName('Add a feature')).toBeNull();
+    expect(mergedBranchName(undefined)).toBeNull();
+  });
+
   it('breaks equal timestamps deterministically', () => {
     const a = layoutBranchGraph([commit('b', [], 1), commit('a', [], 1)], new Map([['main', 'b']]));
     const b = layoutBranchGraph([commit('a', [], 1), commit('b', [], 1)], new Map([['main', 'b']]));
@@ -271,6 +300,21 @@ describe('layoutBranchGraph', () => {
     );
     expect(commitNode(graph, 'parent').column).toBe(0);
     expect(commitNode(graph, 'child').column).toBe(1);
+  });
+
+  it('names a merged side branch from the merge commit message', () => {
+    const graph = layoutBranchGraph(
+      [
+        { ...commit('m', ['c2', 'f2'], 5), summary: 'Merge pull request #9 from acme/feature/x' },
+        commit('f2', ['f1'], 4),
+        commit('c2', ['c1'], 3),
+        commit('f1', ['c1'], 2),
+        commit('c1', [], 1),
+      ],
+      new Map([['main', 'm']]),
+    );
+
+    expect(graph.lanes[1]).toMatchObject({ label: 'feature/x', inferred: true, headSha: 'f2' });
   });
 
   it('returns an empty graph for no commits', () => {

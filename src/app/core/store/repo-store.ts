@@ -64,6 +64,13 @@ const WALK_PAGE_SIZE = 100;
  * or added branch costs one more per branch.
  */
 export const GRAPH_PAGE_SIZE = 100;
+/**
+ * Commits sized per "commit sizes" run of the Branch Explorer — one request
+ * per commit not already in the shared per-sha cache, so the fill levels are
+ * opt-in on hosted repositories (like the Insights walks, which share the
+ * same cache — a repo analysed there sizes its graph for free).
+ */
+export const GRAPH_SIZE_CAP = 100;
 /** Files the creating commit deleted that get a content comparison. */
 const RENAME_DELETED_CAP = 8;
 /** Files compared per hunk-origin search, by scope. */
@@ -143,10 +150,44 @@ export type BranchGraphState =
       readonly heads: ReadonlyMap<string, string>;
       /** True when at least one loaded branch has older commits to page in. */
       readonly hasMore: boolean;
+      /**
+       * True when the provider's bulk listing did not report commit parents
+       * (Azure DevOps) — the graph shows dots without connections until
+       * {@link RepoStore.resolveGraphParents} fetches them one commit at a time.
+       */
+      readonly parentsMissing?: boolean;
       /** A partial failure (e.g. one branch failed); the graph stays usable. */
       readonly message?: string;
     }
   | { readonly status: 'error'; readonly message: string };
+
+/** How much one commit changed — the Branch Explorer's dot fill level. */
+export interface CommitSizeStats {
+  /** Lines added, when the provider reports line stats (GitHub does). */
+  readonly additions: number;
+  /** Lines removed, when the provider reports line stats. */
+  readonly deletions: number;
+  /** Files the commit touched — every provider reports this. */
+  readonly files: number;
+}
+
+/**
+ * Async state of the Branch Explorer's per-commit change sizes. Stats stream
+ * into `sizes` as the per-commit fetches land; the map survives later runs
+ * (paging in older commits sizes only what is still missing).
+ */
+export interface GraphSizesState {
+  readonly status: 'sizing' | 'ready';
+  /** Stats by commit sha, streaming in while sizing. */
+  readonly sizes: ReadonlyMap<string, CommitSizeStats>;
+  /** Commits fetched so far / to fetch in this run. */
+  readonly scanned: number;
+  readonly total: number;
+  /** True when this run left eligible commits unsized (the per-run cap). */
+  readonly capped: boolean;
+  /** A failure that stopped the run early; fetched sizes stay usable. */
+  readonly message?: string;
+}
 
 /** Async state of the changes view for one `<commit, path>` pair. */
 export type DiffState =
@@ -481,6 +522,10 @@ export class RepoStore {
   private readonly graphCommits = new Map<string, CommitInfo>();
   /** Loaded branch tips in load order (the viewed ref first). */
   private readonly graphHeads = new Map<string, string>();
+  /** Per-commit change sizes for the graph's fill levels, when requested. */
+  private readonly _graphSizes = signal<GraphSizesState | null>(null);
+  /** Bumped to cancel a superseded or cleared sizing run. */
+  private graphSizesRun = 0;
 
   /** The active per-hunk history filter, if any (one at a time). */
   private readonly _lineTrace = signal<LineTraceState | null>(null);
@@ -548,6 +593,8 @@ export class RepoStore {
   readonly historyHasMore = this._historyHasMore.asReadonly();
   /** Branch Explorer graph; null until {@link loadBranchGraph} runs. */
   readonly branchGraph = this._branchGraph.asReadonly();
+  /** Per-commit change sizes; null until {@link loadGraphSizes} runs. */
+  readonly graphSizes = this._graphSizes.asReadonly();
   readonly lineTrace = this._lineTrace.asReadonly();
   readonly traceOrigins = this._traceOrigins.asReadonly();
   readonly folderOwnership = this._folderOwnership.asReadonly();
@@ -1423,17 +1470,96 @@ export class RepoStore {
         this.mergeGraphPage(branch, commits, paging.page + 1);
       } catch (error) {
         if (run !== this.graphRun) return;
-        failure = toRepoProviderError(error).message;
+        failure = `${branch}: ${toRepoProviderError(error).message}`;
         break;
       }
     }
     this.publishGraph('ready', failure);
   }
 
+  /**
+   * Loads per-commit change sizes for the Branch Explorer's fill levels: for
+   * every non-merge commit in the graph, the lines it changed (files touched
+   * where the provider reports no line stats). One request per commit not
+   * already in the shared per-sha cache, capped at {@link GRAPH_SIZE_CAP} per
+   * run and streamed as fetches land — so the fills appear progressively.
+   * Merges are skipped: their diff against the first parent re-counts the
+   * whole merged branch, which would dwarf every real commit.
+   *
+   * Calling again after more commits were paged in sizes only what is still
+   * missing; already-fetched sizes are kept. A failure stops the run (no
+   * point burning a rate limit on requests that will keep failing) and is
+   * surfaced on the state while everything fetched so far stays usable.
+   */
+  async loadGraphSizes(): Promise<void> {
+    const slug = this._slug();
+    const graph = this._branchGraph();
+    if (!slug || !graph || graph.status === 'loading' || graph.status === 'error') return;
+    if (this._graphSizes()?.status === 'sizing') return;
+
+    const have = this._graphSizes()?.sizes ?? new Map<string, CommitSizeStats>();
+    // Newest first — the commits in view (the graph anchors right) fill first.
+    const eligible = graph.commits
+      .filter((commit) => commit.parentShas.length <= 1 && !have.has(commit.sha))
+      .sort((a, b) => Date.parse(b.authoredAt) - Date.parse(a.authoredAt));
+    const batch = eligible.slice(0, GRAPH_SIZE_CAP);
+    const capped = eligible.length > batch.length;
+
+    const run = ++this.graphSizesRun;
+    const sizes = new Map(have);
+    let scanned = 0;
+    let message: string | undefined;
+    const publish = (status: 'sizing' | 'ready'): void => {
+      this._graphSizes.set({
+        status,
+        sizes: new Map(sizes),
+        scanned,
+        total: batch.length,
+        capped,
+        ...(message ? { message } : {}),
+      });
+    };
+    if (batch.length === 0) {
+      publish('ready');
+      return;
+    }
+    publish('sizing');
+
+    let index = 0;
+    const worker = async (): Promise<void> => {
+      while (index < batch.length && run === this.graphSizesRun && message === undefined) {
+        const commit = batch[index++];
+        try {
+          const files = await this.commitFilesFor(slug, commit.sha);
+          if (run !== this.graphSizesRun) return;
+          let additions = 0;
+          let deletions = 0;
+          for (const file of files) {
+            additions += file.additions ?? 0;
+            deletions += file.deletions ?? 0;
+          }
+          sizes.set(commit.sha, { additions, deletions, files: files.length });
+          scanned++;
+          publish('sizing');
+        } catch (error) {
+          if (run !== this.graphSizesRun) return;
+          message = toRepoProviderError(error).message;
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(CO_CHANGE_PREFETCH, batch.length) }, () => worker()),
+    );
+    if (run !== this.graphSizesRun) return;
+    publish('ready');
+  }
+
   /** Drops the Branch Explorer graph and cancels any load in flight. */
   clearBranchGraph(): void {
     this.graphRun++;
+    this.graphSizesRun++;
     this._branchGraph.set(null);
+    this._graphSizes.set(null);
     this.graphPages.clear();
     this.graphCommits.clear();
     this.graphHeads.clear();
@@ -1451,13 +1577,63 @@ export class RepoStore {
   }
 
   private publishGraph(status: 'ready' | 'loading-more', message?: string): void {
+    const commits = [...this.graphCommits.values()];
+    // A bulk listing that reports no parents (Azure DevOps) leaves most commits
+    // parentless — a real history has roughly one root. Well above that share,
+    // the data is missing rather than the repository being all roots.
+    const parentless = commits.reduce((n, c) => n + (c.parentShas.length === 0 ? 1 : 0), 0);
+    const parentsMissing = commits.length > 1 && parentless * 2 > commits.length;
     this._branchGraph.set({
       status,
-      commits: [...this.graphCommits.values()],
+      commits,
       heads: new Map(this.graphHeads),
       hasMore: [...this.graphPages.values()].some((paging) => paging.hasMore),
+      ...(parentsMissing ? { parentsMissing } : {}),
       ...(message ? { message } : {}),
     });
+  }
+
+  /**
+   * Fills in the parents of graph commits the bulk listing left parentless
+   * (Azure DevOps reports parents only on single-commit reads) — one request
+   * per commit, newest first, capped at {@link GRAPH_PAGE_SIZE} per run, so
+   * the connections appear without this being an automatic request storm.
+   * A failure stops the run and is surfaced on the graph; everything resolved
+   * so far keeps its edges.
+   */
+  async resolveGraphParents(): Promise<void> {
+    const slug = this._slug();
+    if (!slug || this._branchGraph()?.status !== 'ready') return;
+    const targets = [...this.graphCommits.values()]
+      .filter((commit) => commit.parentShas.length === 0)
+      .sort((a, b) => Date.parse(b.authoredAt) - Date.parse(a.authoredAt))
+      .slice(0, GRAPH_PAGE_SIZE);
+    if (targets.length === 0) return;
+
+    const run = this.graphRun;
+    this.publishGraph('loading-more');
+    const provider = this.registry.byId(slug.provider);
+    let failure: string | undefined;
+    let index = 0;
+    const worker = async (): Promise<void> => {
+      while (index < targets.length && run === this.graphRun && failure === undefined) {
+        const target = targets[index++];
+        try {
+          const full = await provider.getCommit(slug, target.sha);
+          if (run !== this.graphRun) return;
+          this.graphCommits.set(target.sha, full);
+          this.cacheCommits([full]);
+        } catch (error) {
+          if (run !== this.graphRun) return;
+          failure = toRepoProviderError(error).message;
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(CO_CHANGE_PREFETCH, targets.length) }, () => worker()),
+    );
+    if (run !== this.graphRun) return;
+    this.publishGraph('ready', failure);
   }
 
   private async historyFor(

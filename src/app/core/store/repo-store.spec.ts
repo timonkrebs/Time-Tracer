@@ -1831,6 +1831,84 @@ describe('RepoStore', () => {
       await store.loadRepo(slug, 'dev');
       expect(store.branchGraph()).toBeNull();
     });
+
+    it('sizes non-merge commits and skips merges', async () => {
+      await store.loadRepo(slug);
+      answer({ main: [[commit('m', ['c2', 'f2']), commit('c2', ['c1']), commit('c1')]] });
+      await store.loadBranchGraph();
+      provider.commitFilesResult = (sha) =>
+        Promise.resolve([{ path: `${sha}.ts`, status: 'modified', additions: 5, deletions: 2 }]);
+
+      await store.loadGraphSizes();
+
+      const sizes = store.graphSizes();
+      expect(sizes?.status).toBe('ready');
+      expect(sizes?.sizes.get('c2')).toEqual({ additions: 5, deletions: 2, files: 1 });
+      expect(sizes?.sizes.get('c1')).toEqual({ additions: 5, deletions: 2, files: 1 });
+      // The merge commit is never sized — its diff spans the whole merged branch.
+      expect(sizes?.sizes.has('m')).toBe(false);
+      expect(sizes?.scanned).toBe(2);
+    });
+
+    it('sizes only what is still missing on a second run', async () => {
+      await store.loadRepo(slug);
+      answer({ main: [[commit('c2', ['c1']), commit('c1')]] });
+      await store.loadBranchGraph();
+      let fetched: string[] = [];
+      provider.commitFilesResult = (sha) => {
+        fetched.push(sha);
+        return Promise.resolve([{ path: 'a', status: 'modified' }]);
+      };
+
+      await store.loadGraphSizes();
+      expect(fetched.sort()).toEqual(['c1', 'c2']);
+
+      fetched = [];
+      await store.loadGraphSizes();
+      expect(fetched).toEqual([]);
+      expect(store.graphSizes()?.status).toBe('ready');
+    });
+
+    it('stops sizing on a failure but keeps the graph and message', async () => {
+      await store.loadRepo(slug);
+      answer({ main: [[commit('c1')]] });
+      await store.loadBranchGraph();
+      provider.commitFilesResult = () =>
+        Promise.reject(new RepoProviderError('rate limited', 'rate-limited'));
+
+      await store.loadGraphSizes();
+
+      const sizes = store.graphSizes();
+      expect(sizes?.status).toBe('ready');
+      expect(sizes?.message).toBe('rate limited');
+      expect(sizes?.sizes.size).toBe(0);
+    });
+
+    it('flags a listing without parents and resolves them commit by commit', async () => {
+      await store.loadRepo(slug);
+      // Azure DevOps style: the bulk listing reports no parents at all.
+      answer({ main: [[commit('m2'), commit('m1')]] });
+      await store.loadBranchGraph();
+      let graph = store.branchGraph();
+      expect(graph?.status === 'ready' && graph.parentsMissing).toBe(true);
+
+      provider.commitResult = (sha) => Promise.resolve(commit(sha, sha === 'm2' ? ['m1'] : []));
+      await store.resolveGraphParents();
+
+      graph = store.branchGraph();
+      expect(graph?.status).toBe('ready');
+      if (graph?.status !== 'ready') return;
+      expect(graph.parentsMissing).toBeUndefined();
+      expect(graph.commits.find((c) => c.sha === 'm2')?.parentShas).toEqual(['m1']);
+    });
+
+    it('does not flag a normal history whose only parentless commit is the root', async () => {
+      await store.loadRepo(slug);
+      answer({ main: [[commit('m2', ['m1']), commit('m1')]] });
+      await store.loadBranchGraph();
+      const graph = store.branchGraph();
+      expect(graph?.status === 'ready' && graph.parentsMissing).toBeFalsy();
+    });
   });
 
   describe('co-change (computeCoChange)', () => {

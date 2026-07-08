@@ -12,7 +12,12 @@ import {
 } from '@angular/core';
 
 import { CommitInfo } from '../../core/models';
-import { BranchGraphState, BranchesState } from '../../core/store/repo-store';
+import {
+  BranchGraphState,
+  BranchesState,
+  CommitSizeStats,
+  GraphSizesState,
+} from '../../core/store/repo-store';
 import {
   BranchGraph,
   CollapsedNode,
@@ -51,8 +56,10 @@ interface DotView {
   readonly x: number;
   readonly y: number;
   readonly color: string;
-  /** Merges and branch tips render filled; plain commits as rings. */
+  /** Merges (and unsized branch tips) render solid; plain commits as rings. */
   readonly filled: boolean;
+  /** Inner fill-level disc radius (0 = none) — the commit's change size. */
+  readonly innerR: number;
   readonly clipped: boolean;
   readonly labels: readonly LabelChip[];
   readonly title: string;
@@ -84,6 +91,8 @@ interface LaneView {
   readonly y: number;
   readonly stripeY: number;
   readonly label: string | null;
+  /** True when the label was recovered from a merge-commit message. */
+  readonly inferred: boolean;
   readonly color: string;
   readonly even: boolean;
 }
@@ -102,10 +111,12 @@ interface GraphView {
 /**
  * The Branch Explorer — a horizontal commit graph in the spirit of gmaster's
  * branch explorer. Every branch is a lane, commits flow left → right, merged
- * side branches get their own unnamed lanes, merges curve back into their
- * target, and long linear runs collapse into "N" pills that expand on click.
- * Clicking a commit opens a detail bar with time-travel into the tree at that
- * commit; further branches can be added to the graph one request at a time.
+ * side branches get their own lanes (named from the merge commit's message
+ * where it records one), merges curve back into their target, and long linear
+ * runs collapse into "N" pills that expand on click. Opt-in change sizes fill
+ * each dot by how much the commit changed. Clicking a commit opens a detail
+ * bar with time-travel into the tree at that commit; further branches can be
+ * added to the graph one request at a time.
  */
 @Component({
   selector: 'app-branch-explorer',
@@ -147,8 +158,55 @@ interface GraphView {
           partial graph
         </span>
       }
+      @if (sizesMessage(); as note) {
+        <span
+          class="rounded-full border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 text-[11px] text-amber-300"
+          [title]="note"
+        >
+          sizes incomplete
+        </span>
+      }
+      @if (parentsMissing()) {
+        <span
+          class="rounded-full border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 text-[11px] text-amber-300"
+          title="This provider's commit listing does not report parent links, so the dots have no connections yet — use “Connect commits” to fetch them."
+        >
+          unlinked commits
+        </span>
+      }
+      @if (sizesLegend(); as legend) {
+        <span
+          class="hidden text-[11px] text-zinc-600 lg:block"
+          title="Each dot's inner fill shows how much the commit changed, on a log scale relative to the largest loaded commit. Merges stay solid — their diff spans the whole merged branch."
+        >
+          {{ legend }}
+        </span>
+      }
 
       <span class="flex-1"></span>
+
+      @if (parentsMissing()) {
+        <button
+          type="button"
+          class="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
+          [disabled]="loadingMore()"
+          (click)="resolveParents.emit()"
+          title="Fetch each commit once to learn its parents and draw the branch/merge connections"
+        >
+          {{ loadingMore() ? 'Connecting…' : 'Connect commits' }}
+        </button>
+      }
+      @if (sizesButtonLabel(); as label) {
+        <button
+          type="button"
+          class="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
+          [disabled]="sizing()"
+          (click)="loadSizes.emit()"
+          title="Fill each commit dot by how much it changed — one request per commit that is not already cached"
+        >
+          {{ label }}
+        </button>
+      }
 
       @if (hasExpanded()) {
         <button
@@ -334,6 +392,7 @@ interface GraphView {
                   [attr.aria-label]="pill.title"
                   (click)="expandPill(pill.id)"
                   (keydown.enter)="expandPill(pill.id)"
+                  (keydown.space)="$event.preventDefault(); expandPill(pill.id)"
                 >
                   <title>{{ pill.title }}</title>
                   <rect
@@ -368,6 +427,7 @@ interface GraphView {
                   [attr.aria-label]="dot.title"
                   (click)="select(dot.sha)"
                   (keydown.enter)="select(dot.sha)"
+                  (keydown.space)="$event.preventDefault(); select(dot.sha)"
                 >
                   <title>{{ dot.title }}</title>
                   @if (dot.clipped) {
@@ -399,6 +459,14 @@ interface GraphView {
                     [attr.stroke]="dot.color"
                     stroke-width="2"
                   />
+                  @if (dot.innerR > 0) {
+                    <circle
+                      [attr.cx]="dot.x"
+                      [attr.cy]="dot.y"
+                      [attr.r]="dot.innerR"
+                      [attr.fill]="dot.color"
+                    />
+                  }
                 </g>
               }
               <!-- Branch name chips at their tips -->
@@ -444,9 +512,16 @@ interface GraphView {
                     aria-hidden="true"
                   ></span>
                   @if (lane.label) {
-                    <span class="truncate font-mono text-[10px] text-zinc-300">{{
-                      lane.label
-                    }}</span>
+                    <span
+                      class="truncate font-mono text-[10px]"
+                      [class]="lane.inferred ? 'text-zinc-400' : 'text-zinc-300'"
+                      [title]="
+                        lane.inferred
+                          ? lane.label + ' — name recovered from the merge commit message'
+                          : lane.label
+                      "
+                      >{{ lane.label }}</span
+                    >
                   } @else {
                     <span class="truncate text-[10px] text-zinc-500 italic">merged branch</span>
                   }
@@ -473,6 +548,16 @@ interface GraphView {
             <span class="shrink-0 text-zinc-500">
               {{ commit.authorName }} · {{ when(commit.authoredAt) }}
             </span>
+            @if (selectedSize(); as size) {
+              <span class="shrink-0 font-mono text-[11px] text-zinc-400">
+                @if (size.additions + size.deletions > 0) {
+                  <span class="text-emerald-300">+{{ size.additions }}</span>
+                  <span class="text-rose-300">−{{ size.deletions }}</span>
+                  ·
+                }
+                {{ size.files }} {{ size.files === 1 ? 'file' : 'files' }}
+              </span>
+            }
             @if (commit.parentShas.length > 0) {
               <span class="flex shrink-0 items-center gap-1 text-zinc-500">
                 {{ commit.parentShas.length === 1 ? 'parent' : 'parents' }}
@@ -503,14 +588,16 @@ interface GraphView {
             >
               Browse this commit
             </button>
-            <a
-              class="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100"
-              [href]="commit.htmlUrl"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Open ↗
-            </a>
+            @if (commit.htmlUrl) {
+              <a
+                class="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100"
+                [href]="commit.htmlUrl"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Open ↗
+              </a>
+            }
             <button
               type="button"
               class="shrink-0 rounded p-1 text-zinc-500 transition hover:bg-white/10 hover:text-zinc-200"
@@ -528,6 +615,8 @@ interface GraphView {
 export class BranchExplorer {
   /** Graph state from the store; null until the first load kicks off. */
   readonly state = input<BranchGraphState | null>(null);
+  /** Per-commit change sizes (the dot fill levels); null until requested. */
+  readonly sizes = input<GraphSizesState | null>(null);
   /** The repository's branch list, backing the "Add branch" dropdown. */
   readonly branches = input<BranchesState | null>(null);
   readonly defaultBranch = input<string | null>(null);
@@ -536,6 +625,10 @@ export class BranchExplorer {
   readonly load = output<void>();
   /** Fetch one more page of older commits for every loaded branch. */
   readonly loadMore = output<void>();
+  /** Fetch per-commit change sizes for the fill levels. */
+  readonly loadSizes = output<void>();
+  /** Fetch parents for commits the bulk listing left unlinked (Azure DevOps). */
+  readonly resolveParents = output<void>();
   /** Add a branch to the graph. */
   readonly addBranch = output<string>();
   /** The add-branch dropdown was opened — load the branch list. */
@@ -567,7 +660,61 @@ export class BranchExplorer {
   protected readonly loadingMore = computed(() => this.state()?.status === 'loading-more');
   protected readonly hasMore = computed(() => this.readyState()?.hasMore ?? false);
   protected readonly message = computed(() => this.readyState()?.message ?? null);
+  protected readonly parentsMissing = computed(() => this.readyState()?.parentsMissing === true);
   protected readonly hasExpanded = computed(() => this.expanded().size > 0);
+
+  protected readonly sizing = computed(() => this.sizes()?.status === 'sizing');
+  protected readonly sizesMessage = computed(() => this.sizes()?.message ?? null);
+
+  /**
+   * Fill-level scale across the loaded window: lines changed where the
+   * provider reports line stats (GitHub), otherwise files touched. Null until
+   * sizes exist.
+   */
+  private readonly sizeScale = computed<{ useLines: boolean; max: number } | null>(() => {
+    const sizes = this.sizes()?.sizes;
+    if (!sizes || sizes.size === 0) return null;
+    let useLines = false;
+    for (const size of sizes.values()) {
+      if (size.additions + size.deletions > 0) {
+        useLines = true;
+        break;
+      }
+    }
+    let max = 0;
+    for (const size of sizes.values()) {
+      const value = useLines ? size.additions + size.deletions : size.files;
+      if (value > max) max = value;
+    }
+    return max > 0 ? { useLines, max } : null;
+  });
+
+  protected readonly sizesLegend = computed<string | null>(() => {
+    const scale = this.sizeScale();
+    if (!scale) return null;
+    return scale.useLines ? 'dot fill = lines changed' : 'dot fill = files touched';
+  });
+
+  /** Commits (non-merge) the next sizing run would fetch. */
+  private readonly sizesPending = computed(() => {
+    const state = this.readyState();
+    if (!state) return 0;
+    const have = this.sizes()?.sizes;
+    let pending = 0;
+    for (const commit of state.commits) {
+      if (commit.parentShas.length <= 1 && !have?.has(commit.sha)) pending++;
+    }
+    return pending;
+  });
+
+  /** Toolbar label for the sizing action; null hides the button. */
+  protected readonly sizesButtonLabel = computed<string | null>(() => {
+    if (!this.readyState()) return null;
+    const state = this.sizes();
+    if (state?.status === 'sizing') return `Sizing ${state.scanned}/${state.total}…`;
+    if (!state) return 'Commit sizes';
+    return this.sizesPending() > 0 ? 'Size newer commits' : null;
+  });
 
   protected readonly errorMessage = computed(() => {
     const state = this.state();
@@ -609,6 +756,7 @@ export class BranchExplorer {
       y: y(lane.index),
       stripeY: PAD_T + lane.index * LANE_H,
       label: lane.label,
+      inferred: lane.inferred,
       color: color(lane.index),
       even: lane.index % 2 === 0,
     }));
@@ -624,6 +772,8 @@ export class BranchExplorer {
       color: color(edge.colorLane),
     }));
 
+    const sizes = this.sizes()?.sizes ?? null;
+    const scale = this.sizeScale();
     const dots: DotView[] = [];
     const pills: PillView[] = [];
     for (const node of graph.nodes) {
@@ -631,7 +781,9 @@ export class BranchExplorer {
         pills.push(pillView(node, x(node.column), y(node.lane), color(node.lane)));
         continue;
       }
-      dots.push(dotView(node, x(node.column), y(node.lane), color(node.lane), commits));
+      dots.push(
+        dotView(node, x(node.column), y(node.lane), color(node.lane), commits, sizes, scale),
+      );
     }
 
     return {
@@ -650,6 +802,12 @@ export class BranchExplorer {
   protected readonly selected = computed<CommitInfo | null>(() => {
     const sha = this.selectedSha();
     return sha ? (this.commitsBySha().get(sha) ?? null) : null;
+  });
+
+  /** The selected commit's change size, once fetched. */
+  protected readonly selectedSize = computed<CommitSizeStats | null>(() => {
+    const sha = this.selectedSha();
+    return sha ? (this.sizes()?.sizes.get(sha) ?? null) : null;
   });
 
   /** Branches not yet in the graph, filtered by the dropdown query. */
@@ -672,7 +830,7 @@ export class BranchExplorer {
       const el = this.scroller()?.nativeElement;
       if (!el) return;
       const fromRight = this.fromRight;
-      setTimeout(() => {
+      requestAnimationFrame(() => {
         el.scrollLeft = Math.max(0, el.scrollWidth - el.clientWidth - fromRight);
       });
     });
@@ -794,11 +952,30 @@ function dotView(
   y: number,
   color: string,
   commits: ReadonlyMap<string, CommitInfo>,
+  sizes: ReadonlyMap<string, CommitSizeStats> | null,
+  scale: { useLines: boolean; max: number } | null,
 ): DotView {
   const commit = commits.get(node.sha);
-  const title = commit
+  let title = commit
     ? `${shortSha(commit.sha)} · ${commit.summary}\n${commit.authorName} · ${relativeTime(commit.authoredAt)}`
     : shortSha(node.sha);
+
+  // Fill level: the commit's change size on a log scale relative to the
+  // largest sized commit (change sizes are heavy-tailed — one lockfile bump
+  // must not flatten everything else to empty). Merges are never sized.
+  const size = sizes?.get(node.sha) ?? null;
+  let innerR = 0;
+  if (size && scale && !node.isMerge) {
+    const value = scale.useLines ? size.additions + size.deletions : size.files;
+    if (value > 0) {
+      innerR = Math.max(1.2, (DOT_R - 2) * (Math.log1p(value) / Math.log1p(scale.max)));
+    }
+    title +=
+      size.additions + size.deletions > 0
+        ? `\n+${size.additions} −${size.deletions} · ${size.files} files`
+        : `\n${size.files} ${size.files === 1 ? 'file' : 'files'}`;
+  }
+
   const labels: LabelChip[] = node.labels.map((text, index) => {
     const shown = text.length > 24 ? `${text.slice(0, 23)}…` : text;
     return {
@@ -813,7 +990,9 @@ function dotView(
     x,
     y,
     color,
-    filled: node.isMerge || node.labels.length > 0,
+    // A sized tip trades its solid disc for a fill level; the chip still marks it.
+    filled: node.isMerge || (node.labels.length > 0 && !size),
+    innerR,
     clipped: node.clipped,
     labels,
     title,

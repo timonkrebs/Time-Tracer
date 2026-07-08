@@ -2,7 +2,7 @@ import { provideZonelessChangeDetection } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 
 import { CommitInfo } from '../../core/models';
-import { BranchGraphState, BranchesState } from '../../core/store/repo-store';
+import { BranchGraphState, BranchesState, GraphSizesState } from '../../core/store/repo-store';
 import { BranchExplorer } from './branch-explorer';
 
 function commit(sha: string, parents: string[], tick: number): CommitInfo {
@@ -54,10 +54,26 @@ const BRANCHES: BranchesState = {
   truncated: false,
 };
 
+/** Change sizes for MERGE_STATE's non-merge commits (m is never sized). */
+const SIZES: GraphSizesState = {
+  status: 'ready',
+  sizes: new Map([
+    ['c1', { additions: 100, deletions: 50, files: 3 }],
+    ['c2', { additions: 2, deletions: 1, files: 1 }],
+    ['f1', { additions: 10, deletions: 0, files: 2 }],
+    ['f2', { additions: 0, deletions: 0, files: 0 }],
+  ]),
+  scanned: 4,
+  total: 4,
+  capped: false,
+};
+
 describe('BranchExplorer', () => {
   let fixture: ComponentFixture<BranchExplorer>;
   let loads: number;
   let loadMores: number;
+  let sizeLoads: number;
+  let parentResolves: number;
   let branchLoads: number;
   let added: string[];
   let browsed: string[];
@@ -74,11 +90,15 @@ describe('BranchExplorer', () => {
     fixture.componentRef.setInput('defaultBranch', 'main');
     loads = 0;
     loadMores = 0;
+    sizeLoads = 0;
+    parentResolves = 0;
     branchLoads = 0;
     added = [];
     browsed = [];
     fixture.componentInstance.load.subscribe(() => loads++);
     fixture.componentInstance.loadMore.subscribe(() => loadMores++);
+    fixture.componentInstance.loadSizes.subscribe(() => sizeLoads++);
+    fixture.componentInstance.resolveParents.subscribe(() => parentResolves++);
     fixture.componentInstance.loadBranches.subscribe(() => branchLoads++);
     fixture.componentInstance.addBranch.subscribe((name) => added.push(name));
     fixture.componentInstance.browse.subscribe((sha) => browsed.push(sha));
@@ -204,5 +224,78 @@ describe('BranchExplorer', () => {
   it('flags a partial graph when the state carries a message', async () => {
     await setState({ ...MERGE_STATE, message: 'ghost: not found' });
     expect(root().textContent).toContain('partial graph');
+  });
+
+  it('offers commit sizing and renders fill levels once sizes arrive', async () => {
+    await setState(MERGE_STATE);
+
+    buttonByText('Commit sizes')!.click();
+    expect(sizeLoads).toBe(1);
+
+    fixture.componentRef.setInput('sizes', SIZES);
+    await fixture.whenStable();
+
+    // c1 (the largest change) carries an inner fill disc inside its ring.
+    const c1 = dots().find((g) => g.getAttribute('aria-label')?.startsWith('c1 ·'))!;
+    expect(c1.querySelectorAll('circle').length).toBe(2);
+    // f2 changed nothing — an empty ring.
+    const f2 = dots().find((g) => g.getAttribute('aria-label')?.startsWith('f2 ·'))!;
+    expect(f2.querySelectorAll('circle').length).toBe(1);
+    expect(root().textContent).toContain('dot fill = lines changed');
+  });
+
+  it('shows sizing progress and the selected commit’s change size', async () => {
+    await setState(MERGE_STATE);
+    fixture.componentRef.setInput('sizes', {
+      ...SIZES,
+      status: 'sizing',
+      scanned: 2,
+    } satisfies GraphSizesState);
+    await fixture.whenStable();
+    expect(root().textContent).toContain('Sizing 2/4…');
+
+    fixture.componentRef.setInput('sizes', SIZES);
+    const c1 = dots().find((g) => g.getAttribute('aria-label')?.startsWith('c1 ·'))!;
+    (c1 as unknown as HTMLElement).dispatchEvent(new MouseEvent('click'));
+    await fixture.whenStable();
+
+    expect(root().textContent).toContain('+100');
+    expect(root().textContent).toContain('−50');
+    expect(root().textContent).toContain('3 files');
+  });
+
+  it('offers to connect commits when the listing omitted parents', async () => {
+    await setState({ ...MERGE_STATE, parentsMissing: true });
+
+    expect(root().textContent).toContain('unlinked commits');
+    buttonByText('Connect commits')!.click();
+    expect(parentResolves).toBe(1);
+  });
+
+  it('names a merged lane from the merge commit message', async () => {
+    const named = {
+      ...MERGE_STATE,
+      commits: MERGE_STATE.commits.map((c) =>
+        c.sha === 'm' ? { ...c, summary: "Merge branch 'feature/foo'" } : c,
+      ),
+    };
+    await setState(named);
+
+    expect(root().textContent).toContain('feature/foo');
+    expect(root().textContent).not.toContain('merged branch');
+  });
+
+  it('hides the provider link for commits without a web URL (local repos)', async () => {
+    const local = {
+      ...MERGE_STATE,
+      commits: MERGE_STATE.commits.map((c) => ({ ...c, htmlUrl: '' })),
+    };
+    await setState(local);
+
+    (dots()[0] as unknown as HTMLElement).dispatchEvent(new MouseEvent('click'));
+    await fixture.whenStable();
+
+    expect(root().textContent).toContain('Browse this commit');
+    expect(root().textContent).not.toContain('Open ↗');
   });
 });

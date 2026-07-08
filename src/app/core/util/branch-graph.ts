@@ -22,13 +22,28 @@ export interface GraphCommit {
   readonly parentShas: readonly string[];
   /** ISO author date — used to order commits and break topological ties. */
   readonly authoredAt: string;
+  /**
+   * First line of the commit message. Optional; merge summaries are mined for
+   * the merged branch's name ("Merge branch 'feature/foo'", "Merge pull
+   * request #7 from owner/feature/foo"), which git itself no longer stores.
+   */
+  readonly summary?: string;
 }
 
 /** One horizontal track of the graph. */
 export interface BranchGraphLane {
   readonly index: number;
-  /** Branch name for lanes anchored at a loaded tip; null for merged side branches. */
+  /**
+   * The lane's branch name: a loaded tip's name, or — for merged side
+   * branches — the name recovered from the merge commit's message. Null when
+   * neither is known.
+   */
   readonly label: string | null;
+  /**
+   * True when {@link label} was recovered from a merge-commit message rather
+   * than pointing at a live tip — a historical name, shown dimmer.
+   */
+  readonly inferred: boolean;
   /** The lane's newest commit — where its walk started. */
   readonly headSha: string;
   /** Loaded commits on this lane. */
@@ -129,7 +144,7 @@ export function layoutBranchGraph(
 
   // ---- Lane assignment ------------------------------------------------------
   const laneOf = new Map<string, number>();
-  const lanes: { label: string | null; headSha: string; size: number }[] = [];
+  const lanes: { label: string | null; inferred: boolean; headSha: string; size: number }[] = [];
 
   /** Claims the first-parent chain from `start` for lane `lane`. */
   const walk = (start: string, lane: number): void => {
@@ -143,8 +158,8 @@ export function layoutBranchGraph(
     }
   };
 
-  const openLane = (label: string | null, headSha: string): void => {
-    lanes.push({ label, headSha, size: 0 });
+  const openLane = (label: string | null, inferred: boolean, headSha: string): void => {
+    lanes.push({ label, inferred, headSha, size: 0 });
     walk(headSha, lanes.length - 1);
   };
 
@@ -152,18 +167,23 @@ export function layoutBranchGraph(
   // that is already on another branch's chain gets no lane of its own — its
   // name still shows as a label on that commit.
   for (const [name, sha] of heads) {
-    if (bySha.has(sha) && !laneOf.has(sha)) openLane(name, sha);
+    if (bySha.has(sha) && !laneOf.has(sha)) openLane(name, false, sha);
   }
-  // Every merge opens an unnamed lane for the side branch it merged. Newest
-  // first, so lanes read roughly in the order the work landed.
+  // Every merge opens a lane for the side branch it merged, named from the
+  // merge commit's own message where it records one — the only place git
+  // still remembers a deleted branch's name. Newest first, so lanes read
+  // roughly in the order the work landed.
   for (const sha of order) {
-    for (const parent of bySha.get(sha)!.parentShas.slice(1)) {
-      if (bySha.has(parent) && !laneOf.has(parent)) openLane(null, parent);
+    const commit = bySha.get(sha)!;
+    for (const parent of commit.parentShas.slice(1)) {
+      if (bySha.has(parent) && !laneOf.has(parent)) {
+        openLane(mergedBranchName(commit.summary), true, parent);
+      }
     }
   }
   // Chains cut loose by the loading window (no loaded child reaches them).
   for (const sha of order) {
-    if (!laneOf.has(sha)) openLane(null, sha);
+    if (!laneOf.has(sha)) openLane(null, true, sha);
   }
 
   // ---- Collapse linear runs -------------------------------------------------
@@ -327,6 +347,38 @@ export function layoutBranchGraph(
     columnCount: slots.length,
     commitCount: bySha.size,
   };
+}
+
+/**
+ * Recovers the merged branch's name from a merge commit's summary — the only
+ * place git still records the name of a branch deleted after its merge.
+ * Handles the summaries the supported hosts write:
+ *
+ * - GitHub:       `Merge pull request #7 from owner/feature/foo` (the leading
+ *   segment is the fork/owner, not part of the branch name)
+ * - git / GitLab: `Merge branch 'feature/foo' into main`
+ * - git (older):  `Merge branch feature/foo`, `Merge remote-tracking branch
+ *   'origin/feature/foo'` (the remote prefix is dropped)
+ * - Bitbucket:    `Merged in feature/foo (pull request #7)`
+ *
+ * Azure DevOps writes `Merged PR 7: <title>` — no branch name to recover.
+ * Returns null when nothing matches.
+ */
+export function mergedBranchName(summary: string | undefined): string | null {
+  if (!summary) return null;
+  const pullRequest = /^Merge pull request #\d+ from (\S+)/i.exec(summary);
+  if (pullRequest) {
+    const ref = pullRequest[1];
+    const slash = ref.indexOf('/');
+    return slash > 0 && slash < ref.length - 1 ? ref.slice(slash + 1) : ref;
+  }
+  const bitbucket = /^Merged in (\S+) \(pull request #\d+\)/i.exec(summary);
+  if (bitbucket) return bitbucket[1];
+  const branch =
+    /^Merge (?:remote-tracking )?branch '([^']+)'/i.exec(summary) ??
+    /^Merge (?:remote-tracking )?branch (\S+)/i.exec(summary);
+  if (branch) return branch[1].replace(/^origin\//, '');
+  return null;
 }
 
 /**

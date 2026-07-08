@@ -393,10 +393,13 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
             <app-branch-explorer
               class="min-h-0 min-w-0 flex-1"
               [state]="store.branchGraph()"
+              [sizes]="store.graphSizes()"
               [branches]="store.branches()"
               [defaultBranch]="store.metadata()?.defaultBranch ?? null"
               (load)="store.loadBranchGraph()"
               (loadMore)="store.loadMoreBranchGraph()"
+              (loadSizes)="store.loadGraphSizes()"
+              (resolveParents)="store.resolveGraphParents()"
               (addBranch)="store.addGraphBranch($event)"
               (loadBranches)="store.loadBranches()"
               (browse)="onGraphBrowse($event)"
@@ -1036,6 +1039,19 @@ export class ViewerPage {
       const open = this.graphMode();
       untracked(() => {
         if (open && phase === 'ready') void this.store.loadBranchGraph();
+      });
+    });
+
+    // Local repositories read commit files from disk, so the graph's fill
+    // levels cost no requests — size them eagerly (like the folder ownership
+    // auto-scan); hosted repositories keep the opt-in button.
+    effect(() => {
+      const graph = this.store.branchGraph();
+      const auto = this.graphMode() && this.store.hasLocalData();
+      untracked(() => {
+        if (auto && graph?.status === 'ready' && !this.store.graphSizes()) {
+          void this.store.loadGraphSizes();
+        }
       });
     });
 

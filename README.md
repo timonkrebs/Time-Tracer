@@ -60,13 +60,22 @@ renames — see the feature list and roadmap below for what's done and what's ne
 - **Branch Explorer** (the merge-icon toggle in the header, `g`, deep-linked via `?graph=1`) — a
   horizontal commit graph in the spirit of [gmaster](https://gmaster.io)'s branch explorer. Every
   branch is a lane with the branch name pinned at the left while you scroll; commits flow left →
-  right; each merged feature branch gets its own unnamed lane (its first-parent chain), so merges
-  read as curves that fork off and rejoin their target. Long linear runs collapse into an
-  "N commits" pill that expands on click. The initial graph costs **one request** (a window of
-  the viewed ref's history); **+ Add branch** overlays any other branch and **← Older commits**
-  pages every loaded branch further back, one request per branch each. Clicking a commit opens a
-  detail bar — full message, author, copyable sha, hop-to-parent chips — with **Browse this
-  commit**, which time-travels the whole file tree to that sha.
+  right; each merged feature branch gets its own lane (its first-parent chain), **named by mining
+  the merge commit's message** ("Merge pull request #7 from owner/feature/x", "Merge branch
+  'feature/x'", Bitbucket's "Merged in x") — the only place git still remembers a deleted
+  branch's name — so merges read as labelled curves that fork off and rejoin their target. Long
+  linear runs collapse into an "N commits" pill that expands on click. The initial graph costs
+  **one request** (a window of the viewed ref's history); **+ Add branch** overlays any other
+  branch and **← Older commits** pages every loaded branch further back, one request per branch
+  each. **Commit sizes** (opt-in — one request per commit, shared with the Insights cache, so an
+  analysed repo sizes for free; automatic for local repositories) fills each dot by **how much
+  the commit changed**: lines added+removed where the provider reports line stats (GitHub), files
+  touched elsewhere, log-scaled against the largest loaded commit — heavy commits read as full
+  discs, docs tweaks as near-empty rings, merges stay solid. Azure DevOps omits parent links from
+  its bulk listing; the explorer says so ("unlinked commits") and offers **Connect commits** to
+  fetch them one commit at a time. Clicking a commit opens a detail bar — full message, author,
+  copyable sha, `+added −removed · files`, hop-to-parent chips — with **Browse this commit**,
+  which time-travels the whole file tree to that sha.
 - **Per-file commit history**: a History panel lists the commits that touched the selected file
   (paginated — page through older commits or **Load all** at once), with author and relative date.
   Its open/closed state is remembered, so it can stay open permanently across files and sessions.
@@ -346,4 +355,5 @@ npm run build      # production build into dist/
     curves, collapsible linear runs.~~ ✅ Done (`core/util/branch-graph.ts` lays out first-parent
     lanes and merged side branches from one `listCommits` window per branch; `?graph=1` /
     the `g` shortcut, add branches and page older history on demand, time-travel the tree from
-    any commit).
+    any commit; merged lanes are named from merge-commit messages, dots carry opt-in **change-size
+    fill levels**, and Azure DevOps graphs offer per-commit parent resolution).
