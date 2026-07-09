@@ -336,6 +336,18 @@ describe('BranchExplorer', () => {
     expect(opened[1]).toEqual({ path: 'src/renamed.ts', sha: 'c2', previousPath: 'src/old.ts' });
   });
 
+  it('withholds comparison while commit parents are unresolved', async () => {
+    await setState({ ...MERGE_STATE, parentsMissing: true });
+
+    const c2 = dots().find((g) => g.getAttribute('aria-label')?.startsWith('c2 ·'))!;
+    (c2 as unknown as HTMLElement).dispatchEvent(new MouseEvent('click'));
+    await fixture.whenStable();
+
+    // Every dot would read as a root — no comparison until "Connect commits".
+    expect(root().textContent).toContain('Browse this commit');
+    expect(buttonByText('Compare from here')).toBeUndefined();
+  });
+
   it('drops selection and comparison when a new graph loads', async () => {
     await setState(MERGE_STATE);
     const c2 = dots().find((g) => g.getAttribute('aria-label')?.startsWith('c2 ·'))!;

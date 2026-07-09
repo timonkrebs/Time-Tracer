@@ -755,7 +755,7 @@ interface SizeScale {
             >
               {{ filesLabel() }}
             </button>
-            @if (compareFrom() !== commit.sha) {
+            @if (compareFrom() !== commit.sha && !parentsMissing()) {
               <button
                 type="button"
                 class="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100"
@@ -1091,6 +1091,9 @@ export class BranchExplorer {
     const to = this.selectedSha();
     const state = this.readyState();
     if (!from || !to || from === to || !state) return null;
+    // Unresolved parent links (Azure DevOps before "Connect commits") would
+    // make every dot look like a root and the counts meaningless.
+    if (state.parentsMissing) return null;
     // Both shas must live in the current graph — a sha left over from a
     // previous repository/ref must not produce a bogus empty comparison.
     const commits = this.commitsBySha();
@@ -1187,6 +1190,9 @@ export class BranchExplorer {
 
   /** Anchors a comparison at the selected commit; the next click completes it. */
   protected startCompare(): void {
+    // Without parent links (Azure DevOps before "Connect commits") a
+    // comparison cannot mean anything — every dot would read as a root.
+    if (this.parentsMissing()) return;
     this.compareFrom.set(this.selectedSha());
   }
 

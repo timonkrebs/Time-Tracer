@@ -360,8 +360,12 @@ export interface CommitCompare {
   /** Commits reachable only from `b` — what `b` has on top ("ahead"). */
   readonly onlyB: ReadonlySet<string>;
   /**
-   * True when either ancestry walk ran past the loaded window (a parent was
-   * not loaded), so the counts are lower bounds rather than exact.
+   * True when unloaded history could still change the counts: a walk left
+   * the window from a commit only one side reaches. A walk that runs out of
+   * window below a *shared* ancestor stays exact — everything past it is
+   * reachable from both sides and lands in neither set (assuming the older,
+   * unloaded history does not point back at newer loaded commits, which
+   * reverse-chronological windows make practically impossible).
    */
   readonly truncated: boolean;
 }
@@ -380,20 +384,24 @@ export function compareCommits(
   const bySha = new Map<string, GraphCommit>();
   for (const commit of commits) if (!bySha.has(commit.sha)) bySha.set(commit.sha, commit);
 
-  let truncated = false;
+  // Commits whose parents run past the loaded window — where a walk escaped.
+  const escapes = new Set<string>();
+  let missingStart = false;
   const ancestors = (start: string): Set<string> => {
     const seen = new Set<string>();
+    if (!bySha.has(start)) {
+      missingStart = true;
+      return seen;
+    }
     const queue = [start];
     while (queue.length > 0) {
       const sha = queue.pop()!;
       if (seen.has(sha)) continue;
-      const commit = bySha.get(sha);
-      if (!commit) {
-        truncated = true;
-        continue;
-      }
       seen.add(sha);
-      queue.push(...commit.parentShas);
+      for (const parent of bySha.get(sha)!.parentShas) {
+        if (bySha.has(parent)) queue.push(parent);
+        else escapes.add(sha);
+      }
     }
     return seen;
   };
@@ -404,6 +412,9 @@ export function compareCommits(
   const onlyB = new Set<string>();
   for (const sha of ofA) if (!ofB.has(sha)) onlyA.add(sha);
   for (const sha of ofB) if (!ofA.has(sha)) onlyB.add(sha);
+  // Only an escape on one side can still change the difference; an escape
+  // below a shared ancestor is reachable from both sides either way.
+  const truncated = missingStart || [...escapes].some((sha) => ofA.has(sha) !== ofB.has(sha));
   return { onlyA, onlyB, truncated };
 }
 

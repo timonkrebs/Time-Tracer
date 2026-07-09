@@ -373,7 +373,7 @@ describe('compareCommits', () => {
     expect([...result.onlyB].sort()).toEqual(['c2', 'c3']);
   });
 
-  it('marks the comparison truncated when a walk leaves the window', () => {
+  it('marks the comparison truncated when a walk leaves the window one-sided', () => {
     const result = compareCommits(
       [commit('a', ['gone-a'], 2), commit('b', ['gone-b'], 1)],
       'a',
@@ -383,6 +383,20 @@ describe('compareCommits', () => {
     expect(result.onlyA.has('a')).toBe(true);
     expect(result.onlyB.has('b')).toBe(true);
     expect(result.truncated).toBe(true);
+  });
+
+  it('stays exact when the window only ends below a shared ancestor', () => {
+    // b ← a ← w, where w's parent fell outside the window. Both walks reach
+    // w, so everything past it is shared either way — the counts are exact.
+    const result = compareCommits(
+      [commit('b', ['a'], 3), commit('a', ['w'], 2), commit('w', ['gone'], 1)],
+      'a',
+      'b',
+    );
+
+    expect(result.onlyA.size).toBe(0);
+    expect([...result.onlyB]).toEqual(['b']);
+    expect(result.truncated).toBe(false);
   });
 
   it('compares a commit against itself as empty', () => {
