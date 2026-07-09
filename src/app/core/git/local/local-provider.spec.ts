@@ -79,6 +79,24 @@ describe('LocalGitProvider', () => {
     expect(bySha.get('v-annotated')).toBe(c2);
   });
 
+  it('orders tags by their target commit date, not alphabetically', async () => {
+    // 'aa-old' would win an alphabetical cut; the newest-tagged commit must.
+    await fs.promises.writeFile('/late.txt', 'late\n');
+    await git.add({ fs, dir: '/', filepath: 'late.txt' });
+    const c4 = await git.commit({
+      fs,
+      dir: '/',
+      message: 'c4: later work',
+      author: { ...author, timestamp: author.timestamp + 100 },
+    });
+    await git.tag({ fs, dir: '/', ref: 'aa-old', object: c1 });
+    await git.tag({ fs, dir: '/', ref: 'zz-new', object: c4 });
+
+    const list = await provider.listTags(slug);
+
+    expect(list.tags[0]).toEqual({ name: 'zz-new', sha: c4 });
+  });
+
   it('walks the tree of a ref', async () => {
     const tree = await provider.getTree(slug, 'main');
     expect(tree.truncated).toBe(false);

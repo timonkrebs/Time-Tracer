@@ -1205,8 +1205,17 @@ export class ViewerPage {
     previousPath?: string;
     merge: boolean;
   }): Promise<void> {
+    // While the graph's parent links are unresolved (Azure DevOps before
+    // "Connect commits"), every commit reports no parents — the merge flag
+    // is meaningless, so re-anchor unconditionally: for a non-merge commit
+    // lastTouch returns the commit itself, so this is only ever a correction.
+    const graph = this.store.branchGraph();
+    const parentsUnknown =
+      graph !== null && graph.status !== 'loading' && graph.status !== 'error'
+        ? graph.parentsMissing === true
+        : false;
     let at = target.sha;
-    if (target.merge) {
+    if (target.merge || parentsUnknown) {
       const anchor = await this.store.lastTouch(target.path, target.sha);
       at = anchor?.sha ?? target.sha;
     }
