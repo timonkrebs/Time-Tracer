@@ -554,6 +554,8 @@ export class RepoStore {
   private graphSizesRun = 0;
   /** The repository's tags for the graph's chips, when loaded. */
   private readonly _graphTags = signal<GraphTagsState | null>(null);
+  /** Bumped to cancel a stale tag fetch — only on repository/ref switches. */
+  private graphTagsRun = 0;
   /** Changed-file lists of commits selected in the graph, keyed by sha. */
   private readonly _graphFiles = signal<ReadonlyMap<string, CommitFilesState>>(new Map());
 
@@ -1594,6 +1596,11 @@ export class RepoStore {
    * request on hosted providers. No-ops when already loaded/loading or when
    * the provider has no tag listing (the chips simply stay absent); calling
    * again after an error retries.
+   *
+   * Tags are repository-scoped, so the fetch runs under its own counter:
+   * a *graph* retry (which bumps {@link graphRun}) must not strand an
+   * in-flight tag load at 'loading' — only {@link clearBranchGraph} (a
+   * repository/ref switch) cancels it.
    */
   async loadGraphTags(): Promise<void> {
     const slug = this._slug();
@@ -1603,11 +1610,11 @@ export class RepoStore {
     const provider = this.registry.byId(slug.provider);
     if (!provider.listTags) return;
 
-    const run = this.graphRun;
+    const run = this.graphTagsRun;
     this._graphTags.set({ status: 'loading' });
     try {
       const list = await provider.listTags(slug);
-      if (run !== this.graphRun) return;
+      if (run !== this.graphTagsRun) return;
       const bySha = new Map<string, string[]>();
       for (const tag of list.tags) {
         const names = bySha.get(tag.sha);
@@ -1616,7 +1623,7 @@ export class RepoStore {
       }
       this._graphTags.set({ status: 'ready', bySha, truncated: list.truncated });
     } catch (error) {
-      if (run !== this.graphRun) return;
+      if (run !== this.graphTagsRun) return;
       this._graphTags.set({ status: 'error', message: toRepoProviderError(error).message });
     }
   }
@@ -1651,6 +1658,7 @@ export class RepoStore {
   clearBranchGraph(): void {
     this.graphRun++;
     this.graphSizesRun++;
+    this.graphTagsRun++;
     this._branchGraph.set(null);
     this._graphSizes.set(null);
     this._graphTags.set(null);

@@ -1972,6 +1972,29 @@ describe('RepoStore', () => {
       expect(provider.listTagsCalls).toBe(1);
     });
 
+    it('finishes an in-flight tag load even when a failed graph load is retried', async () => {
+      await store.loadRepo(slug);
+      const tags = deferred<RepoTagList>();
+      provider.listTagsResult = () => tags.promise;
+      provider.listCommitsResult = () => Promise.reject(new RepoProviderError('boom', 'network'));
+
+      const tagLoad = store.loadGraphTags(); // in flight while the graph fails
+      await store.loadBranchGraph();
+      expect(store.branchGraph()?.status).toBe('error');
+
+      answer({ main: [[commit('m1')]] });
+      await store.loadBranchGraph(); // the retry bumps the graph run
+
+      tags.resolve({ tags: [{ name: 'v1', sha: 'm1' }], truncated: false });
+      await tagLoad;
+
+      // The tag state must not be stranded at 'loading' by the graph retry.
+      const state = store.graphTags();
+      expect(state?.status).toBe('ready');
+      if (state?.status !== 'ready') return;
+      expect(state.bySha.get('m1')).toEqual(['v1']);
+    });
+
     it('surfaces a failed tag listing and retries on the next call', async () => {
       await store.loadRepo(slug);
       provider.listTagsResult = () => Promise.reject(new RepoProviderError('nope', 'network'));
