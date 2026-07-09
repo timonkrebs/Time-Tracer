@@ -174,6 +174,46 @@ describe('LocalGitProvider', () => {
     logSpy.mockRestore();
   });
 
+  it('serves a path history through the one-pass prime walk (no filepath log)', async () => {
+    const logSpy = vi.spyOn(git, 'log');
+    await provider.listCommits(slug, { ref: 'main', path: 'hello.txt' });
+    // One full-history walk with no per-commit path resolution…
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(logSpy.mock.calls[0][0]).not.toHaveProperty('filepath');
+    // …that also primes every other path and the unfiltered log.
+    const greeting = await provider.listCommits(slug, { ref: 'main', path: 'greeting.txt' });
+    const all = await provider.listCommits(slug, { ref: 'main', perPage: 2, page: 2 });
+    expect(greeting.map((c) => c.sha)).toEqual([c3]);
+    expect(all.map((c) => c.sha)).toEqual([c1]);
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    logSpy.mockRestore();
+  });
+
+  it('shares one prime walk across concurrent path-history requests', async () => {
+    const logSpy = vi.spyOn(git, 'log');
+    const [hello, greeting] = await Promise.all([
+      provider.listCommits(slug, { ref: 'main', path: 'hello.txt' }),
+      provider.listCommits(slug, { ref: 'main', path: 'greeting.txt' }),
+    ]);
+    expect(hello.map((c) => c.sha)).toEqual([c3, c2, c1]);
+    expect(greeting.map((c) => c.sha)).toEqual([c3]);
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    logSpy.mockRestore();
+  });
+
+  it('extends an unfiltered walk by at least doubling (paging stays linear)', async () => {
+    const logSpy = vi.spyOn(git, 'log');
+    await provider.listCommits(slug, { ref: 'main', perPage: 1, page: 1 });
+    await provider.listCommits(slug, { ref: 'main', perPage: 1, page: 2 });
+    await provider.listCommits(slug, { ref: 'main', perPage: 1, page: 3 });
+    const depths = logSpy.mock.calls.map(([options]) => (options as { depth?: number }).depth);
+    expect(depths).toEqual([1, 2, 4]);
+    // The third walk overshot the 3-commit history, so the log is complete now.
+    await provider.listCommits(slug, { ref: 'main', perPage: 1, page: 1 });
+    expect(logSpy).toHaveBeenCalledTimes(3);
+    logSpy.mockRestore();
+  });
+
   it('primeHistories precomputes every path history in one pass (nested dirs)', async () => {
     // Add a nested file across two commits to exercise subtree-diff recursion.
     await fs.promises.writeFile('/src/lib/util.ts', 'export const a = 1;\n');
@@ -198,6 +238,87 @@ describe('LocalGitProvider', () => {
     expect(missing).toEqual([]);
     expect(logSpy).not.toHaveBeenCalled();
     logSpy.mockRestore();
+  });
+
+  it('omits merges from a path history unless the path differs from every parent', async () => {
+    // Build a real merge by writing objects directly:
+    //   A (file v1) ── B (adds other.txt) ──┐
+    //   └────────────  C (file v2)  ────────┴─ M (parents [B, C])
+    // M takes file.txt from C and other.txt from B, and adds merged.txt itself.
+    const enc = (text: string): Uint8Array => new TextEncoder().encode(text);
+    const v1 = await git.writeBlob({ fs, dir: '/', blob: enc('one\n') });
+    const v2 = await git.writeBlob({ fs, dir: '/', blob: enc('two\n') });
+    const other = await git.writeBlob({ fs, dir: '/', blob: enc('other\n') });
+    const merged = await git.writeBlob({ fs, dir: '/', blob: enc('merged\n') });
+    const at = (offset: number): typeof author => ({
+      ...author,
+      timestamp: author.timestamp + offset,
+    });
+    const treeA = await git.writeTree({
+      fs,
+      dir: '/',
+      tree: [{ mode: '100644', path: 'file.txt', oid: v1, type: 'blob' }],
+    });
+    const commitA = await git.writeCommit({
+      fs,
+      dir: '/',
+      commit: { message: 'A', tree: treeA, parent: [], author: at(0), committer: at(0) },
+    });
+    const treeB = await git.writeTree({
+      fs,
+      dir: '/',
+      tree: [
+        { mode: '100644', path: 'file.txt', oid: v1, type: 'blob' },
+        { mode: '100644', path: 'other.txt', oid: other, type: 'blob' },
+      ],
+    });
+    const commitB = await git.writeCommit({
+      fs,
+      dir: '/',
+      commit: { message: 'B', tree: treeB, parent: [commitA], author: at(60), committer: at(60) },
+    });
+    const treeC = await git.writeTree({
+      fs,
+      dir: '/',
+      tree: [{ mode: '100644', path: 'file.txt', oid: v2, type: 'blob' }],
+    });
+    const commitC = await git.writeCommit({
+      fs,
+      dir: '/',
+      commit: { message: 'C', tree: treeC, parent: [commitA], author: at(120), committer: at(120) },
+    });
+    const treeM = await git.writeTree({
+      fs,
+      dir: '/',
+      tree: [
+        { mode: '100644', path: 'file.txt', oid: v2, type: 'blob' },
+        { mode: '100644', path: 'other.txt', oid: other, type: 'blob' },
+        { mode: '100644', path: 'merged.txt', oid: merged, type: 'blob' },
+      ],
+    });
+    const commitM = await git.writeCommit({
+      fs,
+      dir: '/',
+      commit: {
+        message: 'M',
+        tree: treeM,
+        parent: [commitB, commitC],
+        author: at(180),
+        committer: at(180),
+      },
+    });
+    await git.writeRef({ fs, dir: '/', ref: 'refs/heads/merged', value: commitM });
+
+    // file.txt changed on the side branch; the merge is identical to C — like
+    // `git log -- file.txt`, the merge commit is not part of the history.
+    const file = await provider.listCommits(slug, { ref: 'merged', path: 'file.txt' });
+    expect(file.map((c) => c.sha)).toEqual([commitC, commitA]);
+    // other.txt came through the merge unchanged from B.
+    const otherHistory = await provider.listCommits(slug, { ref: 'merged', path: 'other.txt' });
+    expect(otherHistory.map((c) => c.sha)).toEqual([commitB]);
+    // merged.txt differs from BOTH parents — the merge itself introduced it.
+    const mergedHistory = await provider.listCommits(slug, { ref: 'merged', path: 'merged.txt' });
+    expect(mergedHistory.map((c) => c.sha)).toEqual([commitM]);
   });
 
   it('primeHistories matches per-file git.log and is idempotent', async () => {
