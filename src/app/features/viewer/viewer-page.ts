@@ -1219,9 +1219,17 @@ export class ViewerPage {
       const anchor = await this.store.lastTouch(target.path, target.sha);
       at = anchor?.sha ?? target.sha;
     }
+    // A commit that only entered the graph via "+ Add branch" may be
+    // unreachable from the viewed ref — History (which lists the viewed
+    // ref) could then never show `at`. Switch the ref to the branch the
+    // commit was loaded from; commits from the viewed ref's own listing
+    // leave it untouched.
+    const source = this.store.graphCommitRef(target.sha);
+    const refSwitch = source !== null && source !== this.store.ref() ? { ref: source } : {};
     void this.router.navigate([], {
       relativeTo: this.route,
       queryParams: {
+        ...refSwitch,
         path: target.path,
         at,
         view: 'diff',

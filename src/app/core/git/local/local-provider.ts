@@ -245,10 +245,16 @@ export class LocalGitProvider implements GitProvider {
       const resolvable = names.slice(0, MAX_TAG_RESOLVES);
       const resolved: { name: string; sha: string; when: number }[] = [];
       for (const name of resolvable) {
-        const oid = await git.resolveRef({ fs, dir: '/', ref: `refs/tags/${name}` });
-        // readCommit peels annotated tags; the returned oid is the commit's.
-        const { oid: commitOid, commit } = await git.readCommit({ fs, dir: '/', oid, cache });
-        resolved.push({ name, sha: commitOid, when: commit.author?.timestamp ?? 0 });
+        try {
+          const oid = await git.resolveRef({ fs, dir: '/', ref: `refs/tags/${name}` });
+          // readCommit peels annotated tags; the returned oid is the commit's.
+          const { oid: commitOid, commit } = await git.readCommit({ fs, dir: '/', oid, cache });
+          resolved.push({ name, sha: commitOid, when: commit.author?.timestamp ?? 0 });
+        } catch {
+          // Git allows tagging trees and blobs; readCommit rejects those.
+          // A non-commit (or broken) tag has no place on a commit graph —
+          // skip it instead of losing every other tag with it.
+        }
       }
       resolved.sort((a, b) => b.when - a.when);
       const tags: RepoTag[] = resolved.slice(0, MAX_TAGS).map(({ name, sha }) => ({ name, sha }));

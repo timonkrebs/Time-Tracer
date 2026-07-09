@@ -97,6 +97,19 @@ describe('LocalGitProvider', () => {
     expect(list.tags[0]).toEqual({ name: 'zz-new', sha: c4 });
   });
 
+  it('skips tags that point at non-commit objects instead of failing the load', async () => {
+    // Git allows tagging any object; a tree-pointing tag must not take the
+    // commit tags down with it.
+    const { commit } = await git.readCommit({ fs, dir: '/', oid: c2 });
+    await git.tag({ fs, dir: '/', ref: 'v-tree', object: commit.tree });
+    await git.tag({ fs, dir: '/', ref: 'v-commit', object: c2 });
+
+    const list = await provider.listTags(slug);
+
+    expect(list.tags).toEqual([{ name: 'v-commit', sha: c2 }]);
+    expect(list.truncated).toBe(false);
+  });
+
   it('walks the tree of a ref', async () => {
     const tree = await provider.getTree(slug, 'main');
     expect(tree.truncated).toBe(false);

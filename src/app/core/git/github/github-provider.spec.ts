@@ -556,5 +556,36 @@ describe('GithubProvider', () => {
 
       await expect(provider.getCommitFiles(slug, 'abc')).resolves.toEqual([]);
     });
+
+    it('follows file pagination when a commit touches more than one page', async () => {
+      // GitHub pages the files array at 300 entries; a single request would
+      // silently drop everything beyond the first page.
+      const commit = {
+        sha: 'abc',
+        html_url: 'https://github.com/acme/rocket/commit/abc',
+        commit: { message: 'big: sweep', author: null },
+        parents: [{ sha: 'p1' }],
+      };
+      const fullPage = Array.from({ length: 300 }, (_, i) => ({
+        filename: `src/file-${i}.ts`,
+        status: 'modified',
+      }));
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ ...commit, files: fullPage }))
+        .mockResolvedValueOnce(
+          jsonResponse({ ...commit, files: [{ filename: 'src/last.ts', status: 'added' }] }),
+        );
+
+      const files = await provider.getCommitFiles(slug, 'abc');
+
+      expect(files).toHaveLength(301);
+      expect(files.at(-1)).toEqual({ path: 'src/last.ts', status: 'added' });
+      expect(fetchMock.mock.calls[0][0]).toBe(
+        'https://api.github.com/repos/acme/rocket/commits/abc?page=1',
+      );
+      expect(fetchMock.mock.calls[1][0]).toBe(
+        'https://api.github.com/repos/acme/rocket/commits/abc?page=2',
+      );
+    });
   });
 });

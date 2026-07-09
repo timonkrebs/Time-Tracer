@@ -36,6 +36,14 @@ const MAX_BRANCH_PAGES = 10;
  */
 const MAX_TAG_PAGES = 5;
 
+/**
+ * GitHub pages a commit's `files` array at 300 entries per response and lists
+ * at most 3000 files per commit, so ten pages exhaust everything the API can
+ * report.
+ */
+const COMMIT_FILES_PAGE_SIZE = 300;
+const MAX_COMMIT_FILE_PAGES = 10;
+
 interface GithubRepoResponse {
   name: string;
   full_name: string;
@@ -316,19 +324,27 @@ export class GithubProvider implements GitProvider {
   }
 
   async getCommitFiles(slug: RepoSlug, sha: string): Promise<CommitFileChange[]> {
-    const data = await this.request<GithubCommitResponse>(
-      slug,
-      `/repos/${enc(slug.owner)}/${enc(slug.repo)}/commits/${enc(sha)}`,
-      { notFound: `Commit ${sha.slice(0, 7)} was not found in this repository.` },
-    );
-    return (data.files ?? []).map((file) => ({
-      path: file.filename,
-      status: file.status,
-      ...(file.previous_filename ? { previousPath: file.previous_filename } : {}),
-      ...(file.additions !== undefined ? { additions: file.additions } : {}),
-      ...(file.deletions !== undefined ? { deletions: file.deletions } : {}),
-      ...(file.patch !== undefined ? { patch: file.patch } : {}),
-    }));
+    const files: CommitFileChange[] = [];
+    for (let page = 1; page <= MAX_COMMIT_FILE_PAGES; page++) {
+      const data = await this.request<GithubCommitResponse>(
+        slug,
+        `/repos/${enc(slug.owner)}/${enc(slug.repo)}/commits/${enc(sha)}?page=${page}`,
+        { notFound: `Commit ${sha.slice(0, 7)} was not found in this repository.` },
+      );
+      const batch = data.files ?? [];
+      files.push(
+        ...batch.map((file) => ({
+          path: file.filename,
+          status: file.status,
+          ...(file.previous_filename ? { previousPath: file.previous_filename } : {}),
+          ...(file.additions !== undefined ? { additions: file.additions } : {}),
+          ...(file.deletions !== undefined ? { deletions: file.deletions } : {}),
+          ...(file.patch !== undefined ? { patch: file.patch } : {}),
+        })),
+      );
+      if (batch.length < COMMIT_FILES_PAGE_SIZE) break;
+    }
+    return files;
   }
 
   webLinks(slug: RepoSlug, ref: string, path?: string): RepoWebLinks {

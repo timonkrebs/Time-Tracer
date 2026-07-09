@@ -1803,6 +1803,24 @@ describe('RepoStore', () => {
       ]);
     });
 
+    it('remembers which ref first brought each commit in', async () => {
+      await store.loadRepo(slug);
+      answer({
+        main: [[commit('m2', ['m1']), commit('m1')]],
+        dev: [[commit('d1', ['m1']), commit('m1')]],
+      });
+
+      await store.loadBranchGraph();
+      await store.addGraphBranch('dev');
+
+      // 'm1' arrived with the viewed ref's own listing; 'd1' only via dev —
+      // navigation leaving the graph must switch the ref for 'd1' alone.
+      expect(store.graphCommitRef('m2')).toBe('main');
+      expect(store.graphCommitRef('m1')).toBe('main');
+      expect(store.graphCommitRef('d1')).toBe('dev');
+      expect(store.graphCommitRef('nope')).toBeNull();
+    });
+
     it('keeps the graph usable when an added branch fails', async () => {
       await store.loadRepo(slug);
       answer({ main: [[commit('m1')]] });
@@ -1838,6 +1856,7 @@ describe('RepoStore', () => {
 
       await store.loadRepo(slug, 'dev');
       expect(store.branchGraph()).toBeNull();
+      expect(store.graphCommitRef('m1')).toBeNull();
     });
 
     it('sizes every commit, merges included', async () => {

@@ -540,6 +540,8 @@ export class RepoStore {
   private readonly graphCommits = new Map<string, CommitInfo>();
   /** Loaded branch tips in load order (the viewed ref first). */
   private readonly graphHeads = new Map<string, string>();
+  /** The ref whose listing first brought each graph commit in (sha → ref). */
+  private readonly graphCommitSource = new Map<string, string>();
   /**
    * Sticky per-graph memory that the provider's bulk listing omits parents
    * (Azure DevOps). Once seen, "Connect commits" stays offered while any
@@ -1441,6 +1443,7 @@ export class RepoStore {
     this.graphPages.clear();
     this.graphCommits.clear();
     this.graphHeads.clear();
+    this.graphCommitSource.clear();
     this._branchGraph.set({ status: 'loading' });
     try {
       const commits = await this.registry
@@ -1654,6 +1657,17 @@ export class RepoStore {
     }
   }
 
+  /**
+   * The ref whose listing first brought a graph commit in — the viewed ref
+   * for the initially loaded graph, the branch name for commits that only
+   * arrived via "+ Add branch". Navigation that leaves the graph uses it to
+   * keep the commit reachable: an added branch's commits may not exist under
+   * the viewed ref at all.
+   */
+  graphCommitRef(sha: string): string | null {
+    return this.graphCommitSource.get(sha) ?? null;
+  }
+
   /** Drops the Branch Explorer graph and cancels any load in flight. */
   clearBranchGraph(): void {
     this.graphRun++;
@@ -1666,6 +1680,7 @@ export class RepoStore {
     this.graphPages.clear();
     this.graphCommits.clear();
     this.graphHeads.clear();
+    this.graphCommitSource.clear();
     this.graphOmitsParents = false;
     this.graphConfirmedRoots.clear();
   }
@@ -1673,7 +1688,10 @@ export class RepoStore {
   /** Folds one fetched page into the graph's DAG and paging bookkeeping. */
   private mergeGraphPage(branch: string, commits: readonly CommitInfo[], page: number): void {
     for (const commit of commits) {
-      if (!this.graphCommits.has(commit.sha)) this.graphCommits.set(commit.sha, commit);
+      if (!this.graphCommits.has(commit.sha)) {
+        this.graphCommits.set(commit.sha, commit);
+        this.graphCommitSource.set(commit.sha, branch);
+      }
     }
     this.cacheCommits(commits);
     // The first page's first commit is the branch tip (providers list newest first).
