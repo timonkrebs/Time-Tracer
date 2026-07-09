@@ -79,7 +79,7 @@ export function couplingConfidence(support: number, union: number, z = 1.96): nu
   const z2 = z * z;
   const centre = p + z2 / (2 * union);
   const margin = z * Math.sqrt((p * (1 - p) + z2 / (4 * union)) / union);
-  return (centre - margin) / (1 + z2 / union);
+  return Math.max(0, (centre - margin) / (1 + z2 / union));
 }
 
 /** Aggregates commit file-sets into change counts and ranked coupled pairs. */

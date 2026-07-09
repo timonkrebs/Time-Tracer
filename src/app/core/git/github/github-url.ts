@@ -1,5 +1,6 @@
 import { ParsedRepoUrl } from '../../models';
 import { normalizeInstanceHost } from '../host-url';
+import { decodeSegment, hasUrlScheme, parseHttpUrl } from '../url-util';
 
 const OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/;
 const REPO_PATTERN = /^[A-Za-z0-9._-]+$/;
@@ -101,20 +102,14 @@ function fromGithubSegments(segments: string[], host?: string): ParsedRepoUrl | 
 
 function tryParseHttpUrl(input: string, customHostname: string | null): URL | null {
   let withScheme: string | null = null;
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(input)) {
+  if (hasUrlScheme(input)) {
     withScheme = input;
   } else if (/^(www\.)?(github\.com|raw\.githubusercontent\.com)\//i.test(input)) {
     withScheme = `https://${input}`;
   } else if (customHostname && input.toLowerCase().startsWith(`${customHostname}/`)) {
     withScheme = `https://${input}`;
   }
-  if (!withScheme) return null;
-  try {
-    const url = new URL(withScheme);
-    return url.protocol === 'http:' || url.protocol === 'https:' ? url : null;
-  } catch {
-    return null;
-  }
+  return withScheme ? parseHttpUrl(withScheme) : null;
 }
 
 function validated(
@@ -132,12 +127,4 @@ function validated(
     ...(path ? { path } : {}),
     ...(host ? { host } : {}),
   };
-}
-
-function decodeSegment(segment: string): string {
-  try {
-    return decodeURIComponent(segment);
-  } catch {
-    return segment;
-  }
 }

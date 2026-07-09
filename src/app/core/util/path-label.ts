@@ -18,6 +18,8 @@ export function disambiguateLabels(paths: Iterable<string>): Map<string, string>
   return labels;
 }
 
-function basename(path: string): string {
-  return path.slice(path.lastIndexOf('/') + 1);
+/** The last path segment (file or folder name), or the whole path if it has no `/`. */
+export function basename(path: string): string {
+  const trimmed = path.replace(/\/+$/, '');
+  return trimmed.slice(trimmed.lastIndexOf('/') + 1);
 }

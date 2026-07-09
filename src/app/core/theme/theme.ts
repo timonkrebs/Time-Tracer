@@ -1,5 +1,7 @@
 import { Injectable, computed, effect, signal } from '@angular/core';
 
+import { readStorage, writeStorage } from '../util/storage';
+
 /** User's theme choice. `auto` follows the OS `prefers-color-scheme`. */
 export type ThemePreference = 'auto' | 'light' | 'dark';
 /** The concrete theme applied to the document once `auto` is resolved. */
@@ -71,21 +73,13 @@ function systemPrefersDark(): boolean {
 }
 
 function restorePreference(): ThemePreference {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === 'auto' || stored === 'light' || stored === 'dark') return stored;
-  } catch {
-    // localStorage unavailable — fall through to the default.
-  }
+  const stored = readStorage(STORAGE_KEY);
+  if (stored === 'auto' || stored === 'light' || stored === 'dark') return stored;
   return 'auto';
 }
 
 function persistPreference(preference: ThemePreference): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, preference);
-  } catch {
-    // Best-effort only.
-  }
+  writeStorage(STORAGE_KEY, preference);
 }
 
 /** Writes the resolved theme to `<html>` and the PWA address-bar colour. */

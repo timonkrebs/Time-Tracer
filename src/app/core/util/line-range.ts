@@ -40,6 +40,15 @@ export function formatLineRange(range: LineRange): string {
 }
 
 /**
+ * Human-readable label for a range — `line 5` or `lines 5–8` (en-dash). Used by
+ * the trace banners and selection chips, distinct from {@link formatLineRange}'s
+ * compact URL form (`5` / `5-8`).
+ */
+export function formatRangeLabel(range: LineRange): string {
+  return range.start === range.end ? `line ${range.start}` : `lines ${range.start}–${range.end}`;
+}
+
+/**
  * One maximal run of non-equal ops: `oldCount` lines starting at `oldStart`
  * were replaced by `newCount` lines starting at `newStart`. A zero-count
  * side marks a pure insertion/removal: the region then sits in the gap
@@ -92,14 +101,6 @@ export function regionTouchesRange(region: ChangeRegion, range: LineRange): bool
   }
   const last = region.newStart + region.newCount - 1;
   return region.newStart <= range.end && last >= range.start;
-}
-
-/** New-side trace range for one contiguous change run. */
-export function changeRegionRange(region: ChangeRegion): LineRange {
-  if (region.newCount > 0) {
-    return { start: region.newStart, end: region.newStart + region.newCount - 1 };
-  }
-  return { start: Math.max(1, region.newStart - 1), end: region.newStart };
 }
 
 /**

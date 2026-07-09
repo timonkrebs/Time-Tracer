@@ -11,7 +11,7 @@ import {
 } from '@angular/core';
 
 import { BlameState, DiffState } from '../../core/store/repo-store';
-import { ChangeRun, LineRange, hunkChangeRuns } from '../../core/util/line-range';
+import { ChangeRun, LineRange, formatRangeLabel, hunkChangeRuns } from '../../core/util/line-range';
 import { shortSha } from '../../core/util/relative-time';
 import { AnnotationCell, buildAnnotationCells } from './blame-annotation';
 
@@ -811,9 +811,7 @@ export class DiffView {
     this.clearSelection();
   }
 
-  protected rangeLabel(range: LineRange): string {
-    return range.start === range.end ? `line ${range.start}` : `lines ${range.start}–${range.end}`;
-  }
+  protected readonly rangeLabel = formatRangeLabel;
 
   private readonly effectiveHighlightRange = computed<LineRange | null>(() => {
     const range = this.highlightRange();

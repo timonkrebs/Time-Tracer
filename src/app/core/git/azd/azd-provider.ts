@@ -175,6 +175,11 @@ export class AzdProvider implements GitProvider {
   }
 
   private toRepoFile(path: string, sha: string, bytes: Uint8Array): RepoFile {
+    // Azure DevOps often omits the size on tree/item metadata, so the pre-fetch
+    // guard can miss — re-check the downloaded blob's actual length here.
+    if (bytes.length > MAX_FILE_SIZE_BYTES) {
+      return { kind: 'too-large', path, sha, size: bytes.length };
+    }
     if (isProbablyBinary(bytes)) {
       return { kind: 'binary', path, sha, size: bytes.length };
     }

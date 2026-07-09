@@ -17,6 +17,7 @@ import {
 import { base64ToBytes, bytesToUtf8, isProbablyBinary } from '../../util/decode';
 import { AccessTokens } from '../access-tokens';
 import { GitProvider, RepoWebLinks } from '../git-provider';
+import { stripTrailingSlash } from '../url-util';
 import { parseGitlabUrl } from './gitlab-url';
 
 const PUBLIC_HOST = 'https://gitlab.com';
@@ -337,9 +338,6 @@ function apiBase(slug: RepoSlug): string {
   return `${slug.host ? stripTrailingSlash(slug.host) : PUBLIC_HOST}/api/v4`;
 }
 
-function stripTrailingSlash(value: string): string {
-  return value.replace(/\/+$/, '');
-}
 
 function projectId(slug: RepoSlug): string {
   return encodeURIComponent(`${slug.owner}/${slug.repo}`);

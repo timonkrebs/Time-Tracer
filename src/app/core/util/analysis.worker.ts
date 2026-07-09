@@ -10,6 +10,12 @@
 import { AggregateInput, AggregateResult, aggregateInsights } from './analysis';
 
 addEventListener('message', ({ data }: MessageEvent<{ id: number; input: AggregateInput }>) => {
-  const result: AggregateResult = aggregateInsights(data.input);
-  postMessage({ id: data.id, result });
+  try {
+    const result: AggregateResult = aggregateInsights(data.input);
+    postMessage({ id: data.id, result });
+  } catch {
+    // Don't leave the request's promise pending forever — ask the main thread to
+    // aggregate this one itself (analysis-runner falls back to on-thread).
+    postMessage({ id: data.id, failed: true });
+  }
 });

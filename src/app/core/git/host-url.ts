@@ -50,12 +50,6 @@ export function normalizeInstanceHost(host: string): string | null {
   return url.origin;
 }
 
-/** Lowercased hostname of an instance origin, or `null` if it isn't a web address. */
-export function instanceHostname(host: string): string | null {
-  const origin = normalizeInstanceHost(host);
-  return origin ? new URL(origin).hostname.toLowerCase() : null;
-}
-
 /**
  * Whether a URL hostname points at a non-public address. The hostname is taken
  * as the URL parser normalises it — IPv4 shorthands (`127.1`, `0x7f.1`,

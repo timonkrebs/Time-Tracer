@@ -158,9 +158,17 @@ function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   });
 }
 
-/** Base64 that survives non-ASCII (author names) — UTF-8 then btoa. */
+/** Base64 that survives non-ASCII (author names) — UTF-8 bytes then btoa. */
 function base64Utf8(text: string): string {
-  return btoa(unescape(encodeURIComponent(text)));
+  const bytes = new TextEncoder().encode(text);
+  // Build in chunks: char-by-char concatenation is O(n²) for a large SVG, and
+  // spreading the whole array into fromCharCode can overflow the call stack.
+  let binary = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
 }
 
 function escapeXml(value: string): string {

@@ -1,4 +1,5 @@
 import { ParsedRepoUrl } from '../../models';
+import { decodeSegment, hasUrlScheme, parseHttpUrl } from '../url-util';
 
 /**
  * Parses Azure DevOps repository references:
@@ -74,24 +75,10 @@ function build(
 }
 
 function tryParseHttpUrl(input: string): URL | null {
-  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(input)
+  const withScheme = hasUrlScheme(input)
     ? input
     : /^(dev\.azure\.com|[a-z0-9-]+\.visualstudio\.com)\//i.test(input)
       ? `https://${input}`
       : null;
-  if (!withScheme) return null;
-  try {
-    const url = new URL(withScheme);
-    return url.protocol === 'http:' || url.protocol === 'https:' ? url : null;
-  } catch {
-    return null;
-  }
-}
-
-function decodeSegment(segment: string): string {
-  try {
-    return decodeURIComponent(segment);
-  } catch {
-    return segment;
-  }
+  return withScheme ? parseHttpUrl(withScheme) : null;
 }

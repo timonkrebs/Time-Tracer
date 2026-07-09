@@ -14,7 +14,7 @@ import {
 import { RepoWebLinks } from '../../core/git/git-provider';
 import { FileState } from '../../core/models';
 import { BlameState } from '../../core/store/repo-store';
-import { LineRange } from '../../core/util/line-range';
+import { LineRange, formatRangeLabel } from '../../core/util/line-range';
 import { AnnotationCell, buildAnnotationCells } from './blame-annotation';
 
 /** Line height of code rows (`leading-6`), used for scroll/highlight maths. */
@@ -456,9 +456,7 @@ export class FileView {
     this.clearSelection();
   }
 
-  protected rangeLabel(range: LineRange): string {
-    return range.start === range.end ? `line ${range.start}` : `lines ${range.start}–${range.end}`;
-  }
+  protected readonly rangeLabel = formatRangeLabel;
 
   protected readonly textInfo = computed(() => {
     const s = this.state();

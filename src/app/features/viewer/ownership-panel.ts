@@ -4,6 +4,7 @@ import { FolderOwnershipState } from '../../core/store/repo-store';
 import { CSV_MIME, JSON_MIME, fileSlug, round, toCsv, toJson } from '../../core/util/data-export';
 import { downloadText } from '../../core/util/download';
 import { FileRisk, OwnershipSummary } from '../../core/util/ownership';
+import { basename } from '../../core/util/path-label';
 import { relativeTime, shortDate } from '../../core/util/relative-time';
 
 /** Top authors shown before collapsing the rest into a "+N more" line. */
@@ -416,10 +417,7 @@ export class OwnershipPanel {
     return relativeTime(iso);
   }
 
-  protected base(path: string): string {
-    const slash = path.lastIndexOf('/');
-    return slash >= 0 ? path.slice(slash + 1) : path;
-  }
+  protected readonly base = basename;
 
   /** Width (%) of a file's risk bar, relative to the riskiest in the folder. */
   protected riskBar(file: FileRisk): number {
@@ -428,17 +426,11 @@ export class OwnershipPanel {
     return Math.max(3, (file.riskScore / max) * 100);
   }
 
-  protected readonly baseName = computed(() => {
-    const path = this.path() ?? '';
-    const slash = path.lastIndexOf('/');
-    return slash >= 0 ? path.slice(slash + 1) : path;
-  });
+  protected readonly baseName = computed(() => basename(this.path() ?? ''));
 
   protected readonly folderLabel = computed(() => {
     const folder = this.folderPath();
-    if (!folder) return 'repository root';
-    const slash = folder.lastIndexOf('/');
-    return slash >= 0 ? folder.slice(slash + 1) : folder;
+    return folder ? basename(folder) : 'repository root';
   });
 
   /** The folder result, but only when it is for the file's current folder. */
