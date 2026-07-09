@@ -1188,9 +1188,11 @@ export class ViewerPage {
   /**
    * A changed file was picked in the Branch Explorer's detail bar: leave the
    * graph and open that file's diff at the commit — the same time-travel the
-   * blame annotations use (`path` + `at` + `view=diff`).
+   * blame annotations use (`path` + `at` + `view=diff`). Renames/copies carry
+   * their old side as `base`, so the diff shows the rename delta instead of a
+   * full-file add (the same mechanism rename-candidate diffs use).
    */
-  protected onGraphOpenFile(target: { path: string; sha: string }): void {
+  protected onGraphOpenFile(target: { path: string; sha: string; previousPath?: string }): void {
     void this.router.navigate([], {
       relativeTo: this.route,
       queryParams: {
@@ -1199,7 +1201,7 @@ export class ViewerPage {
         view: 'diff',
         graph: null,
         line: null,
-        base: null,
+        base: target.previousPath ?? null,
       },
       queryParamsHandling: 'merge',
     });

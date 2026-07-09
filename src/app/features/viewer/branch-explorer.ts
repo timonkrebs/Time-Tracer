@@ -648,7 +648,13 @@ interface SizeScale {
                         <button
                           type="button"
                           class="flex w-full items-center gap-2 rounded px-2 py-0.5 text-left font-mono text-[11px] transition-colors hover:bg-white/5"
-                          (click)="openFile.emit({ path: file.path, sha: commit.sha })"
+                          (click)="
+                            openFile.emit({
+                              path: file.path,
+                              sha: commit.sha,
+                              previousPath: file.previousPath,
+                            })
+                          "
                           [title]="'Open the diff of ' + file.path + ' at this commit'"
                         >
                           <span class="w-3 shrink-0" [class]="fileBadge(file.status).tone">{{
@@ -814,8 +820,12 @@ export class BranchExplorer {
   readonly resolveParents = output<void>();
   /** A commit was selected — load its changed-file list. */
   readonly filesRequest = output<string>();
-  /** A changed file was picked — open that commit's diff of it. */
-  readonly openFile = output<{ path: string; sha: string }>();
+  /**
+   * A changed file was picked — open that commit's diff of it. For renames
+   * and copies, `previousPath` names the old side so the diff shows the
+   * rename delta instead of a full-file add.
+   */
+  readonly openFile = output<{ path: string; sha: string; previousPath?: string }>();
   /** Add a branch to the graph. */
   readonly addBranch = output<string>();
   /** The add-branch dropdown was opened — load the branch list. */
@@ -1081,6 +1091,10 @@ export class BranchExplorer {
     const to = this.selectedSha();
     const state = this.readyState();
     if (!from || !to || from === to || !state) return null;
+    // Both shas must live in the current graph — a sha left over from a
+    // previous repository/ref must not produce a bogus empty comparison.
+    const commits = this.commitsBySha();
+    if (!commits.has(from) || !commits.has(to)) return null;
     return compareCommits(state.commits, from, to);
   });
 
@@ -1137,6 +1151,16 @@ export class BranchExplorer {
     // Focus the branch filter as soon as the dropdown opens.
     effect(() => {
       if (this.addOpen()) this.filterInput()?.nativeElement.focus();
+    });
+    // A fresh graph (repository or ref switch clears the store's state to
+    // null, then 'loading') invalidates every sha-based view state; carrying
+    // it over would compare or expand against commits that no longer exist.
+    effect(() => {
+      const state = this.state();
+      if (state !== null && state.status !== 'loading') return;
+      this.selectedSha.set(null);
+      this.compareFrom.set(null);
+      this.expanded.set(new Set());
     });
   }
 

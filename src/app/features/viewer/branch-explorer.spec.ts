@@ -314,6 +314,7 @@ describe('BranchExplorer', () => {
             files: [
               { path: 'src/app.ts', status: 'modified', additions: 4, deletions: 2 },
               { path: 'docs/new.md', status: 'added' },
+              { path: 'src/renamed.ts', status: 'renamed', previousPath: 'src/old.ts' },
             ],
           },
         ],
@@ -321,15 +322,40 @@ describe('BranchExplorer', () => {
     );
     await fixture.whenStable();
 
-    buttonByText('Files (2)')!.click();
+    buttonByText('Files (3)')!.click();
     await fixture.whenStable();
     expect(root().textContent).toContain('src/app.ts');
     expect(root().textContent).toContain('docs/new.md');
 
-    (Array.from(root().querySelectorAll('li button')) as HTMLButtonElement[])
-      .find((b) => b.textContent?.includes('src/app.ts'))!
-      .click();
+    const fileButtons = Array.from(root().querySelectorAll('li button')) as HTMLButtonElement[];
+    fileButtons.find((b) => b.textContent?.includes('src/app.ts'))!.click();
     expect(opened).toEqual([{ path: 'src/app.ts', sha: 'c2' }]);
+
+    // A rename carries its old side along, so the diff shows the rename delta.
+    fileButtons.find((b) => b.textContent?.includes('src/renamed.ts'))!.click();
+    expect(opened[1]).toEqual({ path: 'src/renamed.ts', sha: 'c2', previousPath: 'src/old.ts' });
+  });
+
+  it('drops selection and comparison when a new graph loads', async () => {
+    await setState(MERGE_STATE);
+    const c2 = dots().find((g) => g.getAttribute('aria-label')?.startsWith('c2 ·'))!;
+    (c2 as unknown as HTMLElement).dispatchEvent(new MouseEvent('click'));
+    await fixture.whenStable();
+    buttonByText('Compare from here')!.click();
+    const f2 = dots().find((g) => g.getAttribute('aria-label')?.startsWith('f2 ·'))!;
+    (f2 as unknown as HTMLElement).dispatchEvent(new MouseEvent('click'));
+    await fixture.whenStable();
+    expect(root().textContent).toContain('ahead');
+
+    // A repository/ref switch: the store clears to null, then reloads.
+    await setState(null);
+    await setState(LINEAR_STATE);
+
+    // No stale detail bar, no bogus comparison, nothing dimmed.
+    expect(root().textContent).not.toContain('ahead');
+    expect(root().textContent).not.toContain('Comparing from');
+    expect(root().textContent).not.toContain('Browse this commit');
+    expect(dots().every((g) => g.getAttribute('opacity') === '1')).toBe(true);
   });
 
   it('shows tag chips and pins tagged commits out of collapsed runs', async () => {
