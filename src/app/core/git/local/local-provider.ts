@@ -450,9 +450,14 @@ export class LocalGitProvider implements GitProvider {
    * click. Here the history is walked once and each commit is diffed against
    * its parents with oid-pruned tree comparison (identical subtrees are
    * skipped), so the cost is ~O(commits + changes) for the entire repository.
-   * Merges follow `git log -- <path>` parent simplification: they enter a
-   * path's history only when the path differs from every parent. Idempotent
-   * and cached per fs+ref; safe because the repo is read-only for the session.
+   * Path histories follow `git log --full-history -- <path>` semantics: a
+   * commit (merges included) is part of a path's history exactly when the
+   * path differs from every parent. Git's *default* mode would additionally
+   * prune a side branch whose edit a merge discarded — that pruning needs
+   * per-path graph state and would forfeit the one-pass walk, and the
+   * discarded edit is still a real version of the file worth travelling to.
+   * Idempotent and cached per fs+ref; safe because the repo is read-only for
+   * the session.
    */
   async primeHistories(slug: RepoSlug, ref: string): Promise<void> {
     await this.ensurePrimed(this.fs(slug), ref);
@@ -496,9 +501,9 @@ export class LocalGitProvider implements GitProvider {
       await this.diffTrees(readTree, firstParentTree, entry.commit.tree, '', changed);
       let touched: readonly CommitFileChange[] = changed;
       if (parents.length > 1 && changed.length > 0) {
-        // `git log -- <path>` parent simplification: a merge belongs to a
-        // path's history only when the path differs from EVERY parent. A
-        // change arriving unmodified from a side branch is that branch's own
+        // `--full-history` parent simplification: a merge belongs to a path's
+        // history only when the path differs from EVERY parent. A change
+        // arriving unmodified from a side branch is that branch's own
         // commit's, not the merge's.
         const keep = new Map(changed.map((change) => [change.path, change]));
         for (let p = 1; p < parents.length && keep.size > 0; p++) {

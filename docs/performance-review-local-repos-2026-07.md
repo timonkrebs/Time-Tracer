@@ -71,13 +71,16 @@ commit anyway, it also seeds the **unfiltered** log cache as complete, which mak
 Age/co-change "Reading history…" phase a cache slice after any file-history click (and
 vice versa).
 
-Semantics note: primed histories diff each commit against its parents, with
-`git log -- <path>` parent simplification at merges — a merge enters a path's history
-only when the path differs from **every** parent, so a change arriving unmodified from a
-side branch stays attributed to that branch's own commits. Previously the panel's content
-depended on _which feature ran first_ (unprimed filepath-log vs primed first-parent
-diffs); now it is consistent and matches git's behavior. For linear histories (the
-overwhelming case) the result is identical to the old filepath log.
+Semantics note: primed histories implement `git log --full-history -- <path>` — a commit
+(merges included) is part of a path's history exactly when the path differs from
+**every** parent, so a change arriving unmodified from a side branch stays attributed to
+that branch's own commits. Git's _default_ mode additionally prunes a side branch whose
+edit a merge discarded; that pruning is per-path graph-traversal state and would forfeit
+the one-pass all-paths walk — and the discarded edit is a real version of the file, which
+a time-travel explorer arguably should reach. Previously the panel's content depended on
+_which feature ran first_ (unprimed filepath-log vs primed first-parent diffs); now it is
+consistent and a documented git mode. For linear histories (the overwhelming case) the
+result is identical to the old filepath log.
 
 ### 2. The storage layer taxed every object read — High, fixed
 
