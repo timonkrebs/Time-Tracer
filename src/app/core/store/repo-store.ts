@@ -522,6 +522,14 @@ export class RepoStore {
   private readonly graphCommits = new Map<string, CommitInfo>();
   /** Loaded branch tips in load order (the viewed ref first). */
   private readonly graphHeads = new Map<string, string>();
+  /**
+   * Sticky per-graph memory that the provider's bulk listing omits parents
+   * (Azure DevOps). Once seen, "Connect commits" stays offered while any
+   * commit remains unresolved — a partial resolution must not hide it.
+   */
+  private graphOmitsParents = false;
+  /** Commits confirmed as true roots by a single-commit read (still no parents). */
+  private readonly graphConfirmedRoots = new Set<string>();
   /** Per-commit change sizes for the graph's fill levels, when requested. */
   private readonly _graphSizes = signal<GraphSizesState | null>(null);
   /** Bumped to cancel a superseded or cleared sizing run. */
@@ -1564,6 +1572,8 @@ export class RepoStore {
     this.graphPages.clear();
     this.graphCommits.clear();
     this.graphHeads.clear();
+    this.graphOmitsParents = false;
+    this.graphConfirmedRoots.clear();
   }
 
   /** Folds one fetched page into the graph's DAG and paging bookkeeping. */
@@ -1581,9 +1591,16 @@ export class RepoStore {
     const commits = [...this.graphCommits.values()];
     // A bulk listing that reports no parents (Azure DevOps) leaves most commits
     // parentless — a real history has roughly one root. Well above that share,
-    // the data is missing rather than the repository being all roots.
+    // the data is missing rather than the repository being all roots. The
+    // verdict is sticky: resolving one batch drops the share below the
+    // threshold, but the remaining parentless commits are still unresolved
+    // listings (not roots), so the graph keeps offering "Connect commits"
+    // until every one is resolved or confirmed to be a genuine root.
     const parentless = commits.reduce((n, c) => n + (c.parentShas.length === 0 ? 1 : 0), 0);
-    const parentsMissing = commits.length > 1 && parentless * 2 > commits.length;
+    if (commits.length > 1 && parentless * 2 > commits.length) this.graphOmitsParents = true;
+    const parentsMissing =
+      this.graphOmitsParents &&
+      commits.some((c) => c.parentShas.length === 0 && !this.graphConfirmedRoots.has(c.sha));
     this._branchGraph.set({
       status,
       commits,
@@ -1606,7 +1623,9 @@ export class RepoStore {
     const slug = this._slug();
     if (!slug || this._branchGraph()?.status !== 'ready') return;
     const targets = [...this.graphCommits.values()]
-      .filter((commit) => commit.parentShas.length === 0)
+      .filter(
+        (commit) => commit.parentShas.length === 0 && !this.graphConfirmedRoots.has(commit.sha),
+      )
       .sort((a, b) => Date.parse(b.authoredAt) - Date.parse(a.authoredAt))
       .slice(0, GRAPH_PAGE_SIZE);
     if (targets.length === 0) return;
@@ -1622,6 +1641,9 @@ export class RepoStore {
         try {
           const full = await provider.getCommit(slug, target.sha);
           if (run !== this.graphRun) return;
+          // Still no parents on a single-commit read: a genuine root, never
+          // re-fetched and no reason to keep offering resolution for it.
+          if (full.parentShas.length === 0) this.graphConfirmedRoots.add(full.sha);
           this.graphCommits.set(target.sha, full);
           this.cacheCommits([full]);
         } catch (error) {

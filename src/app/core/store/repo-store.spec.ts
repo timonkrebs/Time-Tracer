@@ -1902,6 +1902,43 @@ describe('RepoStore', () => {
       expect(graph.commits.find((c) => c.sha === 'm2')?.parentShas).toEqual(['m1']);
     });
 
+    it('keeps offering parent resolution while unresolved commits remain', async () => {
+      await store.loadRepo(slug);
+      // Azure DevOps style: the bulk listing reports no parents anywhere.
+      answer({ main: [[commit('m3'), commit('m2'), commit('m1')]] });
+      await store.loadBranchGraph();
+
+      // The first resolution run fails part-way: only m3 gets its parents.
+      let calls = 0;
+      provider.commitResult = (sha) => {
+        calls++;
+        if (calls > 1) return Promise.reject(new RepoProviderError('rate limited', 'rate-limited'));
+        return Promise.resolve(commit(sha, ['m2']));
+      };
+      await store.resolveGraphParents();
+
+      let graph = store.branchGraph();
+      expect(graph?.status).toBe('ready');
+      if (graph?.status !== 'ready') return;
+      // Unresolved commits are no longer the majority, but they are still
+      // unresolved listings — resolution must stay offered.
+      expect(graph.parentsMissing).toBe(true);
+      expect(graph.message).toBe('rate limited');
+
+      // The next run finishes the job; m1 turns out to be a genuine root.
+      provider.commitResult = (sha) => Promise.resolve(commit(sha, sha === 'm1' ? [] : ['m1']));
+      await store.resolveGraphParents();
+      graph = store.branchGraph();
+      expect(graph?.status).toBe('ready');
+      if (graph?.status !== 'ready') return;
+      expect(graph.parentsMissing).toBeUndefined();
+
+      // Confirmed roots are never fetched again.
+      const fetches = provider.getCommitCalls.length;
+      await store.resolveGraphParents();
+      expect(provider.getCommitCalls.length).toBe(fetches);
+    });
+
     it('does not flag a normal history whose only parentless commit is the root', async () => {
       await store.loadRepo(slug);
       answer({ main: [[commit('m2', ['m1']), commit('m1')]] });
