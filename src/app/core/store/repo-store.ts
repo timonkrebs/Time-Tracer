@@ -1668,6 +1668,24 @@ export class RepoStore {
     return this.graphCommitSource.get(sha) ?? null;
   }
 
+  /**
+   * One commit's changed-file entry for a path, from the shared per-sha
+   * cache (one request when cold). Used to re-derive a rename origin at a
+   * specific commit — a merge's aggregate file list can report a rename
+   * that no individual commit of the merged branch carries. Resolution
+   * failures return null: the caller falls back to a plain diff.
+   */
+  async commitFileChange(path: string, sha: string): Promise<CommitFileChange | null> {
+    const slug = this._slug();
+    if (!slug) return null;
+    try {
+      const files = await this.commitFilesFor(slug, sha);
+      return files.find((file) => file.path === path) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   /** Drops the Branch Explorer graph and cancels any load in flight. */
   clearBranchGraph(): void {
     this.graphRun++;

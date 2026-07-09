@@ -2050,6 +2050,26 @@ describe('RepoStore', () => {
       expect(fetches).toBe(1);
     });
 
+    it('resolves one commit’s file entry for a path, null when absent or failing', async () => {
+      await store.loadRepo(slug);
+      provider.commitFilesResult = () =>
+        Promise.resolve([
+          { path: 'new.ts', status: 'renamed', previousPath: 'old.ts' },
+          { path: 'other.ts', status: 'modified' },
+        ]);
+
+      await expect(store.commitFileChange('new.ts', 'e1')).resolves.toEqual({
+        path: 'new.ts',
+        status: 'renamed',
+        previousPath: 'old.ts',
+      });
+      await expect(store.commitFileChange('gone.ts', 'e1')).resolves.toBeNull();
+
+      provider.commitFilesResult = () =>
+        Promise.reject(new RepoProviderError('rate limited', 'rate-limited'));
+      await expect(store.commitFileChange('new.ts', 'e2')).resolves.toBeNull();
+    });
+
     it('surfaces a failed file listing per commit and retries', async () => {
       await store.loadRepo(slug);
       answer({ main: [[commit('m1')]] });

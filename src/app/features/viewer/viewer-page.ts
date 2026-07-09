@@ -1215,9 +1215,20 @@ export class ViewerPage {
         ? graph.parentsMissing === true
         : false;
     let at = target.sha;
+    let base = target.previousPath ?? null;
     if (target.merge || parentsUnknown) {
       const anchor = await this.store.lastTouch(target.path, target.sha);
       at = anchor?.sha ?? target.sha;
+      // A merge's file entry aggregates the whole merged branch, so its
+      // rename origin belongs to the merge diff — not necessarily to the
+      // commit re-anchored to (the branch may have renamed the file first
+      // and edited it later). Carry a rename only as the anchored commit
+      // itself reports it, else the diff would pair the new path with an
+      // old path that no longer exists at that commit's parent.
+      if (at !== target.sha && base !== null) {
+        const change = await this.store.commitFileChange(target.path, at);
+        base = change?.previousPath ?? null;
+      }
     }
     // A commit that only entered the graph via "+ Add branch" may be
     // unreachable from the viewed ref — History (which lists the viewed
@@ -1235,7 +1246,7 @@ export class ViewerPage {
         view: 'diff',
         graph: null,
         line: null,
-        base: target.previousPath ?? null,
+        base,
       },
       queryParamsHandling: 'merge',
     });
