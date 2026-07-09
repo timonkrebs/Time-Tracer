@@ -79,7 +79,7 @@ describe('BranchExplorer', () => {
   let added: string[];
   let browsed: string[];
   let filesRequested: string[];
-  let opened: { path: string; sha: string }[];
+  let opened: { path: string; sha: string; previousPath?: string; merge: boolean }[];
 
   beforeEach(async () => {
     await TestBed.configureTestingModule({
@@ -329,11 +329,39 @@ describe('BranchExplorer', () => {
 
     const fileButtons = Array.from(root().querySelectorAll('li button')) as HTMLButtonElement[];
     fileButtons.find((b) => b.textContent?.includes('src/app.ts'))!.click();
-    expect(opened).toEqual([{ path: 'src/app.ts', sha: 'c2' }]);
+    expect(opened).toEqual([{ path: 'src/app.ts', sha: 'c2', merge: false }]);
 
     // A rename carries its old side along, so the diff shows the rename delta.
     fileButtons.find((b) => b.textContent?.includes('src/renamed.ts'))!.click();
-    expect(opened[1]).toEqual({ path: 'src/renamed.ts', sha: 'c2', previousPath: 'src/old.ts' });
+    expect(opened[1]).toEqual({
+      path: 'src/renamed.ts',
+      sha: 'c2',
+      previousPath: 'src/old.ts',
+      merge: false,
+    });
+  });
+
+  it('flags files opened from a merge commit, so the viewer can re-anchor', async () => {
+    await setState(MERGE_STATE);
+
+    const m = dots().find((g) => g.getAttribute('aria-label')?.startsWith('m ·'))!;
+    (m as unknown as HTMLElement).dispatchEvent(new MouseEvent('click'));
+    await fixture.whenStable();
+
+    fixture.componentRef.setInput(
+      'commitFiles',
+      new Map([['m', { status: 'ready' as const, files: [{ path: 'a.ts', status: 'modified' }] }]]),
+    );
+    await fixture.whenStable();
+    buttonByText('Files (1)')!.click();
+    await fixture.whenStable();
+
+    (Array.from(root().querySelectorAll('li button')) as HTMLButtonElement[])
+      .find((b) => b.textContent?.includes('a.ts'))!
+      .click();
+    // Merge shas never appear in a file's own history (git log -- path
+    // simplifies merges away) — the viewer re-anchors on this flag.
+    expect(opened[0]).toEqual({ path: 'a.ts', sha: 'm', merge: true });
   });
 
   it('withholds comparison while commit parents are unresolved', async () => {

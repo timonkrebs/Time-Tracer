@@ -1191,13 +1191,30 @@ export class ViewerPage {
    * blame annotations use (`path` + `at` + `view=diff`). Renames/copies carry
    * their old side as `base`, so the diff shows the rename delta instead of a
    * full-file add (the same mechanism rename-candidate diffs use).
+   *
+   * A *merge* commit never appears in the file's own history (`git log --
+   * path` simplifies merges away), so anchoring `at` the merge would show a
+   * version the History panel cannot list and the steppers cannot reach.
+   * Instead anchor at the most recent commit that actually touched the file
+   * at/before the merge — the same rule rename candidates and deletion
+   * traces use — which shows the real change the merge brought in.
    */
-  protected onGraphOpenFile(target: { path: string; sha: string; previousPath?: string }): void {
+  protected async onGraphOpenFile(target: {
+    path: string;
+    sha: string;
+    previousPath?: string;
+    merge: boolean;
+  }): Promise<void> {
+    let at = target.sha;
+    if (target.merge) {
+      const anchor = await this.store.lastTouch(target.path, target.sha);
+      at = anchor?.sha ?? target.sha;
+    }
     void this.router.navigate([], {
       relativeTo: this.route,
       queryParams: {
         path: target.path,
-        at: target.sha,
+        at,
         view: 'diff',
         graph: null,
         line: null,

@@ -653,6 +653,7 @@ interface SizeScale {
                               path: file.path,
                               sha: commit.sha,
                               previousPath: file.previousPath,
+                              merge: commit.parentShas.length > 1,
                             })
                           "
                           [title]="'Open the diff of ' + file.path + ' at this commit'"
@@ -823,9 +824,16 @@ export class BranchExplorer {
   /**
    * A changed file was picked — open that commit's diff of it. For renames
    * and copies, `previousPath` names the old side so the diff shows the
-   * rename delta instead of a full-file add.
+   * rename delta instead of a full-file add. `merge` flags a merge commit,
+   * whose sha lives outside the file's own history (`git log -- path`
+   * simplifies merges away) — the viewer re-anchors those.
    */
-  readonly openFile = output<{ path: string; sha: string; previousPath?: string }>();
+  readonly openFile = output<{
+    path: string;
+    sha: string;
+    previousPath?: string;
+    merge: boolean;
+  }>();
   /** Add a branch to the graph. */
   readonly addBranch = output<string>();
   /** The add-branch dropdown was opened — load the branch list. */
