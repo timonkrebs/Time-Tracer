@@ -73,6 +73,9 @@ function splitPath(path: string): string[] {
 
 /** The content-addressed object store — immutable while the repo is open. */
 const OBJECTS_DIR = '.git/objects';
+/** Pack directory — excluded from the byte cache; isomorphic-git keeps its own
+ * copy of every pack and pack index it has opened. */
+const PACK_DIR_PREFIX = `${OBJECTS_DIR}/pack/`;
 /** Loose objects above this size are not kept in the byte cache. */
 const LOOSE_CACHE_MAX_FILE = 1_048_576; // 1 MB
 /** Total byte budget of the loose-object cache (oldest evicted first). */
@@ -142,10 +145,11 @@ export function createFsaFs(root: FileSystemDirectoryHandle): FsLike {
     }
   }
 
-  /** Caches loose-object payloads; packfiles (and their .idx, which
-   * isomorphic-git caches itself) sit above the per-file cap and stay out. */
+  /** Caches loose-object payloads. The pack directory is excluded — its
+   * files are cached by isomorphic-git itself — as is anything above the
+   * per-file cap. */
   function cacheLoose(key: string, bytes: Uint8Array): void {
-    if (bytes.length > LOOSE_CACHE_MAX_FILE) return;
+    if (key.startsWith(PACK_DIR_PREFIX) || bytes.length > LOOSE_CACHE_MAX_FILE) return;
     looseBytes.set(key, bytes);
     looseBytesTotal += bytes.length;
     while (looseBytesTotal > LOOSE_CACHE_BUDGET) {

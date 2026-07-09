@@ -139,6 +139,12 @@ describe('createFsaFs', () => {
     expect(file('readme.md').getFileCalls).toBe(2);
   });
 
+  it('does not byte-cache pack-directory files (isomorphic-git caches those itself)', async () => {
+    await fs.promises.readFile('/.git/objects/pack/pack-1.idx');
+    await fs.promises.readFile('/.git/objects/pack/pack-1.idx');
+    expect(file('.git/objects/pack/pack-1.idx').getFileCalls).toBe(2);
+  });
+
   it('caches object-store listings but re-lists working-tree directories', async () => {
     await fs.promises.readdir('/.git/objects/pack');
     const names = await fs.promises.readdir('/.git/objects/pack');

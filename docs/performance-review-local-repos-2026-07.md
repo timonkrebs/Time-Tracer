@@ -15,18 +15,18 @@ shows the remaining costs sit one layer deeper, in three places:
 
 1. **The History panel never used the fast walk.** A History click called
    `listCommits({ path })`, which went to isomorphic-git's `log({ filepath })` — a
-   *full-history* walk that re-resolves the file's path from the root tree **for every
+   _full-history_ walk that re-resolves the file's path from the root tree **for every
    commit visited**, repeated **per file** you look at. The provider's own prime walk
-   answers the same question for *every* path at once, at about the cost the library
+   answers the same question for _every_ path at once, at about the cost the library
    charges for one file — but it was only wired to the ownership scan.
 2. **isomorphic-git has no oid-level object cache, and its storage layer taxes every
-   read.** The `cache` parameter memoises only the parsed pack *index* (`PackfileCache`)
+   read.** The `cache` parameter memoises only the parsed pack _index_ (`PackfileCache`)
    and the working-tree index. Every single object read — every commit, tree and blob, on
    every walk — first probes the loose-object path (a failed File System Access round trip
-   + exception on packed repos) and then calls `fs.readdir('.git/objects/pack')` *again*
-   (another FSA round trip). Loose objects are re-fetched and re-inflated on **every**
-   access — brutal for the most common local case, an active working repo with thousands
-   of loose objects.
+   - exception on packed repos) and then calls `fs.readdir('.git/objects/pack')` _again_
+     (another FSA round trip). Loose objects are re-fetched and re-inflated on **every**
+     access — brutal for the most common local case, an active working repo with thousands
+     of loose objects.
 3. **Unfiltered history paging was quadratic.** `log` cannot resume; it re-walks from the
    tip on every call. The Age and co-change walks page the whole history 100 commits at a
    time, so reading n commits cost O(n²/100) commit visits.
@@ -48,7 +48,7 @@ the local provider forwarded a path filter to `git.log({ filepath, force: true }
 
 - The walk visits **every reachable commit** — a path filter has no shallow form.
 - For each visited commit it calls `resolveFilepath` from the commit's **root tree**, so a
-  file at depth d costs d nested tree reads *per commit*.
+  file at depth d costs d nested tree reads _per commit_.
 - Parents are deduped only against the current `tips` array, not a visited set, and
   `tips` is re-sorted per commit — merge-heavy histories with skewed timestamps can
   re-expand whole subgraphs.
@@ -56,7 +56,7 @@ the local provider forwarded a path filter to `git.log({ filepath, force: true }
   whole walk again.
 
 So one History click cost ~`commits × (1 + path depth)` object reads, each paying the
-per-read storage tax below — and *N* clicks cost *N* of these walks. The provider already
+per-read storage tax below — and _N_ clicks cost _N_ of these walks. The provider already
 had the right primitive: `primeHistories` walks the log once and diffs each commit
 against its first parent with oid-pruned tree comparison (identical subtrees skipped,
 `local-provider.ts` `diffTrees`), producing **every** path's history in
@@ -71,10 +71,13 @@ commit anyway, it also seeds the **unfiltered** log cache as complete, which mak
 Age/co-change "Reading history…" phase a cache slice after any file-history click (and
 vice versa).
 
-Semantics note: primed histories follow first-parent tree diffs — the same semantics the
-app already showed whenever the ownership scan had primed first. Previously the panel's
-content depended on *which feature ran first*; now it is consistent. For linear histories
-(the overwhelming case) the result is identical to the old filepath log.
+Semantics note: primed histories diff each commit against its parents, with
+`git log -- <path>` parent simplification at merges — a merge enters a path's history
+only when the path differs from **every** parent, so a change arriving unmodified from a
+side branch stays attributed to that branch's own commits. Previously the panel's content
+depended on _which feature ran first_ (unprimed filepath-log vs primed first-parent
+diffs); now it is consistent and matches git's behavior. For linear histories (the
+overwhelming case) the result is identical to the old filepath log.
 
 ### 2. The storage layer taxed every object read — High, fixed
 
@@ -124,18 +127,20 @@ Age walk's read phase does no walking at all.
   `treeAt` of the rename/origin searches. Sizes now memoise per fs (`path → size|absent`),
   so only never-seen paths pay a round trip.
 - `walkTree` awaited each subtree strictly serially, making a cold tree load latency-bound
-  (Σ tree-read RTT). Sibling subtrees now load concurrently with deterministic assembly,
-  and tree reads go through the provider's shared `treeCache`, so the tree walk, the prime
-  walk, `getCommitFiles` and the rename search all reuse each other's parsed trees.
+  (Σ tree-read RTT). Sibling subtrees now load concurrently — capped by a small semaphore
+  (24 in-flight tree reads) so wide monorepos don't flood the FSA queue — with
+  deterministic assembly, and tree reads go through the provider's shared `treeCache`, so
+  the tree walk, the prime walk, `getCommitFiles` and the rename search all reuse each
+  other's parsed trees.
 
 ## Measured
 
-In-memory fs (mem-fs — so *without* any FSA round-trip savings; real folders gain more),
+In-memory fs (mem-fs — so _without_ any FSA round-trip savings; real folders gain more),
 301 commits, 50 files at depth 3, opening the history of 10 files:
 
-| | before | after |
-| --- | --- | --- |
-| 10 × `listCommits({ path })` | 1360 ms (136 ms *per file*, forever) | 204 ms **one-time**, then ~0 ms per file |
+|                              | before                               | after                                    |
+| ---------------------------- | ------------------------------------ | ---------------------------------------- |
+| 10 × `listCommits({ path })` | 1360 ms (136 ms _per file_, forever) | 204 ms **one-time**, then ~0 ms per file |
 
 The full suite (867 tests, 12 new) and a production build pass. New regression specs pin:
 prime-walk routing (no `filepath` log, one walk for concurrent requests, unfiltered-log
@@ -160,7 +165,7 @@ directory-probed-as-file poisoning edge case.
 ## Still open in our own code (unchanged priorities from the July review)
 
 - History panel renders an unvirtualized commit list after "Load all"
-  (`file-history.ts`) — for a 10k-commit file the *rendering* now dominates the loading.
+  (`file-history.ts`) — for a 10k-commit file the _rendering_ now dominates the loading.
 - Copy-on-write Map signals (`cacheCommits` et al.) make very long walks quadratic in
   store writes (`repo-store.ts:2829+`).
 - `historyCache`/`_files`/`treeCache` in the store remain unbounded until the next repo

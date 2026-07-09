@@ -22,6 +22,31 @@ import { LocalRepos } from './local-repos';
 const MAX_FILE_SIZE_BYTES = 2_000_000;
 /** Parallel `stat` calls when sizing a tree — overlaps the FS metadata reads. */
 const SIZE_STAT_CONCURRENCY = 48;
+/** Parallel subtree reads during a tree walk — overlaps the FS round trips
+ * without flooding the File System Access queue on wide trees. */
+const TREE_WALK_CONCURRENCY = 24;
+
+/** Minimal counting semaphore: bounds concurrent reads in recursive walks. */
+class Semaphore {
+  private available: number;
+  private readonly waiters: (() => void)[] = [];
+
+  constructor(slots: number) {
+    this.available = slots;
+  }
+
+  async run<T>(task: () => Promise<T>): Promise<T> {
+    if (this.available > 0) this.available--;
+    else await new Promise<void>((resolve) => this.waiters.push(resolve));
+    try {
+      return await task();
+    } finally {
+      const next = this.waiters.shift();
+      if (next) next();
+      else this.available++;
+    }
+  }
+}
 
 export type GitApi = typeof import('isomorphic-git').default;
 
@@ -211,7 +236,8 @@ export class LocalGitProvider implements GitProvider {
         oid: commitOid,
         cache: this.gitCache(fs),
       });
-      const entries = await this.walkTree(git, fs, commit.tree, '');
+      const gate = new Semaphore(TREE_WALK_CONCURRENCY);
+      const entries = await this.walkTree(git, fs, commit.tree, '', gate);
       return { entries: await this.withSizes(fs, entries), truncated: false };
     } catch (error) {
       throw this.mapError(error, `Ref "${ref}" was not found in this repository.`, 'invalid-ref');
@@ -264,30 +290,34 @@ export class LocalGitProvider implements GitProvider {
 
   /**
    * Recursive tree walk in depth-first order. Sibling subtrees load
-   * concurrently — a cold walk is bound by FS round trips, not CPU — and each
-   * level's results are assembled in order, so the listing stays deterministic.
-   * Trees go through {@link readTreeCached}: the same subtrees back the
-   * commit-diff walks, so a later prime/rename search reuses them for free.
+   * concurrently — a cold walk is bound by FS round trips, not CPU — but the
+   * shared `gate` caps how many tree reads are in flight, so a wide monorepo
+   * cannot flood the File System Access queue. Blob entries are assembled
+   * synchronously (no promise per file), and each level's results keep their
+   * order, so the listing stays deterministic. Trees go through
+   * {@link readTreeCached}: the same subtrees back the commit-diff walks, so a
+   * later prime/rename search reuses them for free.
    */
   private async walkTree(
     git: GitApi,
     fs: FsLike,
     treeOid: string,
     prefix: string,
+    gate: Semaphore,
   ): Promise<TreeEntry[]> {
-    const children = await this.readTreeCached(git, fs, treeOid);
-    const parts = await Promise.all(
-      children.map(async (entry): Promise<TreeEntry[]> => {
-        const path = prefix ? `${prefix}/${entry.path}` : entry.path;
-        if (entry.type === 'tree') {
-          const sub = await this.walkTree(git, fs, entry.oid, path);
-          return [{ path, name: entry.path, kind: 'dir', sha: entry.oid }, ...sub];
-        }
-        const kind: TreeEntry['kind'] = entry.type === 'blob' ? 'file' : 'submodule';
-        return [{ path, name: entry.path, kind, sha: entry.oid }];
-      }),
-    );
-    return parts.flat();
+    const children = await gate.run(() => this.readTreeCached(git, fs, treeOid));
+    const parts = children.map((entry): TreeEntry[] | Promise<TreeEntry[]> => {
+      const path = prefix ? `${prefix}/${entry.path}` : entry.path;
+      if (entry.type === 'tree') {
+        return this.walkTree(git, fs, entry.oid, path, gate).then((sub) => [
+          { path, name: entry.path, kind: 'dir', sha: entry.oid },
+          ...sub,
+        ]);
+      }
+      const kind: TreeEntry['kind'] = entry.type === 'blob' ? 'file' : 'submodule';
+      return [{ path, name: entry.path, kind, sha: entry.oid }];
+    });
+    return (await Promise.all(parts)).flat();
   }
 
   async getFile(slug: RepoSlug, entry: TreeEntry): Promise<RepoFile> {
@@ -418,10 +448,11 @@ export class LocalGitProvider implements GitProvider {
    * each file — an O(files × commits) storm for bulk consumers like the folder
    * ownership scan, and a full-history walk per file even for a single History
    * click. Here the history is walked once and each commit is diffed against
-   * its first parent with oid-pruned tree comparison (identical subtrees are
+   * its parents with oid-pruned tree comparison (identical subtrees are
    * skipped), so the cost is ~O(commits + changes) for the entire repository.
-   * Idempotent and cached per fs+ref; safe because the repo is read-only for
-   * the session.
+   * Merges follow `git log -- <path>` parent simplification: they enter a
+   * path's history only when the path differs from every parent. Idempotent
+   * and cached per fs+ref; safe because the repo is read-only for the session.
    */
   async primeHistories(slug: RepoSlug, ref: string): Promise<void> {
     await this.ensurePrimed(this.fs(slug), ref);
@@ -459,11 +490,29 @@ export class LocalGitProvider implements GitProvider {
     const histories = new Map<string, CommitInfo[]>();
     for (let i = 0; i < log.length; i++) {
       const entry = log[i];
-      const parentOid = entry.commit.parent[0];
-      const parentTree = parentOid ? (treeOf.get(parentOid) ?? null) : null;
+      const parents = entry.commit.parent;
+      const firstParentTree = parents[0] ? (treeOf.get(parents[0]) ?? null) : null;
       const changed: CommitFileChange[] = [];
-      await this.diffTrees(readTree, parentTree, entry.commit.tree, '', changed);
-      for (const change of changed) {
+      await this.diffTrees(readTree, firstParentTree, entry.commit.tree, '', changed);
+      let touched: readonly CommitFileChange[] = changed;
+      if (parents.length > 1 && changed.length > 0) {
+        // `git log -- <path>` parent simplification: a merge belongs to a
+        // path's history only when the path differs from EVERY parent. A
+        // change arriving unmodified from a side branch is that branch's own
+        // commit's, not the merge's.
+        const keep = new Map(changed.map((change) => [change.path, change]));
+        for (let p = 1; p < parents.length && keep.size > 0; p++) {
+          const parentTree = treeOf.get(parents[p]) ?? null;
+          const other: CommitFileChange[] = [];
+          await this.diffTrees(readTree, parentTree, entry.commit.tree, '', other);
+          const differing = new Set(other.map((change) => change.path));
+          for (const path of keep.keys()) {
+            if (!differing.has(path)) keep.delete(path);
+          }
+        }
+        touched = [...keep.values()];
+      }
+      for (const change of touched) {
         let arr = histories.get(change.path);
         if (!arr) histories.set(change.path, (arr = []));
         arr.push(infos[i]);
