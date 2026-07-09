@@ -37,12 +37,14 @@ const MAX_BRANCH_PAGES = 10;
 const MAX_TAG_PAGES = 5;
 
 /**
- * GitHub pages a commit's `files` array at 300 entries per response and lists
- * at most 3000 files per commit, so ten pages exhaust everything the API can
- * report.
+ * A commit's `files` array pages like any list endpoint once `per_page` is
+ * passed, but its *implicit* page size is unreliable (the docs' parameter
+ * table says 30, a prose note says 300) — so the size is always requested
+ * explicitly, at the API's documented maximum. GitHub lists at most 3000
+ * files per commit, so thirty pages exhaust everything it can report.
  */
-const COMMIT_FILES_PAGE_SIZE = 300;
-const MAX_COMMIT_FILE_PAGES = 10;
+const COMMIT_FILES_PAGE_SIZE = 100;
+const MAX_COMMIT_FILE_PAGES = 30;
 
 interface GithubRepoResponse {
   name: string;
@@ -328,7 +330,7 @@ export class GithubProvider implements GitProvider {
     for (let page = 1; page <= MAX_COMMIT_FILE_PAGES; page++) {
       const data = await this.request<GithubCommitResponse>(
         slug,
-        `/repos/${enc(slug.owner)}/${enc(slug.repo)}/commits/${enc(sha)}?page=${page}`,
+        `/repos/${enc(slug.owner)}/${enc(slug.repo)}/commits/${enc(sha)}?per_page=${COMMIT_FILES_PAGE_SIZE}&page=${page}`,
         { notFound: `Commit ${sha.slice(0, 7)} was not found in this repository.` },
       );
       const batch = data.files ?? [];
