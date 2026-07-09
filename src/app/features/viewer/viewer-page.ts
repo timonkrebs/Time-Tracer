@@ -24,6 +24,7 @@ import {
 import { LineRange, formatLineRange, parseLineRange } from '../../core/util/line-range';
 import { relativeTime, shortSha } from '../../core/util/relative-time';
 import { ThemeToggle } from '../shared/theme-toggle';
+import { BranchExplorer } from './branch-explorer';
 import { BranchPicker } from './branch-picker';
 import { DiffView } from './diff-view';
 import { FileFinder } from './file-finder';
@@ -57,6 +58,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [
     RouterLink,
+    BranchExplorer,
     BranchPicker,
     FileTree,
     FileView,
@@ -147,6 +149,34 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
             >
               <path d="M3 3v18h18" />
               <path d="m7 14 4-4 3 3 5-5" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="shrink-0 rounded p-1.5 transition"
+            [class]="
+              graphMode()
+                ? 'bg-indigo-500/20 text-indigo-200'
+                : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100'
+            "
+            (click)="toggleGraph()"
+            aria-label="Branch Explorer"
+            [attr.aria-pressed]="graphMode()"
+            title="Branch Explorer — branches and merges as a commit graph (g)"
+          >
+            <svg
+              class="size-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="18" cy="18" r="3" />
+              <circle cx="6" cy="6" r="3" />
+              <path d="M6 21V9a9 9 0 0 0 9 9" />
             </svg>
           </button>
         }
@@ -359,7 +389,22 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
             ></div>
           }
 
-          @if (insightsMode()) {
+          @if (graphMode()) {
+            <app-branch-explorer
+              class="min-h-0 min-w-0 flex-1"
+              [state]="store.branchGraph()"
+              [sizes]="store.graphSizes()"
+              [branches]="store.branches()"
+              [defaultBranch]="store.metadata()?.defaultBranch ?? null"
+              (load)="store.loadBranchGraph()"
+              (loadMore)="store.loadMoreBranchGraph()"
+              (loadSizes)="store.loadGraphSizes()"
+              (resolveParents)="store.resolveGraphParents()"
+              (addBranch)="store.addGraphBranch($event)"
+              (loadBranches)="store.loadBranches()"
+              (browse)="onGraphBrowse($event)"
+            />
+          } @else if (insightsMode()) {
             <app-insights-view
               class="min-h-0 min-w-0 flex-1"
               [state]="store.coChange()"
@@ -658,6 +703,8 @@ export class ViewerPage {
   readonly base = input<string | undefined>();
   /** `1` shows the repository Insights view instead of the file browser. */
   readonly insights = input<string | undefined>();
+  /** `1` shows the Branch Explorer (the commit graph) instead of the file browser. */
+  readonly graph = input<string | undefined>();
 
   protected readonly commitCap = CO_CHANGE_COMMIT_CAP;
 
@@ -689,6 +736,9 @@ export class ViewerPage {
 
   /** The repository Insights view replaces the file browser when on. */
   protected readonly insightsMode = computed(() => this.insights() === '1');
+
+  /** The Branch Explorer replaces the file browser when on (it wins over Insights). */
+  protected readonly graphMode = computed(() => this.graph() === '1');
 
   /** Display name of the repo, used to name exported files. */
   protected readonly repoLabel = computed(
@@ -982,6 +1032,29 @@ export class ViewerPage {
       });
     });
 
+    // The Branch Explorer costs a single request, so it loads itself when
+    // opened (or deep-linked) instead of hiding behind an extra click.
+    effect(() => {
+      const phase = this.store.phase();
+      const open = this.graphMode();
+      untracked(() => {
+        if (open && phase === 'ready') void this.store.loadBranchGraph();
+      });
+    });
+
+    // Local repositories read commit files from disk, so the graph's fill
+    // levels cost no requests — size them eagerly (like the folder ownership
+    // auto-scan); hosted repositories keep the opt-in button.
+    effect(() => {
+      const graph = this.store.branchGraph();
+      const auto = this.graphMode() && this.store.hasLocalData();
+      untracked(() => {
+        if (auto && graph?.status === 'ready' && !this.store.graphSizes()) {
+          void this.store.loadGraphSizes();
+        }
+      });
+    });
+
     // Opening a repository always reveals the file tree — it is how you start
     // navigating a new codebase. A deliberate collapse still sticks while you
     // browse that same repo; only loading another one re-reveals it.
@@ -999,7 +1072,8 @@ export class ViewerPage {
   /**
    * App-wide keyboard shortcuts (the viewer is otherwise mouse-driven):
    * Ctrl/⌘ P quick-open · ←/→ older/newer commit · b blame · h history ·
-   * o owners · t file tree · Esc closes the side panels. Single-key shortcuts
+   * o owners · t file tree · g branch explorer · Esc closes the side panels.
+   * Single-key shortcuts
    * are skipped while a field is focused or the finder overlay is open, and
    * never fire with a modifier held (so they don't shadow browser keys).
    */
@@ -1049,6 +1123,11 @@ export class ViewerPage {
         event.preventDefault();
         this.toggleTree();
         break;
+      case 'g':
+      case 'G':
+        event.preventDefault();
+        this.toggleGraph();
+        break;
       case 'Escape':
         this.closePanels();
         break;
@@ -1069,7 +1148,30 @@ export class ViewerPage {
   protected toggleInsights(): void {
     void this.router.navigate([], {
       relativeTo: this.route,
-      queryParams: { insights: this.insightsMode() ? null : '1' },
+      queryParams: { insights: this.insightsMode() ? null : '1', graph: null },
+      queryParamsHandling: 'merge',
+    });
+  }
+
+  /** Shows or hides the Branch Explorer (deep-linked via `?graph=1`). */
+  protected toggleGraph(): void {
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { graph: this.graphMode() ? null : '1', insights: null },
+      queryParamsHandling: 'merge',
+    });
+  }
+
+  /**
+   * "Browse this commit" in the Branch Explorer: reload the repository with
+   * that sha as its ref — the whole tree time-travels to the commit. The
+   * file-timeline params (`at`/`view`/`line`/`base`) belong to the previous
+   * ref and are dropped, like a branch switch.
+   */
+  protected onGraphBrowse(sha: string): void {
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { ref: sha, graph: null, at: null, view: null, line: null, base: null },
       queryParamsHandling: 'merge',
     });
   }
@@ -1127,10 +1229,18 @@ export class ViewerPage {
   protected onFileSelect(path: string): void {
     // Switching files always returns to the snapshot tip: `at`, `view` and
     // `line` belong to the previous file's timeline. Blame mode is sticky.
-    // Opening a file also leaves the Insights view.
+    // Opening a file also leaves the Insights and Branch Explorer views.
     void this.router.navigate([], {
       relativeTo: this.route,
-      queryParams: { path, at: null, view: null, line: null, base: null, insights: null },
+      queryParams: {
+        path,
+        at: null,
+        view: null,
+        line: null,
+        base: null,
+        insights: null,
+        graph: null,
+      },
       queryParamsHandling: 'merge',
     });
   }

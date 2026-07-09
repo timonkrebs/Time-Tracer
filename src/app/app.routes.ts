@@ -8,7 +8,8 @@ export const routes: Routes = [
   },
   {
     // Query params: `ref` (branch/tag/sha), `path` (selected file),
-    // `at` (time travel), `view` (file/diff), `blame=0` (annotations off), `line`.
+    // `at` (time travel), `view` (file/diff), `blame=0` (annotations off),
+    // `line`, `insights=1` (Insights view), `graph=1` (Branch Explorer).
     path: 'r/:owner/:repo',
     loadComponent: () => import('./features/viewer/viewer-page').then((m) => m.ViewerPage),
     data: { provider: 'github' },

@@ -1721,6 +1721,233 @@ describe('RepoStore', () => {
     });
   });
 
+  describe('branch graph (loadBranchGraph)', () => {
+    /** listCommits stub answering per requested ref/page. */
+    function answer(pages: Record<string, CommitInfo[][]>): void {
+      provider.listCommitsResult = () => {
+        const options = provider.listCommitsCalls.at(-1)!;
+        const branch = pages[options.ref ?? ''] ?? [];
+        return Promise.resolve(branch[(options.page ?? 1) - 1] ?? []);
+      };
+    }
+
+    it('loads one page of the viewed ref and records its tip', async () => {
+      await store.loadRepo(slug);
+      answer({ main: [[commit('m2', ['m1']), commit('m1')]] });
+
+      await store.loadBranchGraph();
+
+      const graph = store.branchGraph();
+      expect(graph?.status).toBe('ready');
+      if (graph?.status !== 'ready') return;
+      expect(graph.commits.map((c) => c.sha)).toEqual(['m2', 'm1']);
+      expect([...graph.heads.entries()]).toEqual([['main', 'm2']]);
+      expect(graph.hasMore).toBe(false);
+      expect(provider.listCommitsCalls).toEqual([{ ref: 'main', perPage: 100 }]);
+    });
+
+    it('no-ops when a graph is already loaded', async () => {
+      await store.loadRepo(slug);
+      answer({ main: [[commit('m1')]] });
+      await store.loadBranchGraph();
+      await store.loadBranchGraph();
+
+      expect(provider.listCommitsCalls.length).toBe(1);
+    });
+
+    it('reports more history when a full page arrives, and pages it in', async () => {
+      await store.loadRepo(slug);
+      const first = Array.from({ length: 100 }, (_, i) =>
+        commit(`m${100 - i}`, 100 - i > 1 ? [`m${100 - i - 1}`] : []),
+      );
+      answer({ main: [first, [commit('m0')]] });
+
+      await store.loadBranchGraph();
+      let graph = store.branchGraph();
+      expect(graph?.status === 'ready' && graph.hasMore).toBe(true);
+
+      await store.loadMoreBranchGraph();
+      graph = store.branchGraph();
+      expect(graph?.status).toBe('ready');
+      if (graph?.status !== 'ready') return;
+      expect(graph.commits.length).toBe(101);
+      expect(graph.hasMore).toBe(false);
+      expect(provider.listCommitsCalls.at(-1)).toEqual({ ref: 'main', perPage: 100, page: 2 });
+    });
+
+    it('merges an added branch into one deduped DAG', async () => {
+      await store.loadRepo(slug);
+      answer({
+        main: [[commit('m2', ['m1']), commit('m1')]],
+        dev: [[commit('d1', ['m1']), commit('m1')]],
+      });
+
+      await store.loadBranchGraph();
+      await store.addGraphBranch('dev');
+
+      const graph = store.branchGraph();
+      expect(graph?.status).toBe('ready');
+      if (graph?.status !== 'ready') return;
+      expect(graph.commits.map((c) => c.sha).sort()).toEqual(['d1', 'm1', 'm2']);
+      expect([...graph.heads.entries()]).toEqual([
+        ['main', 'm2'],
+        ['dev', 'd1'],
+      ]);
+    });
+
+    it('keeps the graph usable when an added branch fails', async () => {
+      await store.loadRepo(slug);
+      answer({ main: [[commit('m1')]] });
+      await store.loadBranchGraph();
+
+      provider.listCommitsResult = () => Promise.reject(new RepoProviderError('nope', 'not-found'));
+      await store.addGraphBranch('ghost');
+
+      const graph = store.branchGraph();
+      expect(graph?.status).toBe('ready');
+      if (graph?.status !== 'ready') return;
+      expect(graph.commits.map((c) => c.sha)).toEqual(['m1']);
+      expect(graph.message).toContain('ghost');
+    });
+
+    it('surfaces a failed initial load and retries on the next call', async () => {
+      await store.loadRepo(slug);
+      provider.listCommitsResult = () =>
+        Promise.reject(new RepoProviderError('rate limited', 'rate-limited'));
+      await store.loadBranchGraph();
+      expect(store.branchGraph()).toEqual({ status: 'error', message: 'rate limited' });
+
+      answer({ main: [[commit('m1')]] });
+      await store.loadBranchGraph();
+      expect(store.branchGraph()?.status).toBe('ready');
+    });
+
+    it('is dropped when another ref is loaded', async () => {
+      await store.loadRepo(slug);
+      answer({ main: [[commit('m1')]] });
+      await store.loadBranchGraph();
+      expect(store.branchGraph()).not.toBeNull();
+
+      await store.loadRepo(slug, 'dev');
+      expect(store.branchGraph()).toBeNull();
+    });
+
+    it('sizes every commit, merges included', async () => {
+      await store.loadRepo(slug);
+      answer({ main: [[commit('m', ['c2', 'f2']), commit('c2', ['c1']), commit('c1')]] });
+      await store.loadBranchGraph();
+      provider.commitFilesResult = (sha) =>
+        Promise.resolve([{ path: `${sha}.ts`, status: 'modified', additions: 5, deletions: 2 }]);
+
+      await store.loadGraphSizes();
+
+      const sizes = store.graphSizes();
+      expect(sizes?.status).toBe('ready');
+      expect(sizes?.sizes.get('c2')).toEqual({ additions: 5, deletions: 2, files: 1 });
+      expect(sizes?.sizes.get('c1')).toEqual({ additions: 5, deletions: 2, files: 1 });
+      // Merges are sized too — the UI gauges them against other merges only.
+      expect(sizes?.sizes.get('m')).toEqual({ additions: 5, deletions: 2, files: 1 });
+      expect(sizes?.scanned).toBe(3);
+    });
+
+    it('sizes only what is still missing on a second run', async () => {
+      await store.loadRepo(slug);
+      answer({ main: [[commit('c2', ['c1']), commit('c1')]] });
+      await store.loadBranchGraph();
+      let fetched: string[] = [];
+      provider.commitFilesResult = (sha) => {
+        fetched.push(sha);
+        return Promise.resolve([{ path: 'a', status: 'modified' }]);
+      };
+
+      await store.loadGraphSizes();
+      expect(fetched.sort()).toEqual(['c1', 'c2']);
+
+      fetched = [];
+      await store.loadGraphSizes();
+      expect(fetched).toEqual([]);
+      expect(store.graphSizes()?.status).toBe('ready');
+    });
+
+    it('stops sizing on a failure but keeps the graph and message', async () => {
+      await store.loadRepo(slug);
+      answer({ main: [[commit('c1')]] });
+      await store.loadBranchGraph();
+      provider.commitFilesResult = () =>
+        Promise.reject(new RepoProviderError('rate limited', 'rate-limited'));
+
+      await store.loadGraphSizes();
+
+      const sizes = store.graphSizes();
+      expect(sizes?.status).toBe('ready');
+      expect(sizes?.message).toBe('rate limited');
+      expect(sizes?.sizes.size).toBe(0);
+    });
+
+    it('flags a listing without parents and resolves them commit by commit', async () => {
+      await store.loadRepo(slug);
+      // Azure DevOps style: the bulk listing reports no parents at all.
+      answer({ main: [[commit('m2'), commit('m1')]] });
+      await store.loadBranchGraph();
+      let graph = store.branchGraph();
+      expect(graph?.status === 'ready' && graph.parentsMissing).toBe(true);
+
+      provider.commitResult = (sha) => Promise.resolve(commit(sha, sha === 'm2' ? ['m1'] : []));
+      await store.resolveGraphParents();
+
+      graph = store.branchGraph();
+      expect(graph?.status).toBe('ready');
+      if (graph?.status !== 'ready') return;
+      expect(graph.parentsMissing).toBeUndefined();
+      expect(graph.commits.find((c) => c.sha === 'm2')?.parentShas).toEqual(['m1']);
+    });
+
+    it('keeps offering parent resolution while unresolved commits remain', async () => {
+      await store.loadRepo(slug);
+      // Azure DevOps style: the bulk listing reports no parents anywhere.
+      answer({ main: [[commit('m3'), commit('m2'), commit('m1')]] });
+      await store.loadBranchGraph();
+
+      // The first resolution run fails part-way: only m3 gets its parents.
+      let calls = 0;
+      provider.commitResult = (sha) => {
+        calls++;
+        if (calls > 1) return Promise.reject(new RepoProviderError('rate limited', 'rate-limited'));
+        return Promise.resolve(commit(sha, ['m2']));
+      };
+      await store.resolveGraphParents();
+
+      let graph = store.branchGraph();
+      expect(graph?.status).toBe('ready');
+      if (graph?.status !== 'ready') return;
+      // Unresolved commits are no longer the majority, but they are still
+      // unresolved listings — resolution must stay offered.
+      expect(graph.parentsMissing).toBe(true);
+      expect(graph.message).toBe('rate limited');
+
+      // The next run finishes the job; m1 turns out to be a genuine root.
+      provider.commitResult = (sha) => Promise.resolve(commit(sha, sha === 'm1' ? [] : ['m1']));
+      await store.resolveGraphParents();
+      graph = store.branchGraph();
+      expect(graph?.status).toBe('ready');
+      if (graph?.status !== 'ready') return;
+      expect(graph.parentsMissing).toBeUndefined();
+
+      // Confirmed roots are never fetched again.
+      const fetches = provider.getCommitCalls.length;
+      await store.resolveGraphParents();
+      expect(provider.getCommitCalls.length).toBe(fetches);
+    });
+
+    it('does not flag a normal history whose only parentless commit is the root', async () => {
+      await store.loadRepo(slug);
+      answer({ main: [[commit('m2', ['m1']), commit('m1')]] });
+      await store.loadBranchGraph();
+      const graph = store.branchGraph();
+      expect(graph?.status === 'ready' && graph.parentsMissing).toBeFalsy();
+    });
+  });
+
   describe('co-change (computeCoChange)', () => {
     beforeEach(async () => {
       await store.loadRepo(slug);
@@ -1869,9 +2096,7 @@ describe('RepoStore', () => {
       // Every page is full, so the walk fills the cap without ever seeing the end.
       provider.listCommitsResult = () => {
         const { perPage = 30, page = 1 } = provider.listCommitsCalls.at(-1)!;
-        return Promise.resolve(
-          Array.from({ length: perPage }, (_, i) => commit(`p${page}c${i}`)),
-        );
+        return Promise.resolve(Array.from({ length: perPage }, (_, i) => commit(`p${page}c${i}`)));
       };
       provider.commitFilesResult = () =>
         Promise.resolve([{ path: 'src/app.ts', status: 'modified' }]);
