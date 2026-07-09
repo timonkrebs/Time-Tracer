@@ -1,9 +1,13 @@
 import {
   CoChangePair,
   CommitFiles,
+  autoModuleDepth,
   clusterCoChange,
   computeCoChange,
+  computeModuleCoChange,
   couplingConfidence,
+  moduleOf,
+  modulePairDrivers,
   pathDistance,
   relatedFiles,
   surprisingCouplings,
@@ -207,5 +211,162 @@ describe('surprisingCouplings', () => {
 
   it('honours the limit', () => {
     expect(surprisingCouplings(pairs, { limit: 1 })).toHaveLength(1);
+  });
+});
+
+describe('moduleOf', () => {
+  it('takes the directory prefix at the requested depth', () => {
+    expect(moduleOf('src/auth/login.ts', 1)).toBe('src');
+    expect(moduleOf('src/auth/login.ts', 2)).toBe('src/auth');
+    expect(moduleOf('src/auth/login.ts', 9)).toBe('src/auth'); // deeper than the path
+  });
+
+  it('rolls a file up to its own folder when shallower than the depth', () => {
+    expect(moduleOf('src/main.ts', 2)).toBe('src');
+  });
+
+  it('maps a repository-root file to the empty module', () => {
+    expect(moduleOf('README.md', 1)).toBe('');
+  });
+
+  it('sanitises a malformed depth to a whole number >= 1', () => {
+    expect(moduleOf('src/auth/login.ts', Number.NaN)).toBe('src');
+    expect(moduleOf('src/auth/login.ts', 0)).toBe('src');
+    expect(moduleOf('src/auth/login.ts', -3)).toBe('src');
+    expect(moduleOf('src/auth/login.ts', 2.9)).toBe('src/auth'); // truncated to 2
+    expect(moduleOf('src/auth/login.ts', Number.POSITIVE_INFINITY)).toBe('src/auth');
+  });
+});
+
+describe('computeModuleCoChange', () => {
+  const MODULE_COMMITS: CommitFiles[] = [
+    { sha: 'm1', files: ['src/auth/a.ts', 'src/ui/b.ts'] },
+    { sha: 'm2', files: ['src/auth/a.ts', 'src/ui/c.ts'] },
+    { sha: 'm3', files: ['src/auth/a.ts', 'src/auth/d.ts'] }, // within one module
+  ];
+
+  it('couples modules that change together, ignoring within-module churn', () => {
+    const result = computeModuleCoChange(MODULE_COMMITS, { depth: 2, minSupport: 2 });
+
+    // src/auth changed in all three commits; src/ui in two.
+    expect(result.changes.get('src/auth')).toBe(3);
+    expect(result.changes.get('src/ui')).toBe(2);
+    // m3 touched two files in the same module, so it couples nothing.
+    expect(result.pairs).toEqual([{ a: 'src/auth', b: 'src/ui', support: 2, degree: 2 / 3 }]);
+  });
+
+  it('re-buckets by depth — a shallower depth merges siblings', () => {
+    // At depth 1 everything is just "src", so there is no cross-module coupling.
+    const result = computeModuleCoChange(MODULE_COMMITS, { depth: 1, minSupport: 2 });
+    expect(result.changes.get('src')).toBe(3);
+    expect(result.pairs).toEqual([]);
+  });
+
+  it('drops sweeps by their real file count, before the roll-up', () => {
+    const sweep: CommitFiles = {
+      sha: 'sweep',
+      files: Array.from({ length: 30 }, (_, i) => `mod${i}/f.ts`),
+    };
+    const result = computeModuleCoChange(
+      [
+        sweep, // 30 files > cap → dropped even though it spans many modules
+        { sha: 'n', files: ['a/x.ts', 'b/y.ts'] },
+        { sha: 'o', files: ['a/x.ts', 'b/y.ts'] },
+      ],
+      { depth: 1, minSupport: 2 },
+    );
+    expect(result.commitsUsed).toBe(2);
+    expect(result.pairs).toEqual([{ a: 'a', b: 'b', support: 2, degree: 1 }]);
+  });
+
+  it('ignores repository-root files — manifests must not become a module', () => {
+    const result = computeModuleCoChange(
+      [
+        { sha: 'r1', files: ['package.json', 'auth/a.ts', 'ui/x.ts'] },
+        { sha: 'r2', files: ['package.json', 'auth/a.ts', 'ui/x.ts'] },
+      ],
+      { depth: 1, minSupport: 2 },
+    );
+    expect(result.changes.get('')).toBeUndefined();
+    expect(result.pairs).toEqual([{ a: 'auth', b: 'ui', support: 2, degree: 1 }]);
+  });
+});
+
+describe('autoModuleDepth', () => {
+  it('stays at depth 1 when the top-level folders already split the tree', () => {
+    expect(
+      autoModuleDepth([{ sha: 'c', files: ['auth/a.ts', 'ui/x.ts', 'db/q.ts', 'api/r.ts'] }]),
+    ).toBe(1);
+  });
+
+  it('digs deeper while a single folder dominates (the src/app funnel)', () => {
+    // Everything under src/app → depths 1 and 2 are one blob; 3 splits it.
+    const commits: CommitFiles[] = [
+      { sha: 'c1', files: ['src/app/core/a.ts', 'src/app/core/b.ts'] },
+      { sha: 'c2', files: ['src/app/features/x.ts', 'src/app/features/y.ts'] },
+      { sha: 'c3', files: ['src/app/core/c.ts', 'src/app/features/z.ts'] },
+    ];
+    expect(autoModuleDepth(commits)).toBe(3);
+  });
+
+  it('caps at maxDepth when a folder dominates all the way down', () => {
+    const commits: CommitFiles[] = [
+      { sha: 'c', files: ['a/b/c/d/e/one.ts', 'a/b/c/d/e/two.ts', 'a/b/c/d/e/three.ts'] },
+    ];
+    expect(autoModuleDepth(commits, { maxDepth: 4 })).toBe(4);
+  });
+
+  it('falls back to depth 1 with no groupable (non-root) files', () => {
+    expect(autoModuleDepth([])).toBe(1);
+    expect(autoModuleDepth([{ sha: 'c', files: ['README.md', 'package.json'] }])).toBe(1);
+  });
+
+  it('ignores sweep commits — depth comes from the commits that will be scored', () => {
+    // Normal commits all funnel through src/app; a 30-file top-level sweep
+    // would make depth 1 look balanced, but the module analysis drops it —
+    // counting it here would hide the actual core ↔ features coupling.
+    const commits: CommitFiles[] = [
+      { sha: 'c1', files: ['src/app/core/a.ts', 'src/app/core/b.ts'] },
+      { sha: 'c2', files: ['src/app/features/x.ts', 'src/app/features/y.ts'] },
+      { sha: 'c3', files: ['src/app/core/c.ts', 'src/app/features/z.ts'] },
+      { sha: 'sweep', files: Array.from({ length: 30 }, (_, i) => `mod${i}/f.ts`) },
+    ];
+    expect(autoModuleDepth(commits)).toBe(3);
+  });
+});
+
+describe('modulePairDrivers', () => {
+  const commits: CommitFiles[] = [
+    ...Array.from({ length: 5 }, (_, i) => ({ sha: `s${i}`, files: ['auth/b.ts', 'ui/y.ts'] })),
+    { sha: 'w1', files: ['auth/a.ts', 'ui/x.ts'] },
+    { sha: 'w2', files: ['auth/a.ts', 'ui/x.ts'] },
+    { sha: 'same', files: ['auth/a.ts', 'auth/b.ts'] }, // same module → no driver
+    { sha: 'root', files: ['auth/a.ts', 'package.json'] }, // root → no driver
+  ];
+
+  it('buckets cross-module file pairs by the module pair they bridge, strongest first', () => {
+    const drivers = modulePairDrivers(commits, 1);
+
+    expect([...drivers.keys()]).toEqual(['auth\nui']);
+    const bucket = drivers.get('auth\nui')!;
+    expect(bucket.map((p) => [p.a, p.b, p.support])).toEqual([
+      ['auth/b.ts', 'ui/y.ts', 5],
+      ['auth/a.ts', 'ui/x.ts', 2],
+    ]);
+    // Degree is the usual Jaccard: auth/b.ts changed 6× in total, ui/y.ts 5×.
+    expect(bucket[0].degree).toBeCloseTo(5 / 6);
+  });
+
+  it('truncates each bucket to the per-pair cap, keeping the strongest', () => {
+    const drivers = modulePairDrivers(commits, 1, { perPair: 1 });
+    expect(drivers.get('auth\nui')!.map((p) => p.support)).toEqual([5]);
+  });
+
+  it('drops sweep commits, like the module analysis itself', () => {
+    const sweep: CommitFiles = {
+      sha: 'sweep',
+      files: Array.from({ length: 30 }, (_, i) => `mod${i}/f.ts`),
+    };
+    expect(modulePairDrivers([sweep], 1).size).toBe(0);
   });
 });

@@ -284,3 +284,155 @@ export function pathDistance(a: string, b: string): number {
   while (common < max && dirsA[common] === dirsB[common]) common++;
   return 1 - (2 * common) / total;
 }
+
+/**
+ * The "module" a file belongs to: its directory prefix at `depth` segments.
+ * `src/auth/login.ts` → `src` at depth 1, `src/auth` at depth 2; a file with
+ * fewer directories than `depth` rolls up to its own folder, and a file at the
+ * repository root has no module (''). Modules are how change coupling is rolled
+ * up from files to the architecture level. `depth` is sanitised so a malformed
+ * value can't skew bucketing: NaN falls back to 1, anything below 1 clamps to
+ * 1, floats truncate to whole levels, and Infinity keeps the full folder path.
+ */
+export function moduleOf(path: string, depth: number): string {
+  const levels = Number.isNaN(depth) ? 1 : Math.max(1, Math.trunc(depth));
+  const slash = path.lastIndexOf('/');
+  if (slash < 0) return ''; // a file at the repository root
+  return path.slice(0, slash).split('/').slice(0, levels).join('/');
+}
+
+/**
+ * Change coupling rolled up to **modules** (directory prefixes at `depth`):
+ * which parts of the tree change together. Each commit's files collapse to the
+ * set of modules they live in, so a commit touching two files in the same
+ * folder couples nothing, while one spanning `auth/` and `ui/` couples those
+ * modules — surfacing cross-boundary entanglement (the architectural-decay
+ * smell) and hiding the within-module churn that is expected.
+ *
+ * Files at the repository root are ignored: manifests, lockfiles and docs are
+ * cross-cutting config noise that would couple every module to "(root)".
+ * Sweeps are dropped by their real file count *before* the roll-up (a 50-file
+ * refactor stays noise even if it spans only three folders), then the same
+ * pairing and scoring as {@link computeCoChange} runs over the modules.
+ */
+export function computeModuleCoChange(
+  commits: Iterable<CommitFiles>,
+  options: { depth?: number; maxCommitFiles?: number; minSupport?: number } = {},
+): CoChangeResult {
+  const depth = options.depth ?? 1;
+  const maxCommitFiles = options.maxCommitFiles ?? DEFAULT_MAX_COMMIT_FILES;
+  const moduleCommits: CommitFiles[] = [];
+  for (const commit of commits) {
+    const files = [...new Set(commit.files)];
+    // Filter sweeps by the actual files touched, not the (smaller) module count.
+    if (files.length === 0 || files.length > maxCommitFiles) continue;
+    const modules = new Set<string>();
+    for (const file of files) {
+      const module = moduleOf(file, depth);
+      if (module !== '') modules.add(module); // root files are config noise
+    }
+    moduleCommits.push({ sha: commit.sha, files: [...modules] });
+  }
+  // Sweep filtering is already done, so don't re-cap on the module count.
+  return computeCoChange(moduleCommits, {
+    minSupport: options.minSupport,
+    maxCommitFiles: Number.POSITIVE_INFINITY,
+  });
+}
+
+/**
+ * Picks the module depth automatically: the smallest depth (1..`maxDepth`) at
+ * which no single module holds more than `dominance` of the files. A repo that
+ * funnels everything through one folder chain (`src/app/…`) needs a deeper cut
+ * before folders become meaningful, while a flat repo is fine at depth 1 —
+ * this finds the right level without a knob. Sweep commits and root-level
+ * files are ignored, so the depth is chosen from exactly the commit set
+ * {@link computeModuleCoChange} will score — otherwise one 30-file top-level
+ * sweep could make a shallow depth look balanced while every commit that
+ * actually counts collapses into a single module.
+ */
+export function autoModuleDepth(
+  commits: Iterable<CommitFiles>,
+  options: { maxDepth?: number; dominance?: number; maxCommitFiles?: number } = {},
+): number {
+  const maxDepth = options.maxDepth ?? 4;
+  const dominance = options.dominance ?? 0.5;
+  const maxCommitFiles = options.maxCommitFiles ?? DEFAULT_MAX_COMMIT_FILES;
+  const files = new Set<string>();
+  for (const commit of commits) {
+    const unique = new Set(commit.files);
+    if (unique.size === 0 || unique.size > maxCommitFiles) continue; // sweep noise
+    for (const file of unique) if (file.includes('/')) files.add(file);
+  }
+  if (files.size === 0) return 1;
+  for (let depth = 1; depth < maxDepth; depth++) {
+    const counts = new Map<string, number>();
+    let largest = 0;
+    for (const file of files) {
+      const module = moduleOf(file, depth);
+      const count = (counts.get(module) ?? 0) + 1;
+      counts.set(module, count);
+      if (count > largest) largest = count;
+    }
+    if (largest / files.size <= dominance) return depth;
+  }
+  return maxDepth;
+}
+
+/** Driver file pairs kept per module pair (the UI shows the top few). */
+const DEFAULT_DRIVERS_PER_PAIR = 8;
+
+/**
+ * The file pairs behind each cross-module coupling — what makes two modules
+ * change together, concretely. Folds the commits directly (same sweep filter
+ * as {@link computeModuleCoChange}), counting **only** pairs that bridge two
+ * modules: same-module pairs — the overwhelming majority — and root files are
+ * skipped at the commit level, so the full minSupport-1 pair list is never
+ * materialized. Buckets are keyed `moduleA + '\n' + moduleB` with A < B,
+ * strongest first, truncated to `perPair`.
+ */
+export function modulePairDrivers(
+  commits: Iterable<CommitFiles>,
+  depth: number,
+  options: { maxCommitFiles?: number; perPair?: number } = {},
+): ReadonlyMap<string, readonly CoChangePair[]> {
+  const maxCommitFiles = options.maxCommitFiles ?? DEFAULT_MAX_COMMIT_FILES;
+  const perPair = options.perPair ?? DEFAULT_DRIVERS_PER_PAIR;
+
+  const changes = new Map<string, number>();
+  const counts = new Map<string, PairAccum>();
+  for (const commit of commits) {
+    const files = [...new Set(commit.files)].sort();
+    if (files.length === 0 || files.length > maxCommitFiles) continue;
+    const modules = files.map((file) => moduleOf(file, depth));
+    for (const file of files) changes.set(file, (changes.get(file) ?? 0) + 1);
+    for (let i = 0; i < files.length; i++) {
+      if (modules[i] === '') continue;
+      for (let j = i + 1; j < files.length; j++) {
+        if (modules[j] === '' || modules[i] === modules[j]) continue;
+        const key = files[i] + '\n' + files[j];
+        const entry = counts.get(key);
+        if (entry) entry.support++;
+        else counts.set(key, { a: files[i], b: files[j], support: 1 });
+      }
+    }
+  }
+
+  const buckets = new Map<string, CoChangePair[]>();
+  for (const { a, b, support } of counts.values()) {
+    const moduleA = moduleOf(a, depth);
+    const moduleB = moduleOf(b, depth);
+    const key = moduleA < moduleB ? moduleA + '\n' + moduleB : moduleB + '\n' + moduleA;
+    const union = (changes.get(a) ?? 0) + (changes.get(b) ?? 0) - support;
+    let bucket = buckets.get(key);
+    if (!bucket) buckets.set(key, (bucket = []));
+    bucket.push({ a, b, support, degree: union > 0 ? support / union : 0 });
+  }
+  for (const [key, bucket] of buckets) {
+    bucket.sort(
+      (x, y) => y.support - x.support || x.a.localeCompare(y.a) || x.b.localeCompare(y.b),
+    );
+    if (bucket.length > perPair) buckets.set(key, bucket.slice(0, perPair));
+  }
+  return buckets;
+}
