@@ -43,7 +43,9 @@ describe('BitbucketCloudProvider', () => {
 
     const metadata = await provider.getMetadata(slug);
 
-    expect(fetchMock.mock.calls[0][0]).toBe('https://api.bitbucket.org/2.0/repositories/acme/rocket');
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://api.bitbucket.org/2.0/repositories/acme/rocket',
+    );
     expect(metadata).toMatchObject({ fullName: 'acme/rocket', defaultBranch: 'develop' });
   });
 
@@ -65,14 +67,25 @@ describe('BitbucketCloudProvider', () => {
     expect(list).toEqual({ names: ['develop', 'main', 'release/1.0'], truncated: false });
   });
 
+  it('lists tags with the commits they point at', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ values: [{ name: 'v1.0.0', target: { hash: 'abc' } }] }),
+    );
+
+    const list = await provider.listTags(slug);
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://api.bitbucket.org/2.0/repositories/acme/rocket/refs/tags?pagelen=100&sort=-target.date',
+    );
+    expect(list).toEqual({ tags: [{ name: 'v1.0.0', sha: 'abc' }], truncated: false });
+  });
+
   it('resolves a slash-containing branch to its hash before listing the tree', async () => {
     // The /src endpoint decodes %2F and cuts the ref at the slash, so the
     // branch is resolved through refs/branches (which accepts the encoding)
     // and the tree is listed at the target hash instead.
     fetchMock
-      .mockResolvedValueOnce(
-        jsonResponse({ name: 'feature/foo', target: { hash: 'cafebabe' } }),
-      )
+      .mockResolvedValueOnce(jsonResponse({ name: 'feature/foo', target: { hash: 'cafebabe' } }))
       .mockResolvedValueOnce(
         jsonResponse({
           values: [{ path: 'README.md', type: 'commit_file', commit: { hash: 'cafebabe' } }],
@@ -108,9 +121,7 @@ describe('BitbucketCloudProvider', () => {
 
   it('uses the memoised slash-ref resolution for file history', async () => {
     fetchMock
-      .mockResolvedValueOnce(
-        jsonResponse({ name: 'feature/foo', target: { hash: 'cafebabe' } }),
-      )
+      .mockResolvedValueOnce(jsonResponse({ name: 'feature/foo', target: { hash: 'cafebabe' } }))
       .mockResolvedValueOnce(jsonResponse({ values: [] }))
       .mockResolvedValueOnce(jsonResponse({ values: [] }));
 
@@ -167,7 +178,9 @@ describe('BitbucketCloudProvider', () => {
 
     const file = await provider.getFile(slug, entry);
 
-    expect(fetchMock.mock.calls[0][0]).toBe('https://api.bitbucket.org/2.0/repositories/acme/rocket/src/c1/a.txt');
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://api.bitbucket.org/2.0/repositories/acme/rocket/src/c1/a.txt',
+    );
     expect(file).toMatchObject({ kind: 'text', text: 'hello world\n', sha: 'c1' });
   });
 

@@ -63,6 +63,20 @@ export interface RepoBranchList {
   readonly truncated: boolean;
 }
 
+/** A tag and the commit it points at (annotated tags dereferenced). */
+export interface RepoTag {
+  readonly name: string;
+  /** Sha of the tagged commit. */
+  readonly sha: string;
+}
+
+/** The repository's tags, for the Branch Explorer's tag chips. */
+export interface RepoTagList {
+  readonly tags: readonly RepoTag[];
+  /** True when the repository holds more tags than the listing cap. */
+  readonly truncated: boolean;
+}
+
 export type TreeEntryKind = 'file' | 'dir' | 'submodule';
 
 /** One flat entry of a repository tree at a given ref. */

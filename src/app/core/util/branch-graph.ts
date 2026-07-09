@@ -113,6 +113,8 @@ export interface BranchGraphOptions {
   readonly expanded?: ReadonlySet<string>;
   /** Runs of at least this many plain commits collapse; default {@link MIN_COLLAPSE_RUN}. */
   readonly collapseRunLength?: number;
+  /** Commits that must stay visible (e.g. tagged ones) — never folded into a pill. */
+  readonly pinned?: ReadonlySet<string>;
 }
 
 /**
@@ -200,9 +202,11 @@ export function layoutBranchGraph(
   /**
    * A commit is plain when hiding it cannot hide topology: exactly one loaded
    * parent and one loaded child, both on its own lane (so the only edges
-   * through it are straight lane continuations), and no branch name on it.
+   * through it are straight lane continuations), no branch name on it and not
+   * pinned by the caller (tagged commits must keep their chips visible).
    */
   const isPlain = (sha: string): boolean => {
+    if (options?.pinned?.has(sha)) return false;
     const commit = bySha.get(sha)!;
     if (commit.parentShas.length !== 1) return false;
     const parent = commit.parentShas[0];
@@ -347,6 +351,60 @@ export function layoutBranchGraph(
     columnCount: slots.length,
     commitCount: bySha.size,
   };
+}
+
+/** Result of comparing two commits over the loaded window of history. */
+export interface CommitCompare {
+  /** Commits reachable only from `a` — what `b` is missing ("behind"). */
+  readonly onlyA: ReadonlySet<string>;
+  /** Commits reachable only from `b` — what `b` has on top ("ahead"). */
+  readonly onlyB: ReadonlySet<string>;
+  /**
+   * True when either ancestry walk ran past the loaded window (a parent was
+   * not loaded), so the counts are lower bounds rather than exact.
+   */
+  readonly truncated: boolean;
+}
+
+/**
+ * Compares two commits like `git rev-list --left-right a...b`, restricted to
+ * the loaded window: the symmetric difference of their ancestries (each
+ * including its own tip). Shared ancestors are in neither set. Pure and
+ * synchronous — the Branch Explorer highlights the sets and shows the counts.
+ */
+export function compareCommits(
+  commits: readonly GraphCommit[],
+  aSha: string,
+  bSha: string,
+): CommitCompare {
+  const bySha = new Map<string, GraphCommit>();
+  for (const commit of commits) if (!bySha.has(commit.sha)) bySha.set(commit.sha, commit);
+
+  let truncated = false;
+  const ancestors = (start: string): Set<string> => {
+    const seen = new Set<string>();
+    const queue = [start];
+    while (queue.length > 0) {
+      const sha = queue.pop()!;
+      if (seen.has(sha)) continue;
+      const commit = bySha.get(sha);
+      if (!commit) {
+        truncated = true;
+        continue;
+      }
+      seen.add(sha);
+      queue.push(...commit.parentShas);
+    }
+    return seen;
+  };
+
+  const ofA = ancestors(aSha);
+  const ofB = ancestors(bSha);
+  const onlyA = new Set<string>();
+  const onlyB = new Set<string>();
+  for (const sha of ofA) if (!ofB.has(sha)) onlyA.add(sha);
+  for (const sha of ofB) if (!ofA.has(sha)) onlyB.add(sha);
+  return { onlyA, onlyB, truncated };
 }
 
 /**

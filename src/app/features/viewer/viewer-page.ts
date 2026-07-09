@@ -394,12 +394,16 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
               class="min-h-0 min-w-0 flex-1"
               [state]="store.branchGraph()"
               [sizes]="store.graphSizes()"
+              [tags]="store.graphTags()"
+              [commitFiles]="store.graphCommitFiles()"
               [branches]="store.branches()"
               [defaultBranch]="store.metadata()?.defaultBranch ?? null"
               (load)="store.loadBranchGraph()"
               (loadMore)="store.loadMoreBranchGraph()"
               (loadSizes)="store.loadGraphSizes()"
               (resolveParents)="store.resolveGraphParents()"
+              (filesRequest)="store.loadGraphCommitFiles($event)"
+              (openFile)="onGraphOpenFile($event)"
               (addBranch)="store.addGraphBranch($event)"
               (loadBranches)="store.loadBranches()"
               (browse)="onGraphBrowse($event)"
@@ -1033,12 +1037,17 @@ export class ViewerPage {
     });
 
     // The Branch Explorer costs a single request, so it loads itself when
-    // opened (or deep-linked) instead of hiding behind an extra click.
+    // opened (or deep-linked) instead of hiding behind an extra click. The
+    // tag chips are one more request (a no-op on providers without a tag
+    // listing), loaded alongside.
     effect(() => {
       const phase = this.store.phase();
       const open = this.graphMode();
       untracked(() => {
-        if (open && phase === 'ready') void this.store.loadBranchGraph();
+        if (open && phase === 'ready') {
+          void this.store.loadBranchGraph();
+          void this.store.loadGraphTags();
+        }
       });
     });
 
@@ -1172,6 +1181,26 @@ export class ViewerPage {
     void this.router.navigate([], {
       relativeTo: this.route,
       queryParams: { ref: sha, graph: null, at: null, view: null, line: null, base: null },
+      queryParamsHandling: 'merge',
+    });
+  }
+
+  /**
+   * A changed file was picked in the Branch Explorer's detail bar: leave the
+   * graph and open that file's diff at the commit — the same time-travel the
+   * blame annotations use (`path` + `at` + `view=diff`).
+   */
+  protected onGraphOpenFile(target: { path: string; sha: string }): void {
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: {
+        path: target.path,
+        at: target.sha,
+        view: 'diff',
+        graph: null,
+        line: null,
+        base: null,
+      },
       queryParamsHandling: 'merge',
     });
   }

@@ -275,6 +275,28 @@ describe('GithubProvider', () => {
     expect(list.truncated).toBe(true);
   });
 
+  it('lists tags with the commits they point at', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        { name: 'v2.0.0', commit: { sha: 'abc' } },
+        { name: 'v1.0.0', commit: { sha: 'def' } },
+      ]),
+    );
+
+    const list = await provider.listTags(slug);
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://api.github.com/repos/acme/rocket/tags?per_page=100&page=1',
+    );
+    expect(list).toEqual({
+      tags: [
+        { name: 'v2.0.0', sha: 'abc' },
+        { name: 'v1.0.0', sha: 'def' },
+      ],
+      truncated: false,
+    });
+  });
+
   it('builds web links with encoded paths', () => {
     const links = provider.webLinks(slug, 'main', 'docs/my file.md');
     expect(links.fileUrl).toBe('https://github.com/acme/rocket/blob/main/docs/my%20file.md');

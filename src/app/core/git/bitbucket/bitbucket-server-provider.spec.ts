@@ -48,7 +48,9 @@ describe('BitbucketServerProvider', () => {
           nextPageStart: 2,
         }),
       )
-      .mockResolvedValueOnce(jsonResponse({ values: [{ displayId: 'release/1.0' }], isLastPage: true }));
+      .mockResolvedValueOnce(
+        jsonResponse({ values: [{ displayId: 'release/1.0' }], isLastPage: true }),
+      );
 
     const list = await provider.listBranches(slug);
 
@@ -57,6 +59,19 @@ describe('BitbucketServerProvider', () => {
     );
     expect(fetchMock.mock.calls[1][0]).toContain('start=2');
     expect(list).toEqual({ names: ['develop', 'main', 'release/1.0'], truncated: false });
+  });
+
+  it('lists tags with the commits they point at', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ values: [{ displayId: 'v1.0.0', latestCommit: 'abc' }], isLastPage: true }),
+    );
+
+    const list = await provider.listTags(slug);
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://bitbucket.example.com/rest/api/1.0/projects/ENG/repos/rocket/tags?orderBy=MODIFICATION&limit=100&start=0',
+    );
+    expect(list).toEqual({ tags: [{ name: 'v1.0.0', sha: 'abc' }], truncated: false });
   });
 
   it('maps metadata with the default branch', async () => {
@@ -82,7 +97,9 @@ describe('BitbucketServerProvider', () => {
   it('resolves the tree commit then lists flat file paths', async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ values: [{ id: 'c1' }] })) // firstCommitId
-      .mockResolvedValueOnce(jsonResponse({ values: ['README.md', 'src/app.ts'], isLastPage: true }));
+      .mockResolvedValueOnce(
+        jsonResponse({ values: ['README.md', 'src/app.ts'], isLastPage: true }),
+      );
 
     const tree = await provider.getTree(slug, 'main');
 
@@ -122,7 +139,12 @@ describe('BitbucketServerProvider', () => {
       }),
     );
 
-    const commits = await provider.listCommits(slug, { ref: 'main', path: 'README.md', page: 2, perPage: 30 });
+    const commits = await provider.listCommits(slug, {
+      ref: 'main',
+      path: 'README.md',
+      page: 2,
+      perPage: 30,
+    });
 
     const url = new URL(fetchMock.mock.calls[0][0] as string);
     expect(url.searchParams.get('start')).toBe('30');
@@ -168,7 +190,10 @@ describe('BitbucketServerProvider', () => {
 
   it('returns a short page as-is when history genuinely ends', async () => {
     fetchMock.mockResolvedValueOnce(
-      jsonResponse({ values: [{ id: 'c1', displayId: 'c1', authorTimestamp: 0 }], isLastPage: true }),
+      jsonResponse({
+        values: [{ id: 'c1', displayId: 'c1', authorTimestamp: 0 }],
+        isLastPage: true,
+      }),
     );
 
     const commits = await provider.listCommits(slug, { perPage: 5 });

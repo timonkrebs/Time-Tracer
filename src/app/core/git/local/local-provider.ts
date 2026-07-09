@@ -9,6 +9,8 @@ import {
   RepoMetadata,
   RepoProviderError,
   RepoSlug,
+  RepoTag,
+  RepoTagList,
   RepoTree,
   TreeEntry,
   toRepoProviderError,
@@ -22,6 +24,8 @@ import { LocalRepos } from './local-repos';
 const MAX_FILE_SIZE_BYTES = 2_000_000;
 /** Parallel `stat` calls when sizing a tree — overlaps the FS metadata reads. */
 const SIZE_STAT_CONCURRENCY = 48;
+/** Tags resolved per listing — each costs a ref resolve + object read. */
+const MAX_TAGS = 500;
 
 export type GitApi = typeof import('isomorphic-git').default;
 
@@ -179,6 +183,25 @@ export class LocalGitProvider implements GitProvider {
       return { names, truncated: false };
     } catch (error) {
       throw this.mapError(error, 'Could not read the branches of the local repository.');
+    }
+  }
+
+  async listTags(slug: RepoSlug): Promise<RepoTagList> {
+    const fs = this.fs(slug);
+    try {
+      const git = await loadGit();
+      const names = await git.listTags({ fs, dir: '/' });
+      const capped = names.slice(0, MAX_TAGS);
+      const tags: RepoTag[] = [];
+      for (const name of capped) {
+        const oid = await git.resolveRef({ fs, dir: '/', ref: `refs/tags/${name}` });
+        // readCommit peels annotated tags; the returned oid is the commit's.
+        const { oid: commitOid } = await git.readCommit({ fs, dir: '/', oid });
+        tags.push({ name, sha: commitOid });
+      }
+      return { tags, truncated: names.length > capped.length };
+    } catch (error) {
+      throw this.mapError(error, 'Could not read the tags of the local repository.');
     }
   }
 

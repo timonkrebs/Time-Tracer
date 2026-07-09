@@ -9,6 +9,7 @@ import {
   RepoMetadata,
   RepoProviderError,
   RepoSlug,
+  RepoTagList,
   RepoTree,
   TreeEntry,
 } from '../../models';
@@ -104,6 +105,20 @@ export class AzdProvider implements GitProvider {
     );
     const names = data.value.map((ref) => ref.name.replace(/^refs\/heads\//, ''));
     return { names, truncated: names.length >= MAX_BRANCHES };
+  }
+
+  async listTags(slug: RepoSlug): Promise<RepoTagList> {
+    // `peelTags` dereferences annotated tags to the commit they point at.
+    const data = await this.requestJson<{
+      value: { name: string; objectId: string; peeledObjectId?: string }[];
+    }>(`${repoApi(slug)}/refs?filter=tags/&peelTags=true&$top=${MAX_BRANCHES}&${API_VERSION}`, {
+      notFound: 'Repository not found — it may not exist or it may be private.',
+    });
+    const tags = data.value.map((ref) => ({
+      name: ref.name.replace(/^refs\/tags\//, ''),
+      sha: ref.peeledObjectId ?? ref.objectId,
+    }));
+    return { tags, truncated: tags.length >= MAX_BRANCHES };
   }
 
   async getTree(slug: RepoSlug, ref: string): Promise<RepoTree> {

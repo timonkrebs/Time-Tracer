@@ -4,6 +4,7 @@ import {
   CollapsedNode,
   CommitNode,
   GraphCommit,
+  compareCommits,
   layoutBranchGraph,
   mergedBranchName,
 } from './branch-graph';
@@ -186,6 +187,26 @@ describe('layoutBranchGraph', () => {
     expect(graph.columnCount).toBe(7);
   });
 
+  it('never folds pinned commits (e.g. tagged ones) into a pill', () => {
+    const commits = [
+      commit('head', ['p1'], 7),
+      commit('p1', ['p2'], 6),
+      commit('p2', ['p3'], 5),
+      commit('p3', ['p4'], 4),
+      commit('p4', ['p5'], 3),
+      commit('p5', ['root'], 2),
+      commit('root', [], 1),
+    ];
+    const graph = layoutBranchGraph(commits, new Map([['main', 'head']]), {
+      pinned: new Set(['p3']),
+    });
+
+    // p3 stays visible; the run splits into two too-short halves (p1–p2, p4–p5).
+    expect(pillNodes(graph).length).toBe(0);
+    expect(commitNode(graph, 'p3')).toBeTruthy();
+    expect(graph.columnCount).toBe(7);
+  });
+
   it('does not collapse runs shorter than the threshold', () => {
     const commits = [
       commit('head', ['p1'], 5),
@@ -324,5 +345,49 @@ describe('layoutBranchGraph', () => {
     expect(graph.edges).toEqual([]);
     expect(graph.columnCount).toBe(0);
     expect(graph.commitCount).toBe(0);
+  });
+});
+
+describe('compareCommits', () => {
+  // main: c1 ← c2 ← c3, feature: c1 ← f1 ← f2 (diverged at c1).
+  const DIVERGED = [
+    commit('c3', ['c2'], 5),
+    commit('f2', ['f1'], 4),
+    commit('c2', ['c1'], 3),
+    commit('f1', ['c1'], 2),
+    commit('c1', [], 1),
+  ];
+
+  it('splits the symmetric difference into ahead and behind', () => {
+    const result = compareCommits(DIVERGED, 'c3', 'f2');
+
+    expect([...result.onlyA].sort()).toEqual(['c2', 'c3']); // b is behind these
+    expect([...result.onlyB].sort()).toEqual(['f1', 'f2']); // b is ahead by these
+    expect(result.truncated).toBe(false);
+  });
+
+  it('reports an ancestor as strictly behind its descendant', () => {
+    const result = compareCommits(DIVERGED, 'c1', 'c3');
+
+    expect(result.onlyA.size).toBe(0);
+    expect([...result.onlyB].sort()).toEqual(['c2', 'c3']);
+  });
+
+  it('marks the comparison truncated when a walk leaves the window', () => {
+    const result = compareCommits(
+      [commit('a', ['gone-a'], 2), commit('b', ['gone-b'], 1)],
+      'a',
+      'b',
+    );
+
+    expect(result.onlyA.has('a')).toBe(true);
+    expect(result.onlyB.has('b')).toBe(true);
+    expect(result.truncated).toBe(true);
+  });
+
+  it('compares a commit against itself as empty', () => {
+    const result = compareCommits(DIVERGED, 'c3', 'c3');
+    expect(result.onlyA.size).toBe(0);
+    expect(result.onlyB.size).toBe(0);
   });
 });

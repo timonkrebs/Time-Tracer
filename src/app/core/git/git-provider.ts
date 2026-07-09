@@ -9,6 +9,7 @@ import {
   RepoFile,
   RepoMetadata,
   RepoSlug,
+  RepoTagList,
   RepoTree,
   TreeEntry,
 } from '../models';
@@ -61,6 +62,14 @@ export interface GitProvider {
    * `truncated` says when the repository holds more.
    */
   listBranches(slug: RepoSlug): Promise<RepoBranchList>;
+
+  /**
+   * The repository's tags with the commits they point at (annotated tags
+   * dereferenced to their target commit) — the Branch Explorer's tag chips.
+   * Newest-leaning order and capped where the API pages, `truncated` says
+   * when more exist. Optional capability, like {@link resolveRefPath}.
+   */
+  listTags?(slug: RepoSlug): Promise<RepoTagList>;
 
   /** Full recursive tree at `ref` (branch, tag or commit sha). */
   getTree(slug: RepoSlug, ref: string): Promise<RepoTree>;

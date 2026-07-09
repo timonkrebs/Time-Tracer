@@ -189,6 +189,24 @@ export interface GraphSizesState {
   readonly message?: string;
 }
 
+/** Async state of the Branch Explorer's tag chips. */
+export type GraphTagsState =
+  | { readonly status: 'loading' }
+  | {
+      readonly status: 'ready';
+      /** Tag names by the sha of the commit they point at. */
+      readonly bySha: ReadonlyMap<string, readonly string[]>;
+      /** True when the repository holds more tags than the listing cap. */
+      readonly truncated: boolean;
+    }
+  | { readonly status: 'error'; readonly message: string };
+
+/** Async state of one commit's changed-file list (the detail bar's Files). */
+export type CommitFilesState =
+  | { readonly status: 'loading' }
+  | { readonly status: 'ready'; readonly files: readonly CommitFileChange[] }
+  | { readonly status: 'error'; readonly message: string };
+
 /** Async state of the changes view for one `<commit, path>` pair. */
 export type DiffState =
   | { readonly status: 'loading' }
@@ -534,6 +552,10 @@ export class RepoStore {
   private readonly _graphSizes = signal<GraphSizesState | null>(null);
   /** Bumped to cancel a superseded or cleared sizing run. */
   private graphSizesRun = 0;
+  /** The repository's tags for the graph's chips, when loaded. */
+  private readonly _graphTags = signal<GraphTagsState | null>(null);
+  /** Changed-file lists of commits selected in the graph, keyed by sha. */
+  private readonly _graphFiles = signal<ReadonlyMap<string, CommitFilesState>>(new Map());
 
   /** The active per-hunk history filter, if any (one at a time). */
   private readonly _lineTrace = signal<LineTraceState | null>(null);
@@ -603,6 +625,10 @@ export class RepoStore {
   readonly branchGraph = this._branchGraph.asReadonly();
   /** Per-commit change sizes; null until {@link loadGraphSizes} runs. */
   readonly graphSizes = this._graphSizes.asReadonly();
+  /** Tag chips for the graph; null until {@link loadGraphTags} runs. */
+  readonly graphTags = this._graphTags.asReadonly();
+  /** Changed-file lists of graph-selected commits, keyed by sha. */
+  readonly graphCommitFiles = this._graphFiles.asReadonly();
   readonly lineTrace = this._lineTrace.asReadonly();
   readonly traceOrigins = this._traceOrigins.asReadonly();
   readonly folderOwnership = this._folderOwnership.asReadonly();
@@ -1563,12 +1589,72 @@ export class RepoStore {
     publish('ready');
   }
 
+  /**
+   * Loads the repository's tags for the Branch Explorer's tag chips — one
+   * request on hosted providers. No-ops when already loaded/loading or when
+   * the provider has no tag listing (the chips simply stay absent); calling
+   * again after an error retries.
+   */
+  async loadGraphTags(): Promise<void> {
+    const slug = this._slug();
+    if (!slug || this._phase() !== 'ready') return;
+    const existing = this._graphTags();
+    if (existing && existing.status !== 'error') return;
+    const provider = this.registry.byId(slug.provider);
+    if (!provider.listTags) return;
+
+    const run = this.graphRun;
+    this._graphTags.set({ status: 'loading' });
+    try {
+      const list = await provider.listTags(slug);
+      if (run !== this.graphRun) return;
+      const bySha = new Map<string, string[]>();
+      for (const tag of list.tags) {
+        const names = bySha.get(tag.sha);
+        if (names) names.push(tag.name);
+        else bySha.set(tag.sha, [tag.name]);
+      }
+      this._graphTags.set({ status: 'ready', bySha, truncated: list.truncated });
+    } catch (error) {
+      if (run !== this.graphRun) return;
+      this._graphTags.set({ status: 'error', message: toRepoProviderError(error).message });
+    }
+  }
+
+  /**
+   * Loads the changed-file list of one graph-selected commit for the detail
+   * bar — served from the shared per-sha cache when the commit was already
+   * sized or walked (then it costs nothing), one request otherwise.
+   */
+  async loadGraphCommitFiles(sha: string): Promise<void> {
+    const slug = this._slug();
+    if (!slug || this._phase() !== 'ready') return;
+    const existing = this._graphFiles().get(sha);
+    if (existing && existing.status !== 'error') return;
+
+    const run = this.graphRun;
+    const set = (state: CommitFilesState): void => {
+      this._graphFiles.update((map) => new Map(map).set(sha, state));
+    };
+    set({ status: 'loading' });
+    try {
+      const files = await this.commitFilesFor(slug, sha);
+      if (run !== this.graphRun) return;
+      set({ status: 'ready', files });
+    } catch (error) {
+      if (run !== this.graphRun) return;
+      set({ status: 'error', message: toRepoProviderError(error).message });
+    }
+  }
+
   /** Drops the Branch Explorer graph and cancels any load in flight. */
   clearBranchGraph(): void {
     this.graphRun++;
     this.graphSizesRun++;
     this._branchGraph.set(null);
     this._graphSizes.set(null);
+    this._graphTags.set(null);
+    this._graphFiles.set(new Map());
     this.graphPages.clear();
     this.graphCommits.clear();
     this.graphHeads.clear();

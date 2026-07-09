@@ -78,6 +78,8 @@ describe('BranchExplorer', () => {
   let branchLoads: number;
   let added: string[];
   let browsed: string[];
+  let filesRequested: string[];
+  let opened: { path: string; sha: string }[];
 
   beforeEach(async () => {
     await TestBed.configureTestingModule({
@@ -96,6 +98,8 @@ describe('BranchExplorer', () => {
     branchLoads = 0;
     added = [];
     browsed = [];
+    filesRequested = [];
+    opened = [];
     fixture.componentInstance.load.subscribe(() => loads++);
     fixture.componentInstance.loadMore.subscribe(() => loadMores++);
     fixture.componentInstance.loadSizes.subscribe(() => sizeLoads++);
@@ -103,6 +107,8 @@ describe('BranchExplorer', () => {
     fixture.componentInstance.loadBranches.subscribe(() => branchLoads++);
     fixture.componentInstance.addBranch.subscribe((name) => added.push(name));
     fixture.componentInstance.browse.subscribe((sha) => browsed.push(sha));
+    fixture.componentInstance.filesRequest.subscribe((sha) => filesRequested.push(sha));
+    fixture.componentInstance.openFile.subscribe((target) => opened.push(target));
     await fixture.whenStable();
   });
 
@@ -288,6 +294,89 @@ describe('BranchExplorer', () => {
 
     expect(root().textContent).toContain('feature/foo');
     expect(root().textContent).not.toContain('merged branch');
+  });
+
+  it('requests changed files on selection and opens a file from the panel', async () => {
+    await setState(MERGE_STATE);
+
+    const c2 = dots().find((g) => g.getAttribute('aria-label')?.startsWith('c2 ·'))!;
+    (c2 as unknown as HTMLElement).dispatchEvent(new MouseEvent('click'));
+    await fixture.whenStable();
+    expect(filesRequested).toEqual(['c2']);
+
+    fixture.componentRef.setInput(
+      'commitFiles',
+      new Map([
+        [
+          'c2',
+          {
+            status: 'ready' as const,
+            files: [
+              { path: 'src/app.ts', status: 'modified', additions: 4, deletions: 2 },
+              { path: 'docs/new.md', status: 'added' },
+            ],
+          },
+        ],
+      ]),
+    );
+    await fixture.whenStable();
+
+    buttonByText('Files (2)')!.click();
+    await fixture.whenStable();
+    expect(root().textContent).toContain('src/app.ts');
+    expect(root().textContent).toContain('docs/new.md');
+
+    (Array.from(root().querySelectorAll('li button')) as HTMLButtonElement[])
+      .find((b) => b.textContent?.includes('src/app.ts'))!
+      .click();
+    expect(opened).toEqual([{ path: 'src/app.ts', sha: 'c2' }]);
+  });
+
+  it('shows tag chips and pins tagged commits out of collapsed runs', async () => {
+    await setState(LINEAR_STATE);
+    expect(pills().length).toBe(1); // p1..p5 folded
+
+    fixture.componentRef.setInput('tags', {
+      status: 'ready' as const,
+      bySha: new Map([['p3', ['v1.0.0']]]),
+      truncated: false,
+    });
+    await fixture.whenStable();
+
+    // The tagged commit stays visible, splitting the run below the threshold.
+    expect(pills().length).toBe(0);
+    expect(root().textContent).toContain('v1.0.0');
+  });
+
+  it('compares two commits with ahead/behind counts and dims the rest', async () => {
+    await setState(MERGE_STATE);
+
+    const c2 = dots().find((g) => g.getAttribute('aria-label')?.startsWith('c2 ·'))!;
+    (c2 as unknown as HTMLElement).dispatchEvent(new MouseEvent('click'));
+    await fixture.whenStable();
+    buttonByText('Compare from here')!.click();
+    await fixture.whenStable();
+    expect(root().textContent).toContain('click the other commit');
+
+    const f2 = dots().find((g) => g.getAttribute('aria-label')?.startsWith('f2 ·'))!;
+    (f2 as unknown as HTMLElement).dispatchEvent(new MouseEvent('click'));
+    await fixture.whenStable();
+
+    // f2 vs c2: f2 carries f1+f2 on top and is missing c2.
+    expect(root().textContent).toContain('2 ahead');
+    expect(root().textContent).toContain('1 behind');
+
+    // Shared history (c1) and unrelated commits (m) fade out.
+    const c1 = dots().find((g) => g.getAttribute('aria-label')?.startsWith('c1 ·'))!;
+    const m = dots().find((g) => g.getAttribute('aria-label')?.startsWith('m ·'))!;
+    expect(c1.getAttribute('opacity')).toBe('0.2');
+    expect(m.getAttribute('opacity')).toBe('0.2');
+    const f1 = dots().find((g) => g.getAttribute('aria-label')?.startsWith('f1 ·'))!;
+    expect(f1.getAttribute('opacity')).toBe('1');
+
+    buttonByText('Clear')!.click();
+    await fixture.whenStable();
+    expect(dots().every((g) => g.getAttribute('opacity') === '1')).toBe(true);
   });
 
   it('hides the provider link for commits without a web URL (local repos)', async () => {

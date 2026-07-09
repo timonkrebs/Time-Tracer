@@ -15,13 +15,17 @@ import { CommitInfo } from '../../core/models';
 import {
   BranchGraphState,
   BranchesState,
+  CommitFilesState,
   CommitSizeStats,
   GraphSizesState,
+  GraphTagsState,
 } from '../../core/store/repo-store';
 import {
   BranchGraph,
   CollapsedNode,
+  CommitCompare,
   CommitNode,
+  compareCommits,
   layoutBranchGraph,
 } from '../../core/util/branch-graph';
 import { relativeTime, shortSha } from '../../core/util/relative-time';
@@ -51,6 +55,12 @@ const LANE_COLORS = [
   '#22d3ee',
 ];
 
+/** Tag chips share one accent so they read as tags on any lane. */
+const TAG_COLOR = '#eab308';
+
+/** Everything but the compared commits fades to this while comparing. */
+const DIM_OPACITY = 0.2;
+
 /** Bottom-up fill level inside a dot: a rect clipped to the ring's inside. */
 interface DotFill {
   readonly r: number;
@@ -72,6 +82,8 @@ interface DotView {
   readonly clipped: boolean;
   readonly labels: readonly LabelChip[];
   readonly title: string;
+  /** Faded while a comparison highlights other commits. */
+  readonly dimmed: boolean;
 }
 
 interface LabelChip {
@@ -79,6 +91,9 @@ interface LabelChip {
   readonly x: number;
   readonly y: number;
   readonly width: number;
+  readonly color: string;
+  /** Tags render dashed so they read apart from branch names. */
+  readonly kind: 'branch' | 'tag';
 }
 
 interface PillView {
@@ -89,11 +104,15 @@ interface PillView {
   readonly color: string;
   readonly count: number;
   readonly title: string;
+  /** Faded while a comparison highlights other commits. */
+  readonly dimmed: boolean;
 }
 
 interface EdgeView {
   readonly path: string;
   readonly color: string;
+  /** Faded while a comparison highlights other commits. */
+  readonly dimmed: boolean;
 }
 
 interface LaneView {
@@ -395,7 +414,7 @@ interface SizeScale {
                   [attr.d]="edge.path"
                   [attr.stroke]="edge.color"
                   stroke-width="2"
-                  stroke-opacity="0.75"
+                  [attr.stroke-opacity]="edge.dimmed ? 0.1 : 0.75"
                   fill="none"
                 />
               }
@@ -406,6 +425,7 @@ interface SizeScale {
                   role="button"
                   tabindex="0"
                   [attr.aria-label]="pill.title"
+                  [attr.opacity]="pill.dimmed ? dimOpacity : 1"
                   (click)="expandPill(pill.id)"
                   (keydown.enter)="expandPill(pill.id)"
                   (keydown.space)="$event.preventDefault(); expandPill(pill.id)"
@@ -441,6 +461,7 @@ interface SizeScale {
                   role="button"
                   tabindex="0"
                   [attr.aria-label]="dot.title"
+                  [attr.opacity]="dot.dimmed ? dimOpacity : 1"
                   (click)="select(dot.sha)"
                   (keydown.enter)="select(dot.sha)"
                   (keydown.space)="$event.preventDefault(); select(dot.sha)"
@@ -500,20 +521,21 @@ interface SizeScale {
                   }
                 </g>
               }
-              <!-- Branch name chips at their tips -->
+              <!-- Branch and tag chips at their commits -->
               @for (dot of v.dots; track dot.sha) {
                 @for (chip of dot.labels; track chip.text) {
-                  <g class="pointer-events-none">
+                  <g class="pointer-events-none" [attr.opacity]="dot.dimmed ? dimOpacity : 1">
                     <rect
                       [attr.x]="chip.x - chip.width / 2"
                       [attr.y]="chip.y - 9"
                       [attr.width]="chip.width"
                       height="14"
                       rx="7"
-                      [attr.fill]="dot.color"
+                      [attr.fill]="chip.color"
                       fill-opacity="0.15"
-                      [attr.stroke]="dot.color"
+                      [attr.stroke]="chip.color"
                       stroke-opacity="0.6"
+                      [attr.stroke-dasharray]="chip.kind === 'tag' ? '3 2' : null"
                     />
                     <text
                       [attr.x]="chip.x"
@@ -521,7 +543,7 @@ interface SizeScale {
                       text-anchor="middle"
                       font-size="9"
                       font-family="ui-monospace, monospace"
-                      [attr.fill]="dot.color"
+                      [attr.fill]="chip.color"
                       class="select-none"
                     >
                       {{ chip.text }}
@@ -562,7 +584,109 @@ interface SizeScale {
           </div>
         </div>
 
+        @if (compareView(); as cmp) {
+          <div
+            class="flex shrink-0 flex-wrap items-center gap-2 border-t border-indigo-400/30 bg-indigo-500/10 px-4 py-1.5 text-xs text-zinc-200"
+          >
+            <span class="font-mono">{{ abbrev(cmp.to) }}</span>
+            <span class="text-zinc-500">vs</span>
+            <span class="font-mono">{{ abbrev(cmp.from) }}</span>
+            <span class="text-zinc-500">·</span>
+            <span class="text-emerald-300"
+              >{{ cmp.truncated ? '≥' : '' }}{{ cmp.ahead }} ahead</span
+            >
+            <span class="text-rose-300">{{ cmp.truncated ? '≥' : '' }}{{ cmp.behind }} behind</span>
+            @if (cmp.truncated) {
+              <span
+                class="text-zinc-500"
+                title="The ancestry walk ran past the loaded history window before reaching the merge base — load older commits for exact counts."
+              >
+                — lower bounds
+              </span>
+            }
+            <span class="flex-1"></span>
+            <span class="hidden text-zinc-500 md:block">click another commit to re-compare</span>
+            <button
+              type="button"
+              class="rounded border border-zinc-700 px-2 py-0.5 text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100"
+              (click)="clearCompare()"
+            >
+              Clear
+            </button>
+          </div>
+        } @else if (comparePicking()) {
+          <div
+            class="flex shrink-0 items-center gap-2 border-t border-indigo-400/30 bg-indigo-500/10 px-4 py-1.5 text-xs text-zinc-200"
+          >
+            Comparing from
+            <span class="font-mono">{{ abbrev(compareFrom()!) }}</span> — click the other commit
+            <span class="flex-1"></span>
+            <button
+              type="button"
+              class="rounded border border-zinc-700 px-2 py-0.5 text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100"
+              (click)="clearCompare()"
+            >
+              Cancel
+            </button>
+          </div>
+        }
+
         @if (selected(); as commit) {
+          @if (filesOpen() && selectedFiles(); as files) {
+            <div
+              class="slim-scrollbar max-h-56 shrink-0 overflow-y-auto border-t border-zinc-800 bg-zinc-900/40 px-2 py-1"
+            >
+              @if (files.status === 'ready') {
+                @if (files.files.length === 0) {
+                  <p class="px-2 py-2 text-center text-xs text-zinc-500">
+                    This commit changed no files.
+                  </p>
+                } @else {
+                  <ul>
+                    @for (file of files.files; track file.path) {
+                      <li>
+                        <button
+                          type="button"
+                          class="flex w-full items-center gap-2 rounded px-2 py-0.5 text-left font-mono text-[11px] transition-colors hover:bg-white/5"
+                          (click)="openFile.emit({ path: file.path, sha: commit.sha })"
+                          [title]="'Open the diff of ' + file.path + ' at this commit'"
+                        >
+                          <span class="w-3 shrink-0" [class]="fileBadge(file.status).tone">{{
+                            fileBadge(file.status).letter
+                          }}</span>
+                          <span class="min-w-0 flex-1 truncate text-zinc-300">{{ file.path }}</span>
+                          @if (file.previousPath) {
+                            <span class="shrink-0 truncate text-zinc-600"
+                              >← {{ file.previousPath }}</span
+                            >
+                          }
+                          @if ((file.additions ?? 0) + (file.deletions ?? 0) > 0) {
+                            <span class="shrink-0 text-emerald-300"
+                              >+{{ file.additions ?? 0 }}</span
+                            >
+                            <span class="shrink-0 text-rose-300">−{{ file.deletions ?? 0 }}</span>
+                          }
+                        </button>
+                      </li>
+                    }
+                  </ul>
+                }
+              } @else if (files.status === 'error') {
+                <div class="flex items-center gap-2 px-2 py-2 text-xs">
+                  <span class="text-rose-300">{{ files.message }}</span>
+                  <button
+                    type="button"
+                    class="rounded border border-zinc-700 px-2 py-0.5 text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100"
+                    (click)="filesRequest.emit(commit.sha)"
+                  >
+                    Try again
+                  </button>
+                </div>
+              } @else {
+                <p class="px-2 py-2 text-xs text-zinc-500">Loading changed files…</p>
+              }
+            </div>
+          }
           <div
             class="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-zinc-800 bg-zinc-900/60 px-4 py-2 text-xs text-zinc-300"
           >
@@ -613,6 +737,30 @@ interface SizeScale {
             }
             <button
               type="button"
+              class="shrink-0 rounded border px-2 py-0.5 transition"
+              [class]="
+                filesOpen()
+                  ? 'border-indigo-400/40 bg-indigo-500/20 text-indigo-200'
+                  : 'border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-zinc-100'
+              "
+              [attr.aria-pressed]="filesOpen()"
+              (click)="toggleFiles()"
+              title="The files this commit changed — click one to open its diff"
+            >
+              {{ filesLabel() }}
+            </button>
+            @if (compareFrom() !== commit.sha) {
+              <button
+                type="button"
+                class="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100"
+                (click)="startCompare()"
+                title="Compare another commit against this one: ahead/behind counts, with everything outside the difference dimmed"
+              >
+                Compare from here
+              </button>
+            }
+            <button
+              type="button"
               class="shrink-0 rounded bg-indigo-500 px-2 py-0.5 font-medium text-white transition hover:bg-indigo-400"
               (click)="browse.emit(commit.sha)"
               title="Open the file tree as it was at this commit"
@@ -648,6 +796,10 @@ export class BranchExplorer {
   readonly state = input<BranchGraphState | null>(null);
   /** Per-commit change sizes (the dot fill levels); null until requested. */
   readonly sizes = input<GraphSizesState | null>(null);
+  /** The repository's tags for the chips; null until loaded. */
+  readonly tags = input<GraphTagsState | null>(null);
+  /** Changed-file lists of selected commits, keyed by sha. */
+  readonly commitFiles = input<ReadonlyMap<string, CommitFilesState>>(new Map());
   /** The repository's branch list, backing the "Add branch" dropdown. */
   readonly branches = input<BranchesState | null>(null);
   readonly defaultBranch = input<string | null>(null);
@@ -660,6 +812,10 @@ export class BranchExplorer {
   readonly loadSizes = output<void>();
   /** Fetch parents for commits the bulk listing left unlinked (Azure DevOps). */
   readonly resolveParents = output<void>();
+  /** A commit was selected — load its changed-file list. */
+  readonly filesRequest = output<string>();
+  /** A changed file was picked — open that commit's diff of it. */
+  readonly openFile = output<{ path: string; sha: string }>();
   /** Add a branch to the graph. */
   readonly addBranch = output<string>();
   /** The add-branch dropdown was opened — load the branch list. */
@@ -670,10 +826,15 @@ export class BranchExplorer {
   protected readonly colWidth = COL_W;
   protected readonly laneHeight = LANE_H;
   protected readonly dotRadius = DOT_R;
+  protected readonly dimOpacity = DIM_OPACITY;
 
   /** Collapsed runs the user expanded (ids per {@link CollapsedNode.id}). */
   protected readonly expanded = signal<ReadonlySet<string>>(new Set());
   protected readonly selectedSha = signal<string | null>(null);
+  /** The detail bar's changed-file list, folded away by default. */
+  protected readonly filesOpen = signal(false);
+  /** Anchor commit of an active comparison ("Compare from here"). */
+  protected readonly compareFrom = signal<string | null>(null);
   protected readonly addOpen = signal(false);
   protected readonly filter = signal('');
 
@@ -778,7 +939,11 @@ export class BranchExplorer {
   private readonly graph = computed<BranchGraph | null>(() => {
     const state = this.readyState();
     if (!state) return null;
-    return layoutBranchGraph(state.commits, state.heads, { expanded: this.expanded() });
+    return layoutBranchGraph(state.commits, state.heads, {
+      expanded: this.expanded(),
+      // Tagged commits keep their chips visible instead of folding into pills.
+      pinned: new Set(this.tagsBySha().keys()),
+    });
   });
 
   /** Everything the SVG needs, precomputed so the template stays declarative. */
@@ -801,6 +966,28 @@ export class BranchExplorer {
       even: lane.index % 2 === 0,
     }));
 
+    // A live comparison dims everything outside the two commits' difference,
+    // so the compared stretch of history pops out of the graph.
+    const compare = this.compare();
+    const emphasized = compare
+      ? new Set([
+          ...compare.onlyA,
+          ...compare.onlyB,
+          this.compareFrom() ?? '',
+          this.selectedSha() ?? '',
+        ])
+      : null;
+    const emphasizedAt = new Set<string>();
+    if (emphasized) {
+      for (const node of graph.nodes) {
+        const on =
+          node.kind === 'commit'
+            ? emphasized.has(node.sha)
+            : node.shas.some((sha) => emphasized.has(sha));
+        if (on) emphasizedAt.add(`${node.column}:${node.lane}`);
+      }
+    }
+
     const edges: EdgeView[] = graph.edges.map((edge) => ({
       path: edgePath(
         x(edge.fromColumn),
@@ -810,20 +997,38 @@ export class BranchExplorer {
         edge.kind,
       ),
       color: color(edge.colorLane),
+      dimmed: emphasized
+        ? !emphasizedAt.has(`${edge.fromColumn}:${edge.fromLane}`) ||
+          !emphasizedAt.has(`${edge.toColumn}:${edge.toLane}`)
+        : false,
     }));
 
     const sizes = this.sizes()?.sizes ?? null;
     const scale = this.sizeScale();
+    const tags = this.tagsBySha();
     const dots: DotView[] = [];
     const pills: PillView[] = [];
     for (const node of graph.nodes) {
       if (node.kind === 'collapsed') {
-        pills.push(pillView(node, x(node.column), y(node.lane), color(node.lane)));
+        pills.push({
+          ...pillView(node, x(node.column), y(node.lane), color(node.lane)),
+          dimmed: emphasized ? !emphasizedAt.has(`${node.column}:${node.lane}`) : false,
+        });
         continue;
       }
-      dots.push(
-        dotView(node, x(node.column), y(node.lane), color(node.lane), commits, sizes, scale),
-      );
+      dots.push({
+        ...dotView(
+          node,
+          x(node.column),
+          y(node.lane),
+          color(node.lane),
+          commits,
+          sizes,
+          scale,
+          tags,
+        ),
+        dimmed: emphasized ? !emphasized.has(node.sha) : false,
+      });
     }
 
     return {
@@ -849,6 +1054,61 @@ export class BranchExplorer {
     const sha = this.selectedSha();
     return sha ? (this.sizes()?.sizes.get(sha) ?? null) : null;
   });
+
+  /** The selected commit's changed-file list, once requested. */
+  protected readonly selectedFiles = computed<CommitFilesState | null>(() => {
+    const sha = this.selectedSha();
+    return sha ? (this.commitFiles().get(sha) ?? null) : null;
+  });
+
+  /** Label of the detail bar's Files toggle, with the count once known. */
+  protected readonly filesLabel = computed(() => {
+    const files = this.selectedFiles();
+    if (files?.status === 'ready') return `Files (${files.files.length})`;
+    if (files?.status === 'error') return 'Files ⚠';
+    return 'Files';
+  });
+
+  /** Tag names by commit sha, empty until the tag list arrives. */
+  private readonly tagsBySha = computed<ReadonlyMap<string, readonly string[]>>(() => {
+    const state = this.tags();
+    return state?.status === 'ready' ? state.bySha : new Map();
+  });
+
+  /** The active comparison: anchor ("from") vs the selected commit. */
+  private readonly compare = computed<CommitCompare | null>(() => {
+    const from = this.compareFrom();
+    const to = this.selectedSha();
+    const state = this.readyState();
+    if (!from || !to || from === to || !state) return null;
+    return compareCommits(state.commits, from, to);
+  });
+
+  /** Summary for the comparison bar; null while no comparison is complete. */
+  protected readonly compareView = computed<{
+    from: string;
+    to: string;
+    ahead: number;
+    behind: number;
+    truncated: boolean;
+  } | null>(() => {
+    const compare = this.compare();
+    const from = this.compareFrom();
+    const to = this.selectedSha();
+    if (!compare || !from || !to) return null;
+    return {
+      from,
+      to,
+      ahead: compare.onlyB.size,
+      behind: compare.onlyA.size,
+      truncated: compare.truncated,
+    };
+  });
+
+  /** True while an anchor is set but the second commit is not picked yet. */
+  protected readonly comparePicking = computed(
+    () => this.compareFrom() !== null && this.compareView() === null,
+  );
 
   /** Branches not yet in the graph, filtered by the dropdown query. */
   protected readonly addableBranches = computed<readonly string[]>(() => {
@@ -886,14 +1146,48 @@ export class BranchExplorer {
     this.fromRight = Math.max(0, el.scrollWidth - el.clientWidth - el.scrollLeft);
   }
 
-  /** Selects a commit; a sha hidden inside a pill expands that pill first. */
+  /**
+   * Selects a commit (loading its changed files); a sha hidden inside a pill
+   * expands that pill first. Clicking the selected commit deselects it.
+   */
   protected select(sha: string): void {
     const graph = this.graph();
     const pill = graph?.nodes.find(
       (node): node is CollapsedNode => node.kind === 'collapsed' && node.shas.includes(sha),
     );
     if (pill) this.expandPill(pill.id);
-    this.selectedSha.set(this.selectedSha() === sha ? null : sha);
+    const next = this.selectedSha() === sha ? null : sha;
+    this.selectedSha.set(next);
+    if (next) this.filesRequest.emit(next);
+  }
+
+  /** Anchors a comparison at the selected commit; the next click completes it. */
+  protected startCompare(): void {
+    this.compareFrom.set(this.selectedSha());
+  }
+
+  protected clearCompare(): void {
+    this.compareFrom.set(null);
+  }
+
+  protected toggleFiles(): void {
+    this.filesOpen.update((open) => !open);
+  }
+
+  /** Git-style status letter + colour for a changed file's badge. */
+  protected fileBadge(status: string): { letter: string; tone: string } {
+    switch (status) {
+      case 'added':
+        return { letter: 'A', tone: 'text-emerald-300' };
+      case 'removed':
+        return { letter: 'D', tone: 'text-rose-300' };
+      case 'renamed':
+        return { letter: 'R', tone: 'text-amber-300' };
+      case 'copied':
+        return { letter: 'C', tone: 'text-sky-300' };
+      default:
+        return { letter: 'M', tone: 'text-zinc-400' };
+    }
   }
 
   protected expandPill(id: string): void {
@@ -933,11 +1227,14 @@ export class BranchExplorer {
     if (!this.host.nativeElement.contains(event.target as Node)) this.addOpen.set(false);
   }
 
-  /** Esc closes the dropdown first, then the detail bar. */
+  /** Esc closes the dropdown first, then a comparison, then the detail bar. */
   protected onEscape(event: Event): void {
     if (this.addOpen()) {
       event.preventDefault();
       this.addOpen.set(false);
+    } else if (this.compareFrom()) {
+      event.preventDefault();
+      this.compareFrom.set(null);
     } else if (this.selectedSha()) {
       event.preventDefault();
       this.selectedSha.set(null);
@@ -973,7 +1270,12 @@ function edgePath(x1: number, y1: number, x2: number, y2: number, kind: string):
   return `M ${x1} ${y1} C ${x1 + bend / 2} ${y1} ${x1 + bend / 2} ${y2} ${end} ${y2} L ${x2} ${y2}`;
 }
 
-function pillView(node: CollapsedNode, x: number, y: number, color: string): PillView {
+function pillView(
+  node: CollapsedNode,
+  x: number,
+  y: number,
+  color: string,
+): Omit<PillView, 'dimmed'> {
   const label = String(node.count);
   return {
     id: node.id,
@@ -994,11 +1296,14 @@ function dotView(
   commits: ReadonlyMap<string, CommitInfo>,
   sizes: ReadonlyMap<string, CommitSizeStats> | null,
   scale: SizeScale | null,
-): DotView {
+  tags: ReadonlyMap<string, readonly string[]>,
+): Omit<DotView, 'dimmed'> {
   const commit = commits.get(node.sha);
   let title = commit
     ? `${shortSha(commit.sha)} · ${commit.summary}\n${commit.authorName} · ${relativeTime(commit.authoredAt)}`
     : shortSha(node.sha);
+  const tagNames = tags.get(node.sha) ?? [];
+  if (tagNames.length > 0) title += `\n🏷 ${tagNames.join(', ')}`;
 
   // Fill level: the commit's change size as a bottom-up gauge, log-scaled
   // (change sizes are heavy-tailed — one lockfile bump must not flatten
@@ -1021,15 +1326,23 @@ function dotView(
     if (node.isMerge) title += ' (whole merge)';
   }
 
-  const labels: LabelChip[] = node.labels.map((text, index) => {
+  // Branch chips stack above the dot; tag chips continue the same stack.
+  const chip = (text: string, index: number, kind: LabelChip['kind']): LabelChip => {
     const shown = text.length > 24 ? `${text.slice(0, 23)}…` : text;
     return {
       text: shown,
       x,
       y: y - 16 - index * 17,
       width: 14 + shown.length * 5.6,
+      color: kind === 'tag' ? TAG_COLOR : color,
+      kind,
     };
-  });
+  };
+  const labels: LabelChip[] = [
+    ...node.labels.map((text, index) => chip(text, index, 'branch')),
+    ...tagNames.map((text, index) => chip(text, node.labels.length + index, 'tag')),
+  ];
+
   return {
     sha: node.sha,
     x,

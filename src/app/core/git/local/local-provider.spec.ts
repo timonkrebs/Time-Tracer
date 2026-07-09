@@ -60,6 +60,25 @@ describe('LocalGitProvider', () => {
     expect([...list.names].sort()).toEqual(['feature/foo', 'main']);
   });
 
+  it('lists tags, dereferencing annotated ones to their commit', async () => {
+    await git.tag({ fs, dir: '/', ref: 'v-light', object: c1 });
+    await git.annotatedTag({
+      fs,
+      dir: '/',
+      ref: 'v-annotated',
+      object: c2,
+      message: 'release',
+      tagger: author,
+    });
+
+    const list = await provider.listTags(slug);
+
+    expect(list.truncated).toBe(false);
+    const bySha = new Map(list.tags.map((tag) => [tag.name, tag.sha]));
+    expect(bySha.get('v-light')).toBe(c1);
+    expect(bySha.get('v-annotated')).toBe(c2);
+  });
+
   it('walks the tree of a ref', async () => {
     const tree = await provider.getTree(slug, 'main');
     expect(tree.truncated).toBe(false);

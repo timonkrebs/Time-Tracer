@@ -10,6 +10,8 @@ import {
   RepoMetadata,
   RepoProviderError,
   RepoSlug,
+  RepoTag,
+  RepoTagList,
   RepoTree,
   TreeEntry,
 } from '../../models';
@@ -25,6 +27,9 @@ export const MAX_FILE_SIZE_BYTES = 2_000_000;
 
 /** Branch pages are 100 entries; stop after this many pages and mark truncated. */
 const MAX_BRANCH_PAGES = 10;
+
+/** Tag pages are 100 entries; the graph's chips only need the recent ones. */
+const MAX_TAG_PAGES = 3;
 
 interface GithubRepoResponse {
   name: string;
@@ -71,6 +76,12 @@ interface GithubMatchingRefResponse {
 
 interface GithubBranchResponse {
   name: string;
+}
+
+interface GithubTagResponse {
+  name: string;
+  /** The tagged commit (GitHub dereferences annotated tags here). */
+  commit: { sha: string };
 }
 
 interface GithubCommitResponse {
@@ -185,6 +196,20 @@ export class GithubProvider implements GitProvider {
       for (const branch of data) names.push(branch.name);
       if (data.length < 100) return { names, truncated: false };
       if (page >= MAX_BRANCH_PAGES) return { names, truncated: true };
+    }
+  }
+
+  async listTags(slug: RepoSlug): Promise<RepoTagList> {
+    const tags: RepoTag[] = [];
+    for (let page = 1; ; page++) {
+      const data = await this.request<GithubTagResponse[]>(
+        slug,
+        `/repos/${enc(slug.owner)}/${enc(slug.repo)}/tags?per_page=100&page=${page}`,
+        { notFound: 'Repository not found — it may not exist or it may be private.' },
+      );
+      for (const tag of data) tags.push({ name: tag.name, sha: tag.commit.sha });
+      if (data.length < 100) return { tags, truncated: false };
+      if (page >= MAX_TAG_PAGES) return { tags, truncated: true };
     }
   }
 

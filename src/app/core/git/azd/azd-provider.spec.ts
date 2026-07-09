@@ -45,6 +45,33 @@ describe('AzdProvider', () => {
     expect(list).toEqual({ names: ['develop', 'feature/foo'], truncated: false });
   });
 
+  it('lists tags, preferring the peeled (dereferenced) commit id', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        value: [
+          // Annotated tag: objectId is the tag object, peeledObjectId the commit.
+          { name: 'refs/tags/v2', objectId: 'tag-obj', peeledObjectId: 'commit-2' },
+          // Lightweight tag: objectId already is the commit.
+          { name: 'refs/tags/v1', objectId: 'commit-1' },
+        ],
+        count: 2,
+      }),
+    );
+
+    const list = await provider.listTags(slug);
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://dev.azure.com/fhnw/Services/_apis/git/repositories/A1418-CIT.IAM.EBC/refs?filter=tags/&peelTags=true&$top=1000&api-version=7.1',
+    );
+    expect(list).toEqual({
+      tags: [
+        { name: 'v2', sha: 'commit-2' },
+        { name: 'v1', sha: 'commit-1' },
+      ],
+      truncated: false,
+    });
+  });
+
   it('reads repository metadata and strips the refs/heads prefix', async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({

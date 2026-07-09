@@ -75,9 +75,16 @@ renames — see the feature list and roadmap below for what's done and what's ne
   merges only**: their first-parent diff spans the whole merged branch, so their fills compare
   PR against PR while regular commits compare against regular commits. Azure DevOps omits parent links from
   its bulk listing; the explorer says so ("unlinked commits") and offers **Connect commits** to
-  fetch them one commit at a time. Clicking a commit opens a detail bar — full message, author,
-  copyable sha, `+added −removed · files`, hop-to-parent chips — with **Browse this commit**,
-  which time-travels the whole file tree to that sha.
+  fetch them one commit at a time. **Tags show as dashed golden chips** on their commits (one
+  request, annotated tags dereferenced on every provider — local repos included) and tagged
+  commits never fold into pills. Clicking a commit opens a detail bar — full message, author,
+  copyable sha, `+added −removed · files`, hop-to-parent chips — with a **Files** panel listing
+  everything the commit changed (status, `+/−` per file; click a file to open its diff at that
+  commit, free when the commit was already sized) and **Browse this commit**, which time-travels
+  the whole file tree to that sha. **Compare from here** anchors a comparison: pick any other
+  commit and the bar shows **ahead/behind counts** (`git rev-list --left-right`-style, computed
+  client-side over the loaded window — marked as lower bounds when the window doesn't reach the
+  merge base) while everything outside the two branches' difference dims away.
 - **Per-file commit history**: a History panel lists the commits that touched the selected file
   (paginated — page through older commits or **Load all** at once), with author and relative date.
   Its open/closed state is remembered, so it can stay open permanently across files and sessions.
