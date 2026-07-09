@@ -312,6 +312,8 @@ export interface CoChangeState {
   readonly target: number;
   /** Coupling aggregated from the commits scanned so far. */
   readonly result: CoChangeResult;
+  /** The raw commit file-sets behind the result, for client-side module roll-up. */
+  readonly commits?: readonly CommitFiles[];
   /** Files ranked by recency-weighted churn (repo-wide only; empty for a focus). */
   readonly hotspots: readonly Hotspot[];
   /**
@@ -1689,7 +1691,13 @@ export class RepoStore {
     // may still be unread.
     const snapshot = (status: CoChangeState['status']): AggregateInput => {
       const partial = status !== 'ready' || (!exhausted && collected.length >= options.cap);
-      return { commits: collected, sizes, focus: options.focus, minSupport: options.minSupport, partial };
+      return {
+        commits: collected,
+        sizes,
+        focus: options.focus,
+        minSupport: options.minSupport,
+        partial,
+      };
     };
 
     const stateFrom = (
@@ -1702,6 +1710,8 @@ export class RepoStore {
       scanned: collected.length,
       target: options.cap,
       result: agg.result,
+      // A stable snapshot — `collected` keeps growing while the walk streams.
+      commits: [...collected],
       // Hotspots, the team graph, knowledge and the forecast are repo-wide
       // metrics; a single file's focused walk doesn't have them.
       hotspots: agg.hotspots,

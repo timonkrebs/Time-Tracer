@@ -1752,6 +1752,8 @@ describe('RepoStore', () => {
       // The same walk ranks hotspots: a.ts changed in all 3 commits.
       expect(state?.hotspots[0]?.path).toBe('a.ts');
       expect(state?.hotspots[0]?.metric.revisions).toBe(3);
+      // The raw commit file-sets ride along, for the client-side module roll-up.
+      expect(state?.commits?.map((c) => c.sha)).toEqual(['c1', 'c2', 'c3']);
     });
 
     it('excludes generated/vendored files from the metrics', async () => {
@@ -1869,9 +1871,7 @@ describe('RepoStore', () => {
       // Every page is full, so the walk fills the cap without ever seeing the end.
       provider.listCommitsResult = () => {
         const { perPage = 30, page = 1 } = provider.listCommitsCalls.at(-1)!;
-        return Promise.resolve(
-          Array.from({ length: perPage }, (_, i) => commit(`p${page}c${i}`)),
-        );
+        return Promise.resolve(Array.from({ length: perPage }, (_, i) => commit(`p${page}c${i}`)));
       };
       provider.commitFilesResult = () =>
         Promise.resolve([{ path: 'src/app.ts', status: 'modified' }]);

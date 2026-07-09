@@ -120,6 +120,52 @@ const CLUSTERED: CoChangeState = {
   teamGraph: EMPTY_TEAM_GRAPH,
   knowledge: EMPTY_KNOWLEDGE,
 };
+// Two folders that always change together → module coupling at the auto depth.
+const MODULES_COMMITS = [
+  { sha: 'p1', files: ['src/auth/login.ts', 'src/ui/button.ts'] },
+  { sha: 'p2', files: ['src/auth/login.ts', 'src/ui/button.ts'] },
+];
+const MODULES: CoChangeState = {
+  status: 'ready',
+  scanned: 2,
+  target: 75,
+  result: computeCoChange(MODULES_COMMITS),
+  commits: MODULES_COMMITS,
+  hotspots: [],
+  teamGraph: EMPTY_TEAM_GRAPH,
+  knowledge: EMPTY_KNOWLEDGE,
+};
+// Three folders forming a clique → a module cluster (≥ 3) for the graph.
+const MODULE_CLUSTER_COMMITS = [
+  { sha: 'q1', files: ['api/a.ts', 'web/b.ts', 'db/c.ts'] },
+  { sha: 'q2', files: ['api/a.ts', 'web/b.ts', 'db/c.ts'] },
+];
+const MODULE_CLUSTER: CoChangeState = {
+  status: 'ready',
+  scanned: 2,
+  target: 75,
+  result: computeCoChange(MODULE_CLUSTER_COMMITS),
+  commits: MODULE_CLUSTER_COMMITS,
+  hotspots: [],
+  teamGraph: EMPTY_TEAM_GRAPH,
+  knowledge: EMPTY_KNOWLEDGE,
+};
+// Two folders that always change together, but via *different* files each time
+// → no file pair clears minSupport, yet module coupling exists.
+const MODULE_ONLY_COMMITS = [
+  { sha: 'r1', files: ['auth/a.ts', 'ui/x.ts'] },
+  { sha: 'r2', files: ['auth/b.ts', 'ui/y.ts'] },
+];
+const MODULE_ONLY: CoChangeState = {
+  status: 'ready',
+  scanned: 2,
+  target: 75,
+  result: computeCoChange(MODULE_ONLY_COMMITS),
+  commits: MODULE_ONLY_COMMITS,
+  hotspots: [],
+  teamGraph: EMPTY_TEAM_GRAPH,
+  knowledge: EMPTY_KNOWLEDGE,
+};
 // Ada & Bo share auth.ts/session.ts (a connected pair); Cy only ever touches
 // db.ts alone — a silo. Drives the Team tab.
 const TEAM: CoChangeState = {
@@ -411,6 +457,93 @@ describe('InsightsView', () => {
     // Two index.ts files → labels fall back to the full path to disambiguate.
     expect(text()).toContain('src/a/index.ts');
     expect(text()).toContain('src/b/index.ts');
+  });
+
+  it('labels file cluster edges with their coupling strength', async () => {
+    await setState(CLUSTERED); // a clique: every pair changes together → 100%
+    button('Coupling')!.click();
+    await fixture.whenStable();
+
+    const labels = Array.from(
+      fixture.nativeElement.querySelectorAll('svg text') as SVGTextElement[],
+    ).map((t) => t.textContent?.trim());
+    expect(labels).toContain('100%');
+  });
+
+  it('rolls coupling up to folders at an automatic depth, with the driving files', async () => {
+    await setState(MODULES);
+    button('Coupling')!.click();
+    await fixture.whenStable();
+    button('Modules')!.click();
+    await fixture.whenStable();
+
+    // Everything lives under src/, so the auto depth digs one level deeper and
+    // surfaces src/auth ↔ src/ui instead of one meaningless "src" blob.
+    expect(text()).toContain('src/auth');
+    expect(text()).toContain('src/ui');
+    // Each folder pair is grounded by the file pairs that drive it.
+    expect(text()).toContain('via');
+    expect(text()).toContain('login.ts');
+    expect(text()).toContain('button.ts');
+  });
+
+  it('draws a module cluster graph with weighted edges', async () => {
+    await setState(MODULE_CLUSTER);
+    button('Coupling')!.click();
+    await fixture.whenStable();
+    button('Modules')!.click();
+    await fixture.whenStable();
+
+    // Three folders forming a clique → a node-link graph (edges + nodes).
+    expect(fixture.nativeElement.querySelector('svg line')).not.toBeNull();
+    expect(fixture.nativeElement.querySelectorAll('svg circle').length).toBeGreaterThanOrEqual(3);
+
+    // Each edge is labelled with the coupling strength (always together → 100%).
+    const labels = Array.from(
+      fixture.nativeElement.querySelectorAll('svg text') as SVGTextElement[],
+    ).map((t) => t.textContent?.trim());
+    expect(labels).toContain('100%');
+  });
+
+  it('reaches module coupling even when no file pair survives minSupport', async () => {
+    await setState(MODULE_ONLY);
+    button('Coupling')!.click();
+    await fixture.whenStable();
+
+    // No file pairs cleared minSupport, but the granularity toggle is still here…
+    expect(text()).toContain('No files changed together');
+    button('Modules')!.click();
+    await fixture.whenStable();
+
+    // …and the module roll-up surfaces the auth ↔ ui coupling.
+    expect(text()).toContain('auth');
+    expect(text()).toContain('ui');
+  });
+
+  it('ignores root-level files in module coupling', async () => {
+    // Manifests ride along with every commit; they must not become a module.
+    const commits = [
+      { sha: 'n1', files: ['package.json', 'auth/a.ts', 'ui/x.ts'] },
+      { sha: 'n2', files: ['package.json', 'auth/a.ts', 'ui/x.ts'] },
+    ];
+    await setState({
+      status: 'ready',
+      scanned: 2,
+      target: 75,
+      result: computeCoChange(commits),
+      commits,
+      hotspots: [],
+      teamGraph: EMPTY_TEAM_GRAPH,
+      knowledge: EMPTY_KNOWLEDGE,
+    });
+    button('Coupling')!.click();
+    await fixture.whenStable();
+    button('Modules')!.click();
+    await fixture.whenStable();
+
+    expect(text()).toContain('auth');
+    expect(text()).toContain('ui');
+    expect(text()).not.toContain('(root)');
   });
 
   it('truncates long cluster-graph node labels with a middle ellipsis', () => {

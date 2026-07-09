@@ -19,8 +19,13 @@ import { busiestDay, longestStreak } from '../../core/util/wrapped';
 import { Contributor, busFactorBoard, simulateDeparture } from '../../core/util/bus-factor';
 import {
   CoChangeCluster,
+  CoChangePair,
   SurprisingPair,
+  autoModuleDepth,
   clusterCoChange,
+  computeCoChange,
+  computeModuleCoChange,
+  modulePairDrivers,
   relatedFiles,
   surprisingCouplings,
 } from '../../core/util/co-change';
@@ -74,6 +79,12 @@ const CLUSTER_SIZE_CEIL = 50;
 /** Default visible band: 3 up to 20 files; bigger ones become hairballs. */
 const DEFAULT_MIN_CLUSTER_FILES = 3;
 const DEFAULT_MAX_CLUSTER_FILES = 20;
+const MODULE_MIN_SUPPORT = 2;
+/** File pairs shown as the "via …" explanation under a module pair. */
+const MODULE_DRIVERS_SHOWN = 2;
+/** Module clusters are the architecture story, so keep a generous size band. */
+const MODULE_CLUSTER_MIN_FILES = 3;
+const MODULE_CLUSTER_MAX_FILES = 12;
 /** Treemap coordinate space (16:9, scaled uniformly to fill its box). */
 const TREEMAP_W = 1600;
 const TREEMAP_H = 900;
@@ -312,7 +323,15 @@ interface GraphEdge {
   readonly y1: number;
   readonly x2: number;
   readonly y2: number;
+  /** Edge midpoint — where the weight label sits. */
+  readonly mx: number;
+  readonly my: number;
+  /** Stroke width and opacity, both scaled from the coupling degree. */
   readonly width: number;
+  readonly opacity: number;
+  /** Co-change count (raw) and Jaccard degree (the labelled coupling strength). */
+  readonly support: number;
+  readonly degree: number;
 }
 interface ClusterGraph {
   readonly files: number;
@@ -845,145 +864,296 @@ interface Quadrant {
               <p class="text-sm text-rose-400">{{ s.message }}</p>
             } @else if (s.message) {
               <p class="text-sm text-zinc-500">{{ s.message }}</p>
-            } @else if (pairs().length) {
+            } @else if (s.result.commitsUsed) {
+              <!--
+                Gated on commits analysed (not file pairs): module coupling can
+                exist even when no file pair clears minSupport, so the toggle
+                must stay reachable. Each mode renders its own empty state.
+              -->
               <div class="mb-2 flex items-center gap-3 text-xs text-zinc-500">
-                <span>Most-coupled clusters — click a file to filter by it.</span>
-                <span class="flex-1"></span>
-                <span class="text-zinc-600">files</span>
-                <span class="w-7 text-right tabular-nums text-zinc-400">{{
-                  minClusterSize()
-                }}</span>
                 <span
-                  class="dual-range relative h-3 w-28"
+                  class="inline-flex overflow-hidden rounded border border-zinc-700"
                   role="group"
-                  aria-label="Cluster size range"
+                  aria-label="Coupling granularity"
                 >
-                  <span
-                    class="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded bg-zinc-700"
-                  ></span>
-                  <span
-                    class="pointer-events-none absolute top-1/2 h-1 -translate-y-1/2 rounded bg-indigo-400"
-                    [style.left.%]="rangePercent().left"
-                    [style.right.%]="rangePercent().right"
-                  ></span>
-                  <input
-                    type="range"
-                    [min]="floor"
-                    [max]="ceil"
-                    step="1"
-                    [value]="minClusterSize()"
-                    (input)="onMinClusterSize($event)"
-                    aria-label="Minimum cluster size"
-                  />
-                  <input
-                    type="range"
-                    [min]="floor"
-                    [max]="ceil"
-                    step="1"
-                    [value]="maxClusterSize()"
-                    (input)="onMaxClusterSize($event)"
-                    aria-label="Maximum cluster size"
-                  />
-                </span>
-                <span class="w-7 tabular-nums text-zinc-400">{{ maxClusterSize() }}</span>
-              </div>
-              @if (clusters().length) {
-                <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  @for (graph of clusterGraphs(); track $index) {
-                    <div class="rounded border border-zinc-800 bg-zinc-900/30 p-1">
-                      <svg
-                        [attr.viewBox]="'0 0 ' + clusterW + ' ' + clusterH"
-                        class="w-full overflow-hidden"
-                        role="img"
-                      >
-                        @for (edge of graph.edges; track $index) {
-                          <line
-                            [attr.x1]="edge.x1"
-                            [attr.y1]="edge.y1"
-                            [attr.x2]="edge.x2"
-                            [attr.y2]="edge.y2"
-                            stroke="#6366f1"
-                            stroke-opacity="0.35"
-                            [attr.stroke-width]="edge.width"
-                          />
-                        }
-                        @for (node of graph.nodes; track node.path) {
-                          <g class="cursor-pointer" (click)="focusFile.emit(node.path)">
-                            <title>{{ node.path }}</title>
-                            <circle [attr.cx]="node.x" [attr.cy]="node.y" r="5" fill="#818cf8" />
-                            <text
-                              [attr.x]="node.x"
-                              [attr.y]="node.y - 9"
-                              text-anchor="middle"
-                              font-size="11"
-                              fill="#e4e4e7"
-                              class="pointer-events-none font-mono"
-                            >
-                              {{ nodeLabel(node.label) }}
-                            </text>
-                          </g>
-                        }
-                      </svg>
-                      <p class="text-center text-[11px] text-zinc-600">{{ graph.files }} files</p>
-                    </div>
-                  }
-                </div>
-                <p class="mt-3 mb-1 text-[11px] font-medium tracking-wide text-zinc-500 uppercase">
-                  All pairs
-                </p>
-              }
-              <ul class="space-y-1">
-                @for (pair of pairs(); track $index) {
-                  <li
-                    class="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-white/[0.03]"
+                  <button
+                    type="button"
+                    class="px-2 py-0.5 transition"
+                    [class]="
+                      granularity() === 'files'
+                        ? 'bg-zinc-700/60 font-medium text-zinc-200'
+                        : 'hover:bg-white/10'
+                    "
+                    [attr.aria-pressed]="granularity() === 'files'"
+                    (click)="granularity.set('files')"
                   >
-                    <span class="flex min-w-0 flex-1 items-center gap-1.5">
-                      <button
-                        type="button"
-                        class="truncate font-mono text-xs text-zinc-200 underline-offset-2 hover:text-indigo-300 hover:underline"
-                        [title]="pair.a"
-                        (click)="focusFile.emit(pair.a)"
-                      >
-                        {{ label(pair.a) }}
-                      </button>
-                      <span class="shrink-0 text-zinc-600">↔</span>
-                      <button
-                        type="button"
-                        class="truncate font-mono text-xs text-zinc-200 underline-offset-2 hover:text-indigo-300 hover:underline"
-                        [title]="pair.b"
-                        (click)="focusFile.emit(pair.b)"
-                      >
-                        {{ label(pair.b) }}
-                      </button>
-                    </span>
-                    <span
-                      class="shrink-0 text-[11px] text-zinc-500 tabular-nums"
-                      [title]="
-                        'co-changed in ' +
-                        pair.support +
-                        ' commits · coupled ' +
-                        pct(pair.degree) +
-                        '% of the time either file changes'
-                      "
-                    >
-                      {{ pair.support }}× · {{ pct(pair.degree) }}%
-                    </span>
-                  </li>
+                    Files
+                  </button>
+                  <button
+                    type="button"
+                    class="border-l border-zinc-700 px-2 py-0.5 transition"
+                    [class]="
+                      granularity() === 'modules'
+                        ? 'bg-zinc-700/60 font-medium text-zinc-200'
+                        : 'hover:bg-white/10'
+                    "
+                    [attr.aria-pressed]="granularity() === 'modules'"
+                    (click)="granularity.set('modules')"
+                  >
+                    Modules
+                  </button>
+                </span>
+                @if (granularity() === 'files' && pairs().length) {
+                  <span>Most-coupled clusters — click a file to filter by it.</span>
                 }
-              </ul>
-              @if (more() > 0) {
-                <p class="mt-2 text-[11px] text-zinc-600">+{{ more() }} more pairs</p>
-              }
-              @if (surprising().length) {
-                <p class="mt-4 mb-1 text-[11px] font-medium tracking-wide text-zinc-500 uppercase">
-                  Surprising couplings
+                <span class="flex-1"></span>
+                @if (granularity() === 'files' && pairs().length) {
+                  <span class="text-zinc-600">files</span>
+                  <span class="w-7 text-right tabular-nums text-zinc-400">{{
+                    minClusterSize()
+                  }}</span>
+                  <span
+                    class="dual-range relative h-3 w-28"
+                    role="group"
+                    aria-label="Cluster size range"
+                  >
+                    <span
+                      class="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded bg-zinc-700"
+                    ></span>
+                    <span
+                      class="pointer-events-none absolute top-1/2 h-1 -translate-y-1/2 rounded bg-indigo-400"
+                      [style.left.%]="rangePercent().left"
+                      [style.right.%]="rangePercent().right"
+                    ></span>
+                    <input
+                      type="range"
+                      [min]="floor"
+                      [max]="ceil"
+                      step="1"
+                      [value]="minClusterSize()"
+                      (input)="onMinClusterSize($event)"
+                      aria-label="Minimum cluster size"
+                    />
+                    <input
+                      type="range"
+                      [min]="floor"
+                      [max]="ceil"
+                      step="1"
+                      [value]="maxClusterSize()"
+                      (input)="onMaxClusterSize($event)"
+                      aria-label="Maximum cluster size"
+                    />
+                  </span>
+                  <span class="w-7 tabular-nums text-zinc-400">{{ maxClusterSize() }}</span>
+                }
+              </div>
+              @if (granularity() === 'modules') {
+                <p class="mb-2 text-xs text-zinc-500">
+                  Folders that change together, with the file pairs driving each coupling.
+                  Cross-boundary coupling is the architectural-decay smell; churn within a folder
+                  collapses away, and root-level files (manifests, docs) are ignored.
                 </p>
-                <p class="mb-1.5 text-[11px] leading-4 text-zinc-600">
-                  Strongly coupled files that sit far apart in the tree — often a hidden dependency
-                  worth a look.
-                </p>
+                @if (moduleClusterGraphs().length) {
+                  <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    @for (graph of moduleClusterGraphs(); track $index) {
+                      <div class="rounded border border-zinc-800 bg-zinc-900/30 p-1">
+                        <svg
+                          [attr.viewBox]="'0 0 ' + clusterW + ' ' + clusterH"
+                          class="w-full overflow-hidden"
+                          role="img"
+                        >
+                          @for (edge of graph.edges; track $index) {
+                            <g>
+                              <title>
+                                change together {{ pct(edge.degree) }}% of the time ({{
+                                  edge.support
+                                }}
+                                commits)
+                              </title>
+                              <line
+                                [attr.x1]="edge.x1"
+                                [attr.y1]="edge.y1"
+                                [attr.x2]="edge.x2"
+                                [attr.y2]="edge.y2"
+                                stroke="#818cf8"
+                                [attr.stroke-opacity]="edge.opacity"
+                                [attr.stroke-width]="edge.width"
+                              />
+                              <text
+                                [attr.x]="edge.mx"
+                                [attr.y]="edge.my"
+                                text-anchor="middle"
+                                dominant-baseline="central"
+                                font-size="9"
+                                fill="#c7d2fe"
+                                stroke="#09090b"
+                                stroke-width="2.5"
+                                paint-order="stroke"
+                                class="pointer-events-none font-mono tabular-nums"
+                              >
+                                {{ pct(edge.degree) }}%
+                              </text>
+                            </g>
+                          }
+                          @for (node of graph.nodes; track node.path) {
+                            <g>
+                              <title>{{ node.path }}</title>
+                              <circle [attr.cx]="node.x" [attr.cy]="node.y" r="5" fill="#818cf8" />
+                              <text
+                                [attr.x]="node.x"
+                                [attr.y]="node.y - 9"
+                                text-anchor="middle"
+                                font-size="11"
+                                fill="#e4e4e7"
+                                class="pointer-events-none font-mono"
+                              >
+                                {{ nodeLabel(node.label) }}
+                              </text>
+                            </g>
+                          }
+                        </svg>
+                        <p class="text-center text-[11px] text-zinc-600">
+                          {{ graph.files }} modules
+                        </p>
+                      </div>
+                    }
+                  </div>
+                  <p
+                    class="mt-3 mb-1 text-[11px] font-medium tracking-wide text-zinc-500 uppercase"
+                  >
+                    All module pairs
+                  </p>
+                }
+                @if (modulePairs().length) {
+                  <ul class="space-y-1">
+                    @for (pair of modulePairs(); track $index) {
+                      <li class="rounded px-2 py-1.5 text-sm">
+                        <span class="flex items-center gap-2">
+                          <span class="flex min-w-0 flex-1 items-center gap-1.5">
+                            <span
+                              class="truncate font-mono text-xs text-zinc-200"
+                              [title]="pair.a"
+                              >{{ moduleLabel(pair.a) }}</span
+                            >
+                            <span class="shrink-0 text-zinc-600">↔</span>
+                            <span
+                              class="truncate font-mono text-xs text-zinc-200"
+                              [title]="pair.b"
+                              >{{ moduleLabel(pair.b) }}</span
+                            >
+                          </span>
+                          <span
+                            class="shrink-0 text-[11px] text-zinc-500 tabular-nums"
+                            title="Changed together in {{ pair.support }} commits — {{
+                              pct(pair.degree)
+                            }}% of the commits touching either"
+                          >
+                            {{ pair.support }}× · {{ pct(pair.degree) }}%
+                          </span>
+                        </span>
+                        @if (driversFor(pair.a, pair.b); as drivers) {
+                          @if (drivers.length) {
+                            <span class="mt-0.5 block truncate text-[11px] text-zinc-600">
+                              via
+                              @for (driver of drivers; track $index) {
+                                <span class="font-mono" [title]="driver.a + ' ↔ ' + driver.b"
+                                  >{{ label(driver.a) }} ↔ {{ label(driver.b) }}</span
+                                >
+                                ({{ driver.support }}×)
+                                @if (!$last) {
+                                  ,
+                                }
+                              }
+                            </span>
+                          }
+                        }
+                      </li>
+                    }
+                  </ul>
+                  @if (moduleMore() > 0) {
+                    <p class="mt-2 text-[11px] text-zinc-600">
+                      +{{ moduleMore() }} more module pairs
+                    </p>
+                  }
+                } @else if (s.status === 'computing') {
+                  <p class="text-sm text-zinc-500">Finding coupling…</p>
+                } @else {
+                  <p class="text-sm text-zinc-500">
+                    No folders change together in the analysed commits.
+                  </p>
+                }
+              } @else if (pairs().length) {
+                @if (clusters().length) {
+                  <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    @for (graph of clusterGraphs(); track $index) {
+                      <div class="rounded border border-zinc-800 bg-zinc-900/30 p-1">
+                        <svg
+                          [attr.viewBox]="'0 0 ' + clusterW + ' ' + clusterH"
+                          class="w-full overflow-hidden"
+                          role="img"
+                        >
+                          @for (edge of graph.edges; track $index) {
+                            <g>
+                              <title>
+                                change together {{ pct(edge.degree) }}% of the time ({{
+                                  edge.support
+                                }}
+                                commits)
+                              </title>
+                              <line
+                                [attr.x1]="edge.x1"
+                                [attr.y1]="edge.y1"
+                                [attr.x2]="edge.x2"
+                                [attr.y2]="edge.y2"
+                                stroke="#818cf8"
+                                [attr.stroke-opacity]="edge.opacity"
+                                [attr.stroke-width]="edge.width"
+                              />
+                              <text
+                                [attr.x]="edge.mx"
+                                [attr.y]="edge.my"
+                                text-anchor="middle"
+                                dominant-baseline="central"
+                                font-size="9"
+                                fill="#c7d2fe"
+                                stroke="#09090b"
+                                stroke-width="2.5"
+                                paint-order="stroke"
+                                class="pointer-events-none font-mono tabular-nums"
+                              >
+                                {{ pct(edge.degree) }}%
+                              </text>
+                            </g>
+                          }
+                          @for (node of graph.nodes; track node.path) {
+                            <g class="cursor-pointer" (click)="focusFile.emit(node.path)">
+                              <title>{{ node.path }}</title>
+                              <circle [attr.cx]="node.x" [attr.cy]="node.y" r="5" fill="#818cf8" />
+                              <text
+                                [attr.x]="node.x"
+                                [attr.y]="node.y - 9"
+                                text-anchor="middle"
+                                font-size="11"
+                                fill="#e4e4e7"
+                                class="pointer-events-none font-mono"
+                              >
+                                {{ nodeLabel(node.label) }}
+                              </text>
+                            </g>
+                          }
+                        </svg>
+                        <p class="text-center text-[11px] text-zinc-600">{{ graph.files }} files</p>
+                      </div>
+                    }
+                  </div>
+                  <p
+                    class="mt-3 mb-1 text-[11px] font-medium tracking-wide text-zinc-500 uppercase"
+                  >
+                    All pairs
+                  </p>
+                }
                 <ul class="space-y-1">
-                  @for (pair of surprising(); track $index) {
+                  @for (pair of pairs(); track $index) {
                     <li
                       class="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-white/[0.03]"
                     >
@@ -1009,7 +1179,11 @@ interface Quadrant {
                       <span
                         class="shrink-0 text-[11px] text-zinc-500 tabular-nums"
                         [title]="
-                          'co-changed in ' + pair.support + ' commits, across distant folders'
+                          'co-changed in ' +
+                          pair.support +
+                          ' commits · coupled ' +
+                          pct(pair.degree) +
+                          '% of the time either file changes'
                         "
                       >
                         {{ pair.support }}× · {{ pct(pair.degree) }}%
@@ -1017,13 +1191,70 @@ interface Quadrant {
                     </li>
                   }
                 </ul>
+                @if (more() > 0) {
+                  <p class="mt-2 text-[11px] text-zinc-600">+{{ more() }} more pairs</p>
+                }
+                @if (surprising().length) {
+                  <p
+                    class="mt-4 mb-1 text-[11px] font-medium tracking-wide text-zinc-500 uppercase"
+                  >
+                    Surprising couplings
+                  </p>
+                  <p class="mb-1.5 text-[11px] leading-4 text-zinc-600">
+                    Strongly coupled files that sit far apart in the tree — often a hidden
+                    dependency worth a look.
+                  </p>
+                  <ul class="space-y-1">
+                    @for (pair of surprising(); track $index) {
+                      <li
+                        class="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-white/[0.03]"
+                      >
+                        <span class="flex min-w-0 flex-1 items-center gap-1.5">
+                          <button
+                            type="button"
+                            class="truncate font-mono text-xs text-zinc-200 underline-offset-2 hover:text-indigo-300 hover:underline"
+                            [title]="pair.a"
+                            (click)="focusFile.emit(pair.a)"
+                          >
+                            {{ label(pair.a) }}
+                          </button>
+                          <span class="shrink-0 text-zinc-600">↔</span>
+                          <button
+                            type="button"
+                            class="truncate font-mono text-xs text-zinc-200 underline-offset-2 hover:text-indigo-300 hover:underline"
+                            [title]="pair.b"
+                            (click)="focusFile.emit(pair.b)"
+                          >
+                            {{ label(pair.b) }}
+                          </button>
+                        </span>
+                        <span
+                          class="shrink-0 text-[11px] text-zinc-500 tabular-nums"
+                          [title]="
+                            'co-changed in ' + pair.support + ' commits, across distant folders'
+                          "
+                        >
+                          {{ pair.support }}× · {{ pct(pair.degree) }}%
+                        </span>
+                      </li>
+                    }
+                  </ul>
+                }
+                <p
+                  class="mt-3 border-t border-zinc-800/70 pt-2 text-[11px] leading-5 text-zinc-600"
+                >
+                  <span class="font-medium text-zinc-500">N× · M%</span> — co-changed in N commits
+                  and coupled M% of the time either file changes (their share of shared changes).
+                  Ranked by coupling strength: the % weighted by how much evidence backs it, so a
+                  high % from only a couple of commits doesn't outrank a well-supported one.
+                </p>
+              } @else if (s.status === 'computing') {
+                <p class="text-sm text-zinc-500">Finding coupling…</p>
+              } @else {
+                <p class="text-sm text-zinc-500">
+                  No files changed together often enough in the analysed commits.
+                </p>
               }
-              <p class="mt-3 border-t border-zinc-800/70 pt-2 text-[11px] leading-5 text-zinc-600">
-                <span class="font-medium text-zinc-500">N× · M%</span> — co-changed in N commits and
-                coupled M% of the time either file changes (their share of shared changes). Ranked
-                by coupling strength: the % weighted by how much evidence backs it, so a high % from
-                only a couple of commits doesn't outrank a well-supported one.
-              </p>
             } @else if (s.status === 'ready') {
               <p class="text-sm text-zinc-500">
                 No files changed together often enough in the analysed commits.
@@ -2393,6 +2624,44 @@ export class InsightsView {
     return f?.focus ? relatedFiles(f.result, f.focus, MAX_RELATED) : [];
   });
 
+  /** Coupling granularity: individual files vs. rolled-up folder modules. */
+  protected readonly granularity = signal<'files' | 'modules'>('files');
+  /**
+   * Folder grouping depth, picked automatically per repository: deep enough
+   * that no single folder swallows the tree (`src/app/…`), no knob to tune.
+   */
+  private readonly moduleDepth = computed(() => autoModuleDepth(this.state()?.commits ?? []));
+  /** Coupling rolled up to folder modules at the automatic depth. */
+  private readonly moduleResult = computed(() =>
+    computeModuleCoChange(this.state()?.commits ?? [], {
+      depth: this.moduleDepth(),
+      minSupport: MODULE_MIN_SUPPORT,
+    }),
+  );
+  protected readonly modulePairs = computed(() => this.moduleResult().pairs.slice(0, MAX_PAIRS));
+  protected readonly moduleMore = computed(() =>
+    Math.max(0, this.moduleResult().pairs.length - MAX_PAIRS),
+  );
+  /** Every file pair (support ≥ 1) — the raw material behind the drivers. */
+  private readonly allFilePairs = computed(
+    () => computeCoChange(this.state()?.commits ?? [], { minSupport: 1 }).pairs,
+  );
+  /** The file pairs that make each module pair couple, keyed like the pairs. */
+  private readonly moduleDrivers = computed(() =>
+    modulePairDrivers(this.allFilePairs(), this.moduleDepth()),
+  );
+  /** Module clusters drawn as graphs — the architecture entanglement, visualised. */
+  private readonly moduleClusters = computed(() =>
+    clusterCoChange(this.moduleResult().pairs, {
+      limit: MAX_CLUSTERS,
+      minFiles: MODULE_CLUSTER_MIN_FILES,
+      maxFiles: MODULE_CLUSTER_MAX_FILES,
+    }),
+  );
+  protected readonly moduleClusterGraphs = computed(() =>
+    this.moduleClusters().map((c) => this.layout(c)),
+  );
+
   /**
    * All displayable connected components, computed once per analysis state.
    * The size band only filters — splitting it out keeps the union-find over
@@ -2523,6 +2792,18 @@ export class InsightsView {
     for (const hot of this.hotspots()) paths.add(hot.path);
     for (const risk of this.knowledgeFiles()) paths.add(risk.path);
     for (const cluster of this.clusters()) for (const file of cluster.files) paths.add(file);
+    // Only pay for the module roll-up once the user actually switches to it.
+    if (this.granularity() === 'modules') {
+      for (const cluster of this.moduleClusters()) {
+        for (const module of cluster.files) paths.add(module);
+      }
+      for (const drivers of this.moduleDrivers().values()) {
+        for (const driver of drivers) {
+          paths.add(driver.a);
+          paths.add(driver.b);
+        }
+      }
+    }
     return disambiguateLabels(paths);
   });
 
@@ -3075,7 +3356,20 @@ export class InsightsView {
     const edges = cluster.edges.map((edge) => {
       const a = pos.get(edge.a)!;
       const b = pos.get(edge.b)!;
-      return { x1: a.x, y1: a.y, x2: b.x, y2: b.y, width: 1 + edge.degree * 4 };
+      return {
+        x1: a.x,
+        y1: a.y,
+        x2: b.x,
+        y2: b.y,
+        mx: (a.x + b.x) / 2,
+        my: (a.y + b.y) / 2,
+        // Both width and opacity track the coupling strength, so a strong edge
+        // reads as strong even before you read its label.
+        width: 1.5 + edge.degree * 5,
+        opacity: 0.25 + edge.degree * 0.55,
+        support: edge.support,
+        degree: edge.degree,
+      };
     });
     return { files: n, nodes, edges };
   }
@@ -3649,6 +3943,17 @@ export class InsightsView {
 
   protected label(path: string): string {
     return this.labels().get(path) ?? path.slice(path.lastIndexOf('/') + 1);
+  }
+
+  /** The top file pairs that make two modules couple — the tangible "why". */
+  protected driversFor(moduleA: string, moduleB: string): readonly CoChangePair[] {
+    const key = moduleA < moduleB ? moduleA + '\n' + moduleB : moduleB + '\n' + moduleA;
+    return (this.moduleDrivers().get(key) ?? []).slice(0, MODULE_DRIVERS_SHOWN);
+  }
+
+  /** A module is a folder path; the repository root reads as "(root)". */
+  protected moduleLabel(module: string): string {
+    return module === '' ? '(root)' : module;
   }
 
   /**
