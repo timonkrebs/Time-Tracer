@@ -23,7 +23,6 @@ import {
   SurprisingPair,
   autoModuleDepth,
   clusterCoChange,
-  computeCoChange,
   computeModuleCoChange,
   modulePairDrivers,
   relatedFiles,
@@ -2642,13 +2641,14 @@ export class InsightsView {
   protected readonly moduleMore = computed(() =>
     Math.max(0, this.moduleResult().pairs.length - MAX_PAIRS),
   );
-  /** Every file pair (support ≥ 1) — the raw material behind the drivers. */
-  private readonly allFilePairs = computed(
-    () => computeCoChange(this.state()?.commits ?? [], { minSupport: 1 }).pairs,
-  );
-  /** The file pairs that make each module pair couple, keyed like the pairs. */
+  /**
+   * The file pairs that make each module pair couple, keyed like the pairs.
+   * A single pass over the commits that skips same-module and root pairs at
+   * the source (the overwhelming majority), so switching to Modules after a
+   * big "Load all" walk never materializes the full file-pair list here.
+   */
   private readonly moduleDrivers = computed(() =>
-    modulePairDrivers(this.allFilePairs(), this.moduleDepth()),
+    modulePairDrivers(this.state()?.commits ?? [], this.moduleDepth()),
   );
   /** Module clusters drawn as graphs — the architecture entanglement, visualised. */
   private readonly moduleClusters = computed(() =>
@@ -3676,7 +3676,11 @@ export class InsightsView {
       case 'hotspots':
         return s.hotspots.length > 0;
       case 'coupling':
-        return s.result.pairs.length > 0;
+        // The Modules view has its own table — exportable even when no file
+        // pair cleared minSupport.
+        return this.granularity() === 'modules'
+          ? this.moduleResult().pairs.length > 0
+          : s.result.pairs.length > 0;
       case 'team':
         return s.teamGraph.developers.length > 0;
       case 'knowledge':
@@ -3711,7 +3715,8 @@ export class InsightsView {
     }
     const dataset = this.tabDataset();
     if (!dataset) return;
-    const name = `${slug}-${this.tab()}`;
+    const modules = this.tab() === 'coupling' && this.granularity() === 'modules';
+    const name = `${slug}-${this.tab()}${modules ? '-modules' : ''}`;
     if (format === 'csv') {
       downloadText(`${name}.csv`, CSV_MIME, toCsv(dataset.headers, dataset.rows));
     } else {
@@ -3787,6 +3792,25 @@ export class InsightsView {
         };
       }
       case 'coupling': {
+        // Export what the screen shows: folder pairs in Modules, file pairs
+        // otherwise.
+        if (this.granularity() === 'modules') {
+          const modules = this.moduleResult();
+          if (!modules.pairs.length) return null;
+          return {
+            headers: ['moduleA', 'moduleB', 'coChanges', 'degree'],
+            rows: modules.pairs.map((p) => [p.a, p.b, p.support, round(p.degree, 4)]),
+            json: {
+              commitsUsed: modules.commitsUsed,
+              modulePairs: modules.pairs.map((p) => ({
+                moduleA: p.a,
+                moduleB: p.b,
+                coChanges: p.support,
+                degree: round(p.degree, 4),
+              })),
+            },
+          };
+        }
         const pairs = s.result.pairs;
         if (!pairs.length) return null;
         return {

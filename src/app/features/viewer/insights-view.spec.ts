@@ -512,12 +512,17 @@ describe('InsightsView', () => {
 
     // No file pairs cleared minSupport, but the granularity toggle is still here…
     expect(text()).toContain('No files changed together');
+    // …and with no file pairs there is nothing to export yet.
+    expect(button('CSV')).toBeUndefined();
+
     button('Modules')!.click();
     await fixture.whenStable();
 
-    // …and the module roll-up surfaces the auth ↔ ui coupling.
+    // …and the module roll-up surfaces the auth ↔ ui coupling,
     expect(text()).toContain('auth');
     expect(text()).toContain('ui');
+    // exportable as the module table even though no file pair survived.
+    expect(button('CSV')).toBeDefined();
   });
 
   it('ignores root-level files in module coupling', async () => {

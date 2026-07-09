@@ -320,19 +320,53 @@ describe('autoModuleDepth', () => {
     expect(autoModuleDepth([])).toBe(1);
     expect(autoModuleDepth([{ sha: 'c', files: ['README.md', 'package.json'] }])).toBe(1);
   });
+
+  it('ignores sweep commits — depth comes from the commits that will be scored', () => {
+    // Normal commits all funnel through src/app; a 30-file top-level sweep
+    // would make depth 1 look balanced, but the module analysis drops it —
+    // counting it here would hide the actual core ↔ features coupling.
+    const commits: CommitFiles[] = [
+      { sha: 'c1', files: ['src/app/core/a.ts', 'src/app/core/b.ts'] },
+      { sha: 'c2', files: ['src/app/features/x.ts', 'src/app/features/y.ts'] },
+      { sha: 'c3', files: ['src/app/core/c.ts', 'src/app/features/z.ts'] },
+      { sha: 'sweep', files: Array.from({ length: 30 }, (_, i) => `mod${i}/f.ts`) },
+    ];
+    expect(autoModuleDepth(commits)).toBe(3);
+  });
 });
 
 describe('modulePairDrivers', () => {
-  it('buckets file pairs by the module pair they bridge, strongest first', () => {
-    const pairs = [
-      { a: 'auth/a.ts', b: 'ui/x.ts', support: 2, degree: 0.5 },
-      { a: 'auth/b.ts', b: 'ui/y.ts', support: 5, degree: 0.9 },
-      { a: 'auth/a.ts', b: 'auth/b.ts', support: 9, degree: 1 }, // same module
-      { a: 'auth/a.ts', b: 'package.json', support: 9, degree: 1 }, // root
-    ];
-    const drivers = modulePairDrivers(pairs, 1);
+  const commits: CommitFiles[] = [
+    ...Array.from({ length: 5 }, (_, i) => ({ sha: `s${i}`, files: ['auth/b.ts', 'ui/y.ts'] })),
+    { sha: 'w1', files: ['auth/a.ts', 'ui/x.ts'] },
+    { sha: 'w2', files: ['auth/a.ts', 'ui/x.ts'] },
+    { sha: 'same', files: ['auth/a.ts', 'auth/b.ts'] }, // same module → no driver
+    { sha: 'root', files: ['auth/a.ts', 'package.json'] }, // root → no driver
+  ];
+
+  it('buckets cross-module file pairs by the module pair they bridge, strongest first', () => {
+    const drivers = modulePairDrivers(commits, 1);
 
     expect([...drivers.keys()]).toEqual(['auth\nui']);
-    expect(drivers.get('auth\nui')!.map((p) => p.support)).toEqual([5, 2]);
+    const bucket = drivers.get('auth\nui')!;
+    expect(bucket.map((p) => [p.a, p.b, p.support])).toEqual([
+      ['auth/b.ts', 'ui/y.ts', 5],
+      ['auth/a.ts', 'ui/x.ts', 2],
+    ]);
+    // Degree is the usual Jaccard: auth/b.ts changed 6× in total, ui/y.ts 5×.
+    expect(bucket[0].degree).toBeCloseTo(5 / 6);
+  });
+
+  it('truncates each bucket to the per-pair cap, keeping the strongest', () => {
+    const drivers = modulePairDrivers(commits, 1, { perPair: 1 });
+    expect(drivers.get('auth\nui')!.map((p) => p.support)).toEqual([5]);
+  });
+
+  it('drops sweep commits, like the module analysis itself', () => {
+    const sweep: CommitFiles = {
+      sha: 'sweep',
+      files: Array.from({ length: 30 }, (_, i) => `mod${i}/f.ts`),
+    };
+    expect(modulePairDrivers([sweep], 1).size).toBe(0);
   });
 });

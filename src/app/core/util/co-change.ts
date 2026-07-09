@@ -345,18 +345,24 @@ export function computeModuleCoChange(
  * which no single module holds more than `dominance` of the files. A repo that
  * funnels everything through one folder chain (`src/app/…`) needs a deeper cut
  * before folders become meaningful, while a flat repo is fine at depth 1 —
- * this finds the right level without a knob. Root-level files are ignored,
- * matching {@link computeModuleCoChange}.
+ * this finds the right level without a knob. Sweep commits and root-level
+ * files are ignored, so the depth is chosen from exactly the commit set
+ * {@link computeModuleCoChange} will score — otherwise one 30-file top-level
+ * sweep could make a shallow depth look balanced while every commit that
+ * actually counts collapses into a single module.
  */
 export function autoModuleDepth(
   commits: Iterable<CommitFiles>,
-  options: { maxDepth?: number; dominance?: number } = {},
+  options: { maxDepth?: number; dominance?: number; maxCommitFiles?: number } = {},
 ): number {
   const maxDepth = options.maxDepth ?? 4;
   const dominance = options.dominance ?? 0.5;
+  const maxCommitFiles = options.maxCommitFiles ?? DEFAULT_MAX_COMMIT_FILES;
   const files = new Set<string>();
   for (const commit of commits) {
-    for (const file of commit.files) if (file.includes('/')) files.add(file);
+    const unique = new Set(commit.files);
+    if (unique.size === 0 || unique.size > maxCommitFiles) continue; // sweep noise
+    for (const file of unique) if (file.includes('/')) files.add(file);
   }
   if (files.size === 0) return 1;
   for (let depth = 1; depth < maxDepth; depth++) {
@@ -373,26 +379,60 @@ export function autoModuleDepth(
   return maxDepth;
 }
 
+/** Driver file pairs kept per module pair (the UI shows the top few). */
+const DEFAULT_DRIVERS_PER_PAIR = 8;
+
 /**
  * The file pairs behind each cross-module coupling — what makes two modules
- * change together, concretely. File-level pairs are bucketed by the module
- * pair they bridge (same-module and root pairs are skipped), keyed
- * `a + '\n' + b` with `a < b`, strongest first within each bucket.
+ * change together, concretely. Folds the commits directly (same sweep filter
+ * as {@link computeModuleCoChange}), counting **only** pairs that bridge two
+ * modules: same-module pairs — the overwhelming majority — and root files are
+ * skipped at the commit level, so the full minSupport-1 pair list is never
+ * materialized. Buckets are keyed `moduleA + '\n' + moduleB` with A < B,
+ * strongest first, truncated to `perPair`.
  */
 export function modulePairDrivers(
-  pairs: readonly CoChangePair[],
+  commits: Iterable<CommitFiles>,
   depth: number,
+  options: { maxCommitFiles?: number; perPair?: number } = {},
 ): ReadonlyMap<string, readonly CoChangePair[]> {
+  const maxCommitFiles = options.maxCommitFiles ?? DEFAULT_MAX_COMMIT_FILES;
+  const perPair = options.perPair ?? DEFAULT_DRIVERS_PER_PAIR;
+
+  const changes = new Map<string, number>();
+  const counts = new Map<string, PairAccum>();
+  for (const commit of commits) {
+    const files = [...new Set(commit.files)].sort();
+    if (files.length === 0 || files.length > maxCommitFiles) continue;
+    const modules = files.map((file) => moduleOf(file, depth));
+    for (const file of files) changes.set(file, (changes.get(file) ?? 0) + 1);
+    for (let i = 0; i < files.length; i++) {
+      if (modules[i] === '') continue;
+      for (let j = i + 1; j < files.length; j++) {
+        if (modules[j] === '' || modules[i] === modules[j]) continue;
+        const key = files[i] + '\n' + files[j];
+        const entry = counts.get(key);
+        if (entry) entry.support++;
+        else counts.set(key, { a: files[i], b: files[j], support: 1 });
+      }
+    }
+  }
+
   const buckets = new Map<string, CoChangePair[]>();
-  for (const pair of pairs) {
-    const moduleA = moduleOf(pair.a, depth);
-    const moduleB = moduleOf(pair.b, depth);
-    if (moduleA === moduleB || moduleA === '' || moduleB === '') continue;
+  for (const { a, b, support } of counts.values()) {
+    const moduleA = moduleOf(a, depth);
+    const moduleB = moduleOf(b, depth);
     const key = moduleA < moduleB ? moduleA + '\n' + moduleB : moduleB + '\n' + moduleA;
+    const union = (changes.get(a) ?? 0) + (changes.get(b) ?? 0) - support;
     let bucket = buckets.get(key);
     if (!bucket) buckets.set(key, (bucket = []));
-    bucket.push(pair);
+    bucket.push({ a, b, support, degree: union > 0 ? support / union : 0 });
   }
-  for (const bucket of buckets.values()) bucket.sort((x, y) => y.support - x.support);
+  for (const [key, bucket] of buckets) {
+    bucket.sort(
+      (x, y) => y.support - x.support || x.a.localeCompare(y.a) || x.b.localeCompare(y.b),
+    );
+    if (bucket.length > perPair) buckets.set(key, bucket.slice(0, perPair));
+  }
   return buckets;
 }
