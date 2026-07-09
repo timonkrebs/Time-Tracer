@@ -10,6 +10,8 @@ import {
   RepoMetadata,
   RepoProviderError,
   RepoSlug,
+  RepoTag,
+  RepoTagList,
   RepoTree,
   TreeEntry,
 } from '../../models';
@@ -25,6 +27,24 @@ export const MAX_FILE_SIZE_BYTES = 2_000_000;
 
 /** Branch pages are 100 entries; stop after this many pages and mark truncated. */
 const MAX_BRANCH_PAGES = 10;
+
+/**
+ * Tag pages are 100 entries. GitHub's tag listing exposes no sort parameter
+ * and no dates, so there is no way to fetch "the recent tags" specifically —
+ * repositories beyond the cap return `truncated: true` and the Branch
+ * Explorer says so instead of pretending the chips are complete.
+ */
+const MAX_TAG_PAGES = 5;
+
+/**
+ * A commit's `files` array pages like any list endpoint once `per_page` is
+ * passed, but its *implicit* page size is unreliable (the docs' parameter
+ * table says 30, a prose note says 300) — so the size is always requested
+ * explicitly, at the API's documented maximum. GitHub lists at most 3000
+ * files per commit, so thirty pages exhaust everything it can report.
+ */
+const COMMIT_FILES_PAGE_SIZE = 100;
+const MAX_COMMIT_FILE_PAGES = 30;
 
 interface GithubRepoResponse {
   name: string;
@@ -71,6 +91,12 @@ interface GithubMatchingRefResponse {
 
 interface GithubBranchResponse {
   name: string;
+}
+
+interface GithubTagResponse {
+  name: string;
+  /** The tagged commit (GitHub dereferences annotated tags here). */
+  commit: { sha: string };
 }
 
 interface GithubCommitResponse {
@@ -188,6 +214,20 @@ export class GithubProvider implements GitProvider {
     }
   }
 
+  async listTags(slug: RepoSlug): Promise<RepoTagList> {
+    const tags: RepoTag[] = [];
+    for (let page = 1; ; page++) {
+      const data = await this.request<GithubTagResponse[]>(
+        slug,
+        `/repos/${enc(slug.owner)}/${enc(slug.repo)}/tags?per_page=100&page=${page}`,
+        { notFound: 'Repository not found — it may not exist or it may be private.' },
+      );
+      for (const tag of data) tags.push({ name: tag.name, sha: tag.commit.sha });
+      if (data.length < 100) return { tags, truncated: false };
+      if (page >= MAX_TAG_PAGES) return { tags, truncated: true };
+    }
+  }
+
   async getTree(slug: RepoSlug, ref: string): Promise<RepoTree> {
     const data = await this.request<GithubTreeResponse>(
       slug,
@@ -286,19 +326,27 @@ export class GithubProvider implements GitProvider {
   }
 
   async getCommitFiles(slug: RepoSlug, sha: string): Promise<CommitFileChange[]> {
-    const data = await this.request<GithubCommitResponse>(
-      slug,
-      `/repos/${enc(slug.owner)}/${enc(slug.repo)}/commits/${enc(sha)}`,
-      { notFound: `Commit ${sha.slice(0, 7)} was not found in this repository.` },
-    );
-    return (data.files ?? []).map((file) => ({
-      path: file.filename,
-      status: file.status,
-      ...(file.previous_filename ? { previousPath: file.previous_filename } : {}),
-      ...(file.additions !== undefined ? { additions: file.additions } : {}),
-      ...(file.deletions !== undefined ? { deletions: file.deletions } : {}),
-      ...(file.patch !== undefined ? { patch: file.patch } : {}),
-    }));
+    const files: CommitFileChange[] = [];
+    for (let page = 1; page <= MAX_COMMIT_FILE_PAGES; page++) {
+      const data = await this.request<GithubCommitResponse>(
+        slug,
+        `/repos/${enc(slug.owner)}/${enc(slug.repo)}/commits/${enc(sha)}?per_page=${COMMIT_FILES_PAGE_SIZE}&page=${page}`,
+        { notFound: `Commit ${sha.slice(0, 7)} was not found in this repository.` },
+      );
+      const batch = data.files ?? [];
+      files.push(
+        ...batch.map((file) => ({
+          path: file.filename,
+          status: file.status,
+          ...(file.previous_filename ? { previousPath: file.previous_filename } : {}),
+          ...(file.additions !== undefined ? { additions: file.additions } : {}),
+          ...(file.deletions !== undefined ? { deletions: file.deletions } : {}),
+          ...(file.patch !== undefined ? { patch: file.patch } : {}),
+        })),
+      );
+      if (batch.length < COMMIT_FILES_PAGE_SIZE) break;
+    }
+    return files;
   }
 
   webLinks(slug: RepoSlug, ref: string, path?: string): RepoWebLinks {

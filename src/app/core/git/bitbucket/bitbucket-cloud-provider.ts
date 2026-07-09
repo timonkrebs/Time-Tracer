@@ -9,6 +9,8 @@ import {
   RepoMetadata,
   RepoProviderError,
   RepoSlug,
+  RepoTag,
+  RepoTagList,
   RepoTree,
   TreeEntry,
 } from '../../models';
@@ -28,6 +30,9 @@ const MAX_PAGES = 100;
 
 /** Branch pages are 100 entries; stop after this many pages and mark truncated. */
 const MAX_BRANCH_PAGES = 10;
+
+/** Tag pages are 100 entries; sorted newest-tagged first. */
+const MAX_TAG_PAGES = 3;
 
 const SHA_PATTERN = /^[0-9a-f]{7,40}$/i;
 
@@ -124,6 +129,28 @@ export class BitbucketCloudProvider implements GitProvider {
     }
   }
 
+  async listTags(slug: RepoSlug): Promise<RepoTagList> {
+    const tags: RepoTag[] = [];
+    let url = `${repoApi(slug)}/refs/tags?pagelen=100&sort=-target.date`;
+    for (let page = 1; ; page++) {
+      const data = await this.getJson<
+        BbPaged<{ name: string; target?: { hash?: string; type?: string } }>
+      >(slug, url, { notFound: 'Repository not found — it may not exist or it may be private.' });
+      for (const tag of data.values ?? []) {
+        // Bitbucket reports the tagged commit as `target` (annotated-tag
+        // metadata lives in message/tagger). Guard anyway: a hash-less entry,
+        // or a target something other than a commit, must not put a
+        // non-commit sha on the chip map.
+        const target = tag.target;
+        if (!target?.hash || (target.type !== undefined && target.type !== 'commit')) continue;
+        tags.push({ name: tag.name, sha: target.hash });
+      }
+      if (!data.next) return { tags, truncated: false };
+      if (page >= MAX_TAG_PAGES) return { tags, truncated: true };
+      url = data.next;
+    }
+  }
+
   /**
    * Commit hashes for slash-containing ref names, per `<owner>/<repo>@<ref>`.
    * The `/src` and `/filehistory` endpoints address the revision in a path
@@ -178,8 +205,7 @@ export class BitbucketCloudProvider implements GitProvider {
     const entries: TreeEntry[] = [];
     let resolvedCommit = SHA_PATTERN.test(target) ? target : '';
     let url =
-      `${repoApi(slug)}/src/${encodeURIComponent(target)}/` +
-      `?max_depth=${MAX_PAGES}&pagelen=100`;
+      `${repoApi(slug)}/src/${encodeURIComponent(target)}/` + `?max_depth=${MAX_PAGES}&pagelen=100`;
     let truncated = false;
 
     for (let page = 1; ; page++) {
@@ -197,7 +223,12 @@ export class BitbucketCloudProvider implements GitProvider {
         entries.push({
           path,
           name: path.slice(path.lastIndexOf('/') + 1),
-          kind: item.type === 'commit_file' ? 'file' : item.type === 'commit_directory' ? 'dir' : 'submodule',
+          kind:
+            item.type === 'commit_file'
+              ? 'file'
+              : item.type === 'commit_directory'
+                ? 'dir'
+                : 'submodule',
           // Bitbucket exposes no blob sha; carry the tree commit so getFile can
           // fetch `<commit>/<path>` (see the class note).
           sha: resolvedCommit,
@@ -278,9 +309,13 @@ export class BitbucketCloudProvider implements GitProvider {
   }
 
   async getCommit(slug: RepoSlug, sha: string): Promise<CommitInfo> {
-    const data = await this.getJson<BbCommit>(slug, `${repoApi(slug)}/commit/${encodeURIComponent(sha)}`, {
-      notFound: `Commit ${sha.slice(0, 7)} was not found in this repository.`,
-    });
+    const data = await this.getJson<BbCommit>(
+      slug,
+      `${repoApi(slug)}/commit/${encodeURIComponent(sha)}`,
+      {
+        notFound: `Commit ${sha.slice(0, 7)} was not found in this repository.`,
+      },
+    );
     return mapCommit(data, slug);
   }
 
@@ -373,7 +408,10 @@ export class BitbucketCloudProvider implements GitProvider {
         'rate-limited',
       );
     }
-    throw new RepoProviderError(`Bitbucket request failed with status ${response.status}.`, 'unknown');
+    throw new RepoProviderError(
+      `Bitbucket request failed with status ${response.status}.`,
+      'unknown',
+    );
   }
 }
 

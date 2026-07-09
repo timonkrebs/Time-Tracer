@@ -9,6 +9,8 @@ import {
   RepoMetadata,
   RepoProviderError,
   RepoSlug,
+  RepoTag,
+  RepoTagList,
   RepoTree,
   TreeEntry,
 } from '../../models';
@@ -27,6 +29,9 @@ const MAX_TREE_PAGES = 50;
 
 /** Branch pages are 100 entries; stop after this many pages and mark truncated. */
 const MAX_BRANCH_PAGES = 10;
+
+/** Tag pages are 100 entries; GitLab lists newest-updated first. */
+const MAX_TAG_PAGES = 3;
 
 interface GitlabProjectResponse {
   path: string;
@@ -127,6 +132,20 @@ export class GitlabProvider implements GitProvider {
       for (const branch of data) names.push(branch.name);
       if (data.length < 100) return { names, truncated: false };
       if (page >= MAX_BRANCH_PAGES) return { names, truncated: true };
+    }
+  }
+
+  async listTags(slug: RepoSlug): Promise<RepoTagList> {
+    const tags: RepoTag[] = [];
+    for (let page = 1; ; page++) {
+      const data = await this.request<{ name: string; commit: { id: string } }[]>(
+        slug,
+        `/projects/${projectId(slug)}/repository/tags?per_page=100&page=${page}`,
+        { notFound: 'Project not found — it may not exist or it may be private.' },
+      );
+      for (const tag of data) tags.push({ name: tag.name, sha: tag.commit.id });
+      if (data.length < 100) return { tags, truncated: false };
+      if (page >= MAX_TAG_PAGES) return { tags, truncated: true };
     }
   }
 

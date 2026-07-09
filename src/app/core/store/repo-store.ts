@@ -189,6 +189,24 @@ export interface GraphSizesState {
   readonly message?: string;
 }
 
+/** Async state of the Branch Explorer's tag chips. */
+export type GraphTagsState =
+  | { readonly status: 'loading' }
+  | {
+      readonly status: 'ready';
+      /** Tag names by the sha of the commit they point at. */
+      readonly bySha: ReadonlyMap<string, readonly string[]>;
+      /** True when the repository holds more tags than the listing cap. */
+      readonly truncated: boolean;
+    }
+  | { readonly status: 'error'; readonly message: string };
+
+/** Async state of one commit's changed-file list (the detail bar's Files). */
+export type CommitFilesState =
+  | { readonly status: 'loading' }
+  | { readonly status: 'ready'; readonly files: readonly CommitFileChange[] }
+  | { readonly status: 'error'; readonly message: string };
+
 /** Async state of the changes view for one `<commit, path>` pair. */
 export type DiffState =
   | { readonly status: 'loading' }
@@ -524,6 +542,8 @@ export class RepoStore {
   private readonly graphCommits = new Map<string, CommitInfo>();
   /** Loaded branch tips in load order (the viewed ref first). */
   private readonly graphHeads = new Map<string, string>();
+  /** The ref whose listing first brought each graph commit in (sha → ref). */
+  private readonly graphCommitSource = new Map<string, string>();
   /**
    * Sticky per-graph memory that the provider's bulk listing omits parents
    * (Azure DevOps). Once seen, "Connect commits" stays offered while any
@@ -536,6 +556,12 @@ export class RepoStore {
   private readonly _graphSizes = signal<GraphSizesState | null>(null);
   /** Bumped to cancel a superseded or cleared sizing run. */
   private graphSizesRun = 0;
+  /** The repository's tags for the graph's chips, when loaded. */
+  private readonly _graphTags = signal<GraphTagsState | null>(null);
+  /** Bumped to cancel a stale tag fetch — only on repository/ref switches. */
+  private graphTagsRun = 0;
+  /** Changed-file lists of commits selected in the graph, keyed by sha. */
+  private readonly _graphFiles = signal<ReadonlyMap<string, CommitFilesState>>(new Map());
 
   /** The active per-hunk history filter, if any (one at a time). */
   private readonly _lineTrace = signal<LineTraceState | null>(null);
@@ -605,6 +631,10 @@ export class RepoStore {
   readonly branchGraph = this._branchGraph.asReadonly();
   /** Per-commit change sizes; null until {@link loadGraphSizes} runs. */
   readonly graphSizes = this._graphSizes.asReadonly();
+  /** Tag chips for the graph; null until {@link loadGraphTags} runs. */
+  readonly graphTags = this._graphTags.asReadonly();
+  /** Changed-file lists of graph-selected commits, keyed by sha. */
+  readonly graphCommitFiles = this._graphFiles.asReadonly();
   readonly lineTrace = this._lineTrace.asReadonly();
   readonly traceOrigins = this._traceOrigins.asReadonly();
   readonly folderOwnership = this._folderOwnership.asReadonly();
@@ -1415,6 +1445,7 @@ export class RepoStore {
     this.graphPages.clear();
     this.graphCommits.clear();
     this.graphHeads.clear();
+    this.graphCommitSource.clear();
     this._branchGraph.set({ status: 'loading' });
     try {
       const commits = await this.registry
@@ -1430,28 +1461,33 @@ export class RepoStore {
   }
 
   /**
-   * Adds another branch's recent history to the Branch Explorer graph (one
-   * request). Where the branch shares commits with what is already loaded,
-   * the histories join into one DAG; a failure keeps the current graph and
-   * surfaces the message on it.
+   * Adds more branches' recent histories to the Branch Explorer graph in one
+   * load cycle (one request per branch, already-loaded names skipped). Where
+   * a branch shares commits with what is already loaded, the histories join
+   * into one DAG; the first failure stops the run, keeps whatever merged and
+   * surfaces the message on the graph.
    */
-  async addGraphBranch(name: string): Promise<void> {
+  async addGraphBranches(names: readonly string[]): Promise<void> {
     const slug = this._slug();
-    if (!slug || this._branchGraph()?.status !== 'ready' || this.graphHeads.has(name)) return;
+    const pending = names.filter((name) => !this.graphHeads.has(name));
+    if (!slug || this._branchGraph()?.status !== 'ready' || pending.length === 0) return;
 
     const run = this.graphRun;
     this.publishGraph('loading-more');
-    try {
-      const commits = await this.registry
-        .byId(slug.provider)
-        .listCommits(slug, { ref: name, perPage: GRAPH_PAGE_SIZE });
-      if (run !== this.graphRun) return;
-      this.mergeGraphPage(name, commits, 1);
-      this.publishGraph('ready');
-    } catch (error) {
-      if (run !== this.graphRun) return;
-      this.publishGraph('ready', `${name}: ${toRepoProviderError(error).message}`);
+    const provider = this.registry.byId(slug.provider);
+    let failure: string | undefined;
+    for (const name of pending) {
+      try {
+        const commits = await provider.listCommits(slug, { ref: name, perPage: GRAPH_PAGE_SIZE });
+        if (run !== this.graphRun) return;
+        this.mergeGraphPage(name, commits, 1);
+      } catch (error) {
+        if (run !== this.graphRun) return;
+        failure = `${name}: ${toRepoProviderError(error).message}`;
+        break;
+      }
     }
+    this.publishGraph('ready', failure);
   }
 
   /**
@@ -1565,15 +1601,111 @@ export class RepoStore {
     publish('ready');
   }
 
+  /**
+   * Loads the repository's tags for the Branch Explorer's tag chips — one
+   * request on hosted providers. No-ops when already loaded/loading or when
+   * the provider has no tag listing (the chips simply stay absent); calling
+   * again after an error retries.
+   *
+   * Tags are repository-scoped, so the fetch runs under its own counter:
+   * a *graph* retry (which bumps {@link graphRun}) must not strand an
+   * in-flight tag load at 'loading' — only {@link clearBranchGraph} (a
+   * repository/ref switch) cancels it.
+   */
+  async loadGraphTags(): Promise<void> {
+    const slug = this._slug();
+    if (!slug || this._phase() !== 'ready') return;
+    const existing = this._graphTags();
+    if (existing && existing.status !== 'error') return;
+    const provider = this.registry.byId(slug.provider);
+    if (!provider.listTags) return;
+
+    const run = this.graphTagsRun;
+    this._graphTags.set({ status: 'loading' });
+    try {
+      const list = await provider.listTags(slug);
+      if (run !== this.graphTagsRun) return;
+      const bySha = new Map<string, string[]>();
+      for (const tag of list.tags) {
+        const names = bySha.get(tag.sha);
+        if (names) names.push(tag.name);
+        else bySha.set(tag.sha, [tag.name]);
+      }
+      this._graphTags.set({ status: 'ready', bySha, truncated: list.truncated });
+    } catch (error) {
+      if (run !== this.graphTagsRun) return;
+      this._graphTags.set({ status: 'error', message: toRepoProviderError(error).message });
+    }
+  }
+
+  /**
+   * Loads the changed-file list of one graph-selected commit for the detail
+   * bar — served from the shared per-sha cache when the commit was already
+   * sized or walked (then it costs nothing), one request otherwise.
+   */
+  async loadGraphCommitFiles(sha: string): Promise<void> {
+    const slug = this._slug();
+    if (!slug || this._phase() !== 'ready') return;
+    const existing = this._graphFiles().get(sha);
+    if (existing && existing.status !== 'error') return;
+
+    const run = this.graphRun;
+    const set = (state: CommitFilesState): void => {
+      this._graphFiles.update((map) => new Map(map).set(sha, state));
+    };
+    set({ status: 'loading' });
+    try {
+      const files = await this.commitFilesFor(slug, sha);
+      if (run !== this.graphRun) return;
+      set({ status: 'ready', files });
+    } catch (error) {
+      if (run !== this.graphRun) return;
+      set({ status: 'error', message: toRepoProviderError(error).message });
+    }
+  }
+
+  /**
+   * The ref whose listing first brought a graph commit in — the viewed ref
+   * for the initially loaded graph, the branch name for commits that only
+   * arrived via "+ Add branch". Navigation that leaves the graph uses it to
+   * keep the commit reachable: an added branch's commits may not exist under
+   * the viewed ref at all.
+   */
+  graphCommitRef(sha: string): string | null {
+    return this.graphCommitSource.get(sha) ?? null;
+  }
+
+  /**
+   * One commit's changed-file entry for a path, from the shared per-sha
+   * cache (one request when cold). Used to re-derive a rename origin at a
+   * specific commit — a merge's aggregate file list can report a rename
+   * that no individual commit of the merged branch carries. Resolution
+   * failures return null: the caller falls back to a plain diff.
+   */
+  async commitFileChange(path: string, sha: string): Promise<CommitFileChange | null> {
+    const slug = this._slug();
+    if (!slug) return null;
+    try {
+      const files = await this.commitFilesFor(slug, sha);
+      return files.find((file) => file.path === path) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   /** Drops the Branch Explorer graph and cancels any load in flight. */
   clearBranchGraph(): void {
     this.graphRun++;
     this.graphSizesRun++;
+    this.graphTagsRun++;
     this._branchGraph.set(null);
     this._graphSizes.set(null);
+    this._graphTags.set(null);
+    this._graphFiles.set(new Map());
     this.graphPages.clear();
     this.graphCommits.clear();
     this.graphHeads.clear();
+    this.graphCommitSource.clear();
     this.graphOmitsParents = false;
     this.graphConfirmedRoots.clear();
   }
@@ -1581,7 +1713,10 @@ export class RepoStore {
   /** Folds one fetched page into the graph's DAG and paging bookkeeping. */
   private mergeGraphPage(branch: string, commits: readonly CommitInfo[], page: number): void {
     for (const commit of commits) {
-      if (!this.graphCommits.has(commit.sha)) this.graphCommits.set(commit.sha, commit);
+      if (!this.graphCommits.has(commit.sha)) {
+        this.graphCommits.set(commit.sha, commit);
+        this.graphCommitSource.set(commit.sha, branch);
+      }
     }
     this.cacheCommits(commits);
     // The first page's first commit is the branch tip (providers list newest first).

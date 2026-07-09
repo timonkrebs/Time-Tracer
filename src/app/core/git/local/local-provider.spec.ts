@@ -60,6 +60,56 @@ describe('LocalGitProvider', () => {
     expect([...list.names].sort()).toEqual(['feature/foo', 'main']);
   });
 
+  it('lists tags, dereferencing annotated ones to their commit', async () => {
+    await git.tag({ fs, dir: '/', ref: 'v-light', object: c1 });
+    await git.annotatedTag({
+      fs,
+      dir: '/',
+      ref: 'v-annotated',
+      object: c2,
+      message: 'release',
+      tagger: author,
+    });
+
+    const list = await provider.listTags(slug);
+
+    expect(list.truncated).toBe(false);
+    const bySha = new Map(list.tags.map((tag) => [tag.name, tag.sha]));
+    expect(bySha.get('v-light')).toBe(c1);
+    expect(bySha.get('v-annotated')).toBe(c2);
+  });
+
+  it('orders tags by their target commit date, not alphabetically', async () => {
+    // 'aa-old' would win an alphabetical cut; the newest-tagged commit must.
+    await fs.promises.writeFile('/late.txt', 'late\n');
+    await git.add({ fs, dir: '/', filepath: 'late.txt' });
+    const c4 = await git.commit({
+      fs,
+      dir: '/',
+      message: 'c4: later work',
+      author: { ...author, timestamp: author.timestamp + 100 },
+    });
+    await git.tag({ fs, dir: '/', ref: 'aa-old', object: c1 });
+    await git.tag({ fs, dir: '/', ref: 'zz-new', object: c4 });
+
+    const list = await provider.listTags(slug);
+
+    expect(list.tags[0]).toEqual({ name: 'zz-new', sha: c4 });
+  });
+
+  it('skips tags that point at non-commit objects instead of failing the load', async () => {
+    // Git allows tagging any object; a tree-pointing tag must not take the
+    // commit tags down with it.
+    const { commit } = await git.readCommit({ fs, dir: '/', oid: c2 });
+    await git.tag({ fs, dir: '/', ref: 'v-tree', object: commit.tree });
+    await git.tag({ fs, dir: '/', ref: 'v-commit', object: c2 });
+
+    const list = await provider.listTags(slug);
+
+    expect(list.tags).toEqual([{ name: 'v-commit', sha: c2 }]);
+    expect(list.truncated).toBe(false);
+  });
+
   it('walks the tree of a ref', async () => {
     const tree = await provider.getTree(slug, 'main');
     expect(tree.truncated).toBe(false);

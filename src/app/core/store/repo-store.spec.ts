@@ -10,6 +10,7 @@ import {
   RepoMetadata,
   RepoProviderError,
   RepoSlug,
+  RepoTagList,
   RepoTree,
   TreeEntry,
 } from '../models';
@@ -94,6 +95,13 @@ class FakeProvider implements GitProvider {
   listBranches(): Promise<RepoBranchList> {
     this.listBranchesCalls++;
     return this.listBranchesResult();
+  }
+  listTagsCalls = 0;
+  listTagsResult: () => Promise<RepoTagList> = () =>
+    Promise.resolve({ tags: [], truncated: false });
+  listTags(): Promise<RepoTagList> {
+    this.listTagsCalls++;
+    return this.listTagsResult();
   }
   getTree(_slug: RepoSlug, ref: string): Promise<RepoTree> {
     this.treeCalls++;
@@ -1783,7 +1791,7 @@ describe('RepoStore', () => {
       });
 
       await store.loadBranchGraph();
-      await store.addGraphBranch('dev');
+      await store.addGraphBranches(['dev']);
 
       const graph = store.branchGraph();
       expect(graph?.status).toBe('ready');
@@ -1795,13 +1803,52 @@ describe('RepoStore', () => {
       ]);
     });
 
+    it('adds several branches in one load cycle, skipping loaded ones', async () => {
+      await store.loadRepo(slug);
+      answer({
+        main: [[commit('m1')]],
+        dev: [[commit('d1', ['m1']), commit('m1')]],
+        feat: [[commit('f1', ['m1']), commit('m1')]],
+      });
+
+      await store.loadBranchGraph();
+      const before = provider.listCommitsCalls.length;
+      await store.addGraphBranches(['main', 'dev', 'feat']);
+
+      const graph = store.branchGraph();
+      expect(graph?.status).toBe('ready');
+      if (graph?.status !== 'ready') return;
+      expect(graph.commits.map((c) => c.sha).sort()).toEqual(['d1', 'f1', 'm1']);
+      expect([...graph.heads.keys()]).toEqual(['main', 'dev', 'feat']);
+      // 'main' was already loaded — only the two new branches cost a request.
+      expect(provider.listCommitsCalls.length).toBe(before + 2);
+    });
+
+    it('remembers which ref first brought each commit in', async () => {
+      await store.loadRepo(slug);
+      answer({
+        main: [[commit('m2', ['m1']), commit('m1')]],
+        dev: [[commit('d1', ['m1']), commit('m1')]],
+      });
+
+      await store.loadBranchGraph();
+      await store.addGraphBranches(['dev']);
+
+      // 'm1' arrived with the viewed ref's own listing; 'd1' only via dev —
+      // navigation leaving the graph must switch the ref for 'd1' alone.
+      expect(store.graphCommitRef('m2')).toBe('main');
+      expect(store.graphCommitRef('m1')).toBe('main');
+      expect(store.graphCommitRef('d1')).toBe('dev');
+      expect(store.graphCommitRef('nope')).toBeNull();
+    });
+
     it('keeps the graph usable when an added branch fails', async () => {
       await store.loadRepo(slug);
       answer({ main: [[commit('m1')]] });
       await store.loadBranchGraph();
 
       provider.listCommitsResult = () => Promise.reject(new RepoProviderError('nope', 'not-found'));
-      await store.addGraphBranch('ghost');
+      await store.addGraphBranches(['ghost']);
 
       const graph = store.branchGraph();
       expect(graph?.status).toBe('ready');
@@ -1830,6 +1877,7 @@ describe('RepoStore', () => {
 
       await store.loadRepo(slug, 'dev');
       expect(store.branchGraph()).toBeNull();
+      expect(store.graphCommitRef('m1')).toBeNull();
     });
 
     it('sizes every commit, merges included', async () => {
@@ -1937,6 +1985,128 @@ describe('RepoStore', () => {
       const fetches = provider.getCommitCalls.length;
       await store.resolveGraphParents();
       expect(provider.getCommitCalls.length).toBe(fetches);
+    });
+
+    it('loads tags grouped by target commit, alongside the graph', async () => {
+      await store.loadRepo(slug);
+      provider.listTagsResult = () =>
+        Promise.resolve({
+          tags: [
+            { name: 'v1.0.0', sha: 'm1' },
+            { name: 'stable', sha: 'm1' },
+            { name: 'v1.1.0', sha: 'm2' },
+          ],
+          truncated: false,
+        });
+
+      await store.loadGraphTags();
+
+      const tags = store.graphTags();
+      expect(tags?.status).toBe('ready');
+      if (tags?.status !== 'ready') return;
+      expect(tags.bySha.get('m1')).toEqual(['v1.0.0', 'stable']);
+      expect(tags.bySha.get('m2')).toEqual(['v1.1.0']);
+
+      // A repeated request is served from the loaded state.
+      await store.loadGraphTags();
+      expect(provider.listTagsCalls).toBe(1);
+    });
+
+    it('finishes an in-flight tag load even when a failed graph load is retried', async () => {
+      await store.loadRepo(slug);
+      const tags = deferred<RepoTagList>();
+      provider.listTagsResult = () => tags.promise;
+      provider.listCommitsResult = () => Promise.reject(new RepoProviderError('boom', 'network'));
+
+      const tagLoad = store.loadGraphTags(); // in flight while the graph fails
+      await store.loadBranchGraph();
+      expect(store.branchGraph()?.status).toBe('error');
+
+      answer({ main: [[commit('m1')]] });
+      await store.loadBranchGraph(); // the retry bumps the graph run
+
+      tags.resolve({ tags: [{ name: 'v1', sha: 'm1' }], truncated: false });
+      await tagLoad;
+
+      // The tag state must not be stranded at 'loading' by the graph retry.
+      const state = store.graphTags();
+      expect(state?.status).toBe('ready');
+      if (state?.status !== 'ready') return;
+      expect(state.bySha.get('m1')).toEqual(['v1']);
+    });
+
+    it('surfaces a failed tag listing and retries on the next call', async () => {
+      await store.loadRepo(slug);
+      provider.listTagsResult = () => Promise.reject(new RepoProviderError('nope', 'network'));
+      await store.loadGraphTags();
+      expect(store.graphTags()).toEqual({ status: 'error', message: 'nope' });
+
+      provider.listTagsResult = () => Promise.resolve({ tags: [], truncated: false });
+      await store.loadGraphTags();
+      expect(store.graphTags()?.status).toBe('ready');
+    });
+
+    it('loads a selected commit’s changed files once and caches them', async () => {
+      await store.loadRepo(slug);
+      answer({ main: [[commit('m1')]] });
+      await store.loadBranchGraph();
+      let fetches = 0;
+      provider.commitFilesResult = (sha) => {
+        fetches++;
+        return Promise.resolve([
+          { path: `${sha}.ts`, status: 'modified', additions: 3, deletions: 1 },
+        ]);
+      };
+
+      await store.loadGraphCommitFiles('m1');
+
+      const state = store.graphCommitFiles().get('m1');
+      expect(state?.status).toBe('ready');
+      if (state?.status !== 'ready') return;
+      expect(state.files).toEqual([
+        { path: 'm1.ts', status: 'modified', additions: 3, deletions: 1 },
+      ]);
+
+      await store.loadGraphCommitFiles('m1');
+      expect(fetches).toBe(1);
+    });
+
+    it('resolves one commit’s file entry for a path, null when absent or failing', async () => {
+      await store.loadRepo(slug);
+      provider.commitFilesResult = () =>
+        Promise.resolve([
+          { path: 'new.ts', status: 'renamed', previousPath: 'old.ts' },
+          { path: 'other.ts', status: 'modified' },
+        ]);
+
+      await expect(store.commitFileChange('new.ts', 'e1')).resolves.toEqual({
+        path: 'new.ts',
+        status: 'renamed',
+        previousPath: 'old.ts',
+      });
+      await expect(store.commitFileChange('gone.ts', 'e1')).resolves.toBeNull();
+
+      provider.commitFilesResult = () =>
+        Promise.reject(new RepoProviderError('rate limited', 'rate-limited'));
+      await expect(store.commitFileChange('new.ts', 'e2')).resolves.toBeNull();
+    });
+
+    it('surfaces a failed file listing per commit and retries', async () => {
+      await store.loadRepo(slug);
+      answer({ main: [[commit('m1')]] });
+      await store.loadBranchGraph();
+      provider.commitFilesResult = () =>
+        Promise.reject(new RepoProviderError('rate limited', 'rate-limited'));
+
+      await store.loadGraphCommitFiles('m1');
+      expect(store.graphCommitFiles().get('m1')).toEqual({
+        status: 'error',
+        message: 'rate limited',
+      });
+
+      provider.commitFilesResult = () => Promise.resolve([]);
+      await store.loadGraphCommitFiles('m1');
+      expect(store.graphCommitFiles().get('m1')?.status).toBe('ready');
     });
 
     it('does not flag a normal history whose only parentless commit is the root', async () => {

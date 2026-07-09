@@ -9,6 +9,8 @@ import {
   RepoMetadata,
   RepoProviderError,
   RepoSlug,
+  RepoTag,
+  RepoTagList,
   RepoTree,
   TreeEntry,
   toRepoProviderError,
@@ -22,6 +24,11 @@ import { LocalRepos } from './local-repos';
 const MAX_FILE_SIZE_BYTES = 2_000_000;
 /** Parallel `stat` calls when sizing a tree — overlaps the FS metadata reads. */
 const SIZE_STAT_CONCURRENCY = 48;
+/** Tags returned per listing, newest-tagged commits first. */
+const MAX_TAGS = 500;
+/** Hard bound on tag-target resolves per listing (each is a ref resolve +
+ * object read) — a guard for pathological repos, far above real tag counts. */
+const MAX_TAG_RESOLVES = 2000;
 /** Parallel subtree reads during a tree walk — overlaps the FS round trips
  * without flooding the File System Access queue on wide trees. */
 const TREE_WALK_CONCURRENCY = 24;
@@ -222,6 +229,41 @@ export class LocalGitProvider implements GitProvider {
       return { names, truncated: false };
     } catch (error) {
       throw this.mapError(error, 'Could not read the branches of the local repository.');
+    }
+  }
+
+  async listTags(slug: RepoSlug): Promise<RepoTagList> {
+    const fs = this.fs(slug);
+    const cache = this.gitCache(fs);
+    try {
+      const git = await loadGit();
+      // listTags returns names alphabetically — useless as a recency cut
+      // ("v9.9" sorts after "v10.0"). Resolve the targets (bounded for
+      // pathological repos), then keep the newest-tagged commits, so the
+      // chips cover the recent graph window like the hosted providers do.
+      const names = await git.listTags({ fs, dir: '/' });
+      const resolvable = names.slice(0, MAX_TAG_RESOLVES);
+      const resolved: { name: string; sha: string; when: number }[] = [];
+      for (const name of resolvable) {
+        try {
+          const oid = await git.resolveRef({ fs, dir: '/', ref: `refs/tags/${name}` });
+          // readCommit peels annotated tags; the returned oid is the commit's.
+          const { oid: commitOid, commit } = await git.readCommit({ fs, dir: '/', oid, cache });
+          resolved.push({ name, sha: commitOid, when: commit.author?.timestamp ?? 0 });
+        } catch {
+          // Git allows tagging trees and blobs; readCommit rejects those.
+          // A non-commit (or broken) tag has no place on a commit graph —
+          // skip it instead of losing every other tag with it.
+        }
+      }
+      resolved.sort((a, b) => b.when - a.when);
+      const tags: RepoTag[] = resolved.slice(0, MAX_TAGS).map(({ name, sha }) => ({ name, sha }));
+      return {
+        tags,
+        truncated: names.length > resolvable.length || resolved.length > tags.length,
+      };
+    } catch (error) {
+      throw this.mapError(error, 'Could not read the tags of the local repository.');
     }
   }
 

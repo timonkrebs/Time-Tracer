@@ -394,13 +394,17 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
               class="min-h-0 min-w-0 flex-1"
               [state]="store.branchGraph()"
               [sizes]="store.graphSizes()"
+              [tags]="store.graphTags()"
+              [commitFiles]="store.graphCommitFiles()"
               [branches]="store.branches()"
               [defaultBranch]="store.metadata()?.defaultBranch ?? null"
-              (load)="store.loadBranchGraph()"
+              (load)="store.loadBranchGraph(); store.loadGraphTags()"
               (loadMore)="store.loadMoreBranchGraph()"
               (loadSizes)="store.loadGraphSizes()"
               (resolveParents)="store.resolveGraphParents()"
-              (addBranch)="store.addGraphBranch($event)"
+              (filesRequest)="store.loadGraphCommitFiles($event)"
+              (openFile)="onGraphOpenFile($event)"
+              (addBranches)="store.addGraphBranches($event)"
               (loadBranches)="store.loadBranches()"
               (browse)="onGraphBrowse($event)"
             />
@@ -1033,12 +1037,17 @@ export class ViewerPage {
     });
 
     // The Branch Explorer costs a single request, so it loads itself when
-    // opened (or deep-linked) instead of hiding behind an extra click.
+    // opened (or deep-linked) instead of hiding behind an extra click. The
+    // tag chips are one more request (a no-op on providers without a tag
+    // listing), loaded alongside.
     effect(() => {
       const phase = this.store.phase();
       const open = this.graphMode();
       untracked(() => {
-        if (open && phase === 'ready') void this.store.loadBranchGraph();
+        if (open && phase === 'ready') {
+          void this.store.loadBranchGraph();
+          void this.store.loadGraphTags();
+        }
       });
     });
 
@@ -1172,6 +1181,73 @@ export class ViewerPage {
     void this.router.navigate([], {
       relativeTo: this.route,
       queryParams: { ref: sha, graph: null, at: null, view: null, line: null, base: null },
+      queryParamsHandling: 'merge',
+    });
+  }
+
+  /**
+   * A changed file was picked in the Branch Explorer's detail bar: leave the
+   * graph and open that file's diff at the commit — the same time-travel the
+   * blame annotations use (`path` + `at` + `view=diff`). Renames/copies carry
+   * their old side as `base`, so the diff shows the rename delta instead of a
+   * full-file add (the same mechanism rename-candidate diffs use).
+   *
+   * A *merge* commit never appears in the file's own history (`git log --
+   * path` simplifies merges away), so anchoring `at` the merge would show a
+   * version the History panel cannot list and the steppers cannot reach.
+   * Instead anchor at the most recent commit that actually touched the file
+   * at/before the merge — the same rule rename candidates and deletion
+   * traces use — which shows the real change the merge brought in.
+   */
+  protected async onGraphOpenFile(target: {
+    path: string;
+    sha: string;
+    previousPath?: string;
+    merge: boolean;
+  }): Promise<void> {
+    // While the graph's parent links are unresolved (Azure DevOps before
+    // "Connect commits"), every commit reports no parents — the merge flag
+    // is meaningless, so re-anchor unconditionally: for a non-merge commit
+    // lastTouch returns the commit itself, so this is only ever a correction.
+    const graph = this.store.branchGraph();
+    const parentsUnknown =
+      graph !== null && graph.status !== 'loading' && graph.status !== 'error'
+        ? graph.parentsMissing === true
+        : false;
+    let at = target.sha;
+    let base = target.previousPath ?? null;
+    if (target.merge || parentsUnknown) {
+      const anchor = await this.store.lastTouch(target.path, target.sha);
+      at = anchor?.sha ?? target.sha;
+      // A merge's file entry aggregates the whole merged branch, so its
+      // rename origin belongs to the merge diff — not necessarily to the
+      // commit re-anchored to (the branch may have renamed the file first
+      // and edited it later). Carry a rename only as the anchored commit
+      // itself reports it, else the diff would pair the new path with an
+      // old path that no longer exists at that commit's parent.
+      if (at !== target.sha && base !== null) {
+        const change = await this.store.commitFileChange(target.path, at);
+        base = change?.previousPath ?? null;
+      }
+    }
+    // A commit that only entered the graph via "+ Add branch" may be
+    // unreachable from the viewed ref — History (which lists the viewed
+    // ref) could then never show `at`. Switch the ref to the branch the
+    // commit was loaded from; commits from the viewed ref's own listing
+    // leave it untouched.
+    const source = this.store.graphCommitRef(target.sha);
+    const refSwitch = source !== null && source !== this.store.ref() ? { ref: source } : {};
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: {
+        ...refSwitch,
+        path: target.path,
+        at,
+        view: 'diff',
+        graph: null,
+        line: null,
+        base,
+      },
       queryParamsHandling: 'merge',
     });
   }

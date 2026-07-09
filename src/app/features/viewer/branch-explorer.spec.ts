@@ -76,8 +76,10 @@ describe('BranchExplorer', () => {
   let sizeLoads: number;
   let parentResolves: number;
   let branchLoads: number;
-  let added: string[];
+  let added: (readonly string[])[];
   let browsed: string[];
+  let filesRequested: string[];
+  let opened: { path: string; sha: string; previousPath?: string; merge: boolean }[];
 
   beforeEach(async () => {
     await TestBed.configureTestingModule({
@@ -96,13 +98,17 @@ describe('BranchExplorer', () => {
     branchLoads = 0;
     added = [];
     browsed = [];
+    filesRequested = [];
+    opened = [];
     fixture.componentInstance.load.subscribe(() => loads++);
     fixture.componentInstance.loadMore.subscribe(() => loadMores++);
     fixture.componentInstance.loadSizes.subscribe(() => sizeLoads++);
     fixture.componentInstance.resolveParents.subscribe(() => parentResolves++);
     fixture.componentInstance.loadBranches.subscribe(() => branchLoads++);
-    fixture.componentInstance.addBranch.subscribe((name) => added.push(name));
+    fixture.componentInstance.addBranches.subscribe((names) => added.push(names));
     fixture.componentInstance.browse.subscribe((sha) => browsed.push(sha));
+    fixture.componentInstance.filesRequest.subscribe((sha) => filesRequested.push(sha));
+    fixture.componentInstance.openFile.subscribe((target) => opened.push(target));
     await fixture.whenStable();
   });
 
@@ -128,8 +134,10 @@ describe('BranchExplorer', () => {
     ) as SVGGElement[];
   }
 
-  function buttonByText(text: string): HTMLButtonElement | undefined {
-    return Array.from(root().querySelectorAll('button')).find((b) => b.textContent?.includes(text));
+  function buttonByText(text: string, nth = 0): HTMLButtonElement | undefined {
+    return Array.from(root().querySelectorAll('button')).filter((b) =>
+      b.textContent?.includes(text),
+    )[nth];
   }
 
   it('shows a loading state until the graph arrives', () => {
@@ -219,7 +227,41 @@ describe('BranchExplorer', () => {
       .find((b) => b.textContent?.includes('dev'))!
       .click();
     await fixture.whenStable();
-    expect(added).toEqual(['dev']);
+    // Checking a branch only marks it — the emit happens on Add.
+    expect(added).toEqual([]);
+
+    buttonByText('Add branch', 1)!.click();
+    await fixture.whenStable();
+    expect(added).toEqual([['dev']]);
+  });
+
+  it('checks several branches and adds them together, unchecking on re-click', async () => {
+    await setState(MERGE_STATE);
+    fixture.componentRef.setInput('branches', BRANCHES);
+    await fixture.whenStable();
+
+    buttonByText('Add branch')!.click();
+    await fixture.whenStable();
+
+    const option = (name: string): HTMLButtonElement =>
+      (Array.from(root().querySelectorAll('li button')) as HTMLButtonElement[]).find((b) =>
+        b.textContent?.includes(name),
+      )!;
+    option('dev').click();
+    option('feature/foo').click();
+    await fixture.whenStable();
+    expect(root().textContent).toContain('2 selected');
+    expect(option('dev').getAttribute('aria-selected')).toBe('true');
+
+    option('dev').click();
+    await fixture.whenStable();
+    expect(option('dev').getAttribute('aria-selected')).toBe('false');
+
+    buttonByText('Add branch', 1)!.click();
+    await fixture.whenStable();
+    expect(added).toEqual([['feature/foo']]);
+    // Applying closes the dropdown.
+    expect(root().querySelector('[role="listbox"]')).toBeNull();
   });
 
   it('flags a partial graph when the state carries a message', async () => {
@@ -288,6 +330,167 @@ describe('BranchExplorer', () => {
 
     expect(root().textContent).toContain('feature/foo');
     expect(root().textContent).not.toContain('merged branch');
+  });
+
+  it('requests changed files on selection and opens a file from the panel', async () => {
+    await setState(MERGE_STATE);
+
+    const c2 = dots().find((g) => g.getAttribute('aria-label')?.startsWith('c2 ·'))!;
+    (c2 as unknown as HTMLElement).dispatchEvent(new MouseEvent('click'));
+    await fixture.whenStable();
+    expect(filesRequested).toEqual(['c2']);
+
+    fixture.componentRef.setInput(
+      'commitFiles',
+      new Map([
+        [
+          'c2',
+          {
+            status: 'ready' as const,
+            files: [
+              { path: 'src/app.ts', status: 'modified', additions: 4, deletions: 2 },
+              { path: 'docs/new.md', status: 'added' },
+              { path: 'src/renamed.ts', status: 'renamed', previousPath: 'src/old.ts' },
+            ],
+          },
+        ],
+      ]),
+    );
+    await fixture.whenStable();
+
+    buttonByText('Files (3)')!.click();
+    await fixture.whenStable();
+    expect(root().textContent).toContain('src/app.ts');
+    expect(root().textContent).toContain('docs/new.md');
+
+    const fileButtons = Array.from(root().querySelectorAll('li button')) as HTMLButtonElement[];
+    fileButtons.find((b) => b.textContent?.includes('src/app.ts'))!.click();
+    expect(opened).toEqual([{ path: 'src/app.ts', sha: 'c2', merge: false }]);
+
+    // A rename carries its old side along, so the diff shows the rename delta.
+    fileButtons.find((b) => b.textContent?.includes('src/renamed.ts'))!.click();
+    expect(opened[1]).toEqual({
+      path: 'src/renamed.ts',
+      sha: 'c2',
+      previousPath: 'src/old.ts',
+      merge: false,
+    });
+  });
+
+  it('flags files opened from a merge commit, so the viewer can re-anchor', async () => {
+    await setState(MERGE_STATE);
+
+    const m = dots().find((g) => g.getAttribute('aria-label')?.startsWith('m ·'))!;
+    (m as unknown as HTMLElement).dispatchEvent(new MouseEvent('click'));
+    await fixture.whenStable();
+
+    fixture.componentRef.setInput(
+      'commitFiles',
+      new Map([['m', { status: 'ready' as const, files: [{ path: 'a.ts', status: 'modified' }] }]]),
+    );
+    await fixture.whenStable();
+    buttonByText('Files (1)')!.click();
+    await fixture.whenStable();
+
+    (Array.from(root().querySelectorAll('li button')) as HTMLButtonElement[])
+      .find((b) => b.textContent?.includes('a.ts'))!
+      .click();
+    // Merge shas never appear in a file's own history (git log -- path
+    // simplifies merges away) — the viewer re-anchors on this flag.
+    expect(opened[0]).toEqual({ path: 'a.ts', sha: 'm', merge: true });
+  });
+
+  it('withholds comparison while commit parents are unresolved', async () => {
+    await setState({ ...MERGE_STATE, parentsMissing: true });
+
+    const c2 = dots().find((g) => g.getAttribute('aria-label')?.startsWith('c2 ·'))!;
+    (c2 as unknown as HTMLElement).dispatchEvent(new MouseEvent('click'));
+    await fixture.whenStable();
+
+    // Every dot would read as a root — no comparison until "Connect commits".
+    expect(root().textContent).toContain('Browse this commit');
+    expect(buttonByText('Compare from here')).toBeUndefined();
+  });
+
+  it('drops selection and comparison when a new graph loads', async () => {
+    await setState(MERGE_STATE);
+    const c2 = dots().find((g) => g.getAttribute('aria-label')?.startsWith('c2 ·'))!;
+    (c2 as unknown as HTMLElement).dispatchEvent(new MouseEvent('click'));
+    await fixture.whenStable();
+    buttonByText('Compare from here')!.click();
+    const f2 = dots().find((g) => g.getAttribute('aria-label')?.startsWith('f2 ·'))!;
+    (f2 as unknown as HTMLElement).dispatchEvent(new MouseEvent('click'));
+    await fixture.whenStable();
+    expect(root().textContent).toContain('ahead');
+
+    // A repository/ref switch: the store clears to null, then reloads.
+    await setState(null);
+    await setState(LINEAR_STATE);
+
+    // No stale detail bar, no bogus comparison, nothing dimmed.
+    expect(root().textContent).not.toContain('ahead');
+    expect(root().textContent).not.toContain('Comparing from');
+    expect(root().textContent).not.toContain('Browse this commit');
+    expect(dots().every((g) => g.getAttribute('opacity') === '1')).toBe(true);
+  });
+
+  it('flags a capped tag listing instead of pretending chips are complete', async () => {
+    await setState(MERGE_STATE);
+    fixture.componentRef.setInput('tags', {
+      status: 'ready' as const,
+      bySha: new Map(),
+      truncated: true,
+    });
+    await fixture.whenStable();
+
+    expect(root().textContent).toContain('tags capped');
+  });
+
+  it('shows tag chips and pins tagged commits out of collapsed runs', async () => {
+    await setState(LINEAR_STATE);
+    expect(pills().length).toBe(1); // p1..p5 folded
+
+    fixture.componentRef.setInput('tags', {
+      status: 'ready' as const,
+      bySha: new Map([['p3', ['v1.0.0']]]),
+      truncated: false,
+    });
+    await fixture.whenStable();
+
+    // The tagged commit stays visible, splitting the run below the threshold.
+    expect(pills().length).toBe(0);
+    expect(root().textContent).toContain('v1.0.0');
+  });
+
+  it('compares two commits with ahead/behind counts and dims the rest', async () => {
+    await setState(MERGE_STATE);
+
+    const c2 = dots().find((g) => g.getAttribute('aria-label')?.startsWith('c2 ·'))!;
+    (c2 as unknown as HTMLElement).dispatchEvent(new MouseEvent('click'));
+    await fixture.whenStable();
+    buttonByText('Compare from here')!.click();
+    await fixture.whenStable();
+    expect(root().textContent).toContain('click the other commit');
+
+    const f2 = dots().find((g) => g.getAttribute('aria-label')?.startsWith('f2 ·'))!;
+    (f2 as unknown as HTMLElement).dispatchEvent(new MouseEvent('click'));
+    await fixture.whenStable();
+
+    // f2 vs c2: f2 carries f1+f2 on top and is missing c2.
+    expect(root().textContent).toContain('2 ahead');
+    expect(root().textContent).toContain('1 behind');
+
+    // Shared history (c1) and unrelated commits (m) fade out.
+    const c1 = dots().find((g) => g.getAttribute('aria-label')?.startsWith('c1 ·'))!;
+    const m = dots().find((g) => g.getAttribute('aria-label')?.startsWith('m ·'))!;
+    expect(c1.getAttribute('opacity')).toBe('0.2');
+    expect(m.getAttribute('opacity')).toBe('0.2');
+    const f1 = dots().find((g) => g.getAttribute('aria-label')?.startsWith('f1 ·'))!;
+    expect(f1.getAttribute('opacity')).toBe('1');
+
+    buttonByText('Clear')!.click();
+    await fixture.whenStable();
+    expect(dots().every((g) => g.getAttribute('opacity') === '1')).toBe(true);
   });
 
   it('hides the provider link for commits without a web URL (local repos)', async () => {

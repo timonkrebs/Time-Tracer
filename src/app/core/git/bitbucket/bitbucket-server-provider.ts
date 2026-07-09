@@ -9,6 +9,8 @@ import {
   RepoMetadata,
   RepoProviderError,
   RepoSlug,
+  RepoTag,
+  RepoTagList,
   RepoTree,
   TreeEntry,
 } from '../../models';
@@ -26,6 +28,9 @@ const MAX_PAGES = 50;
 
 /** Branch pages are 100 entries; stop after this many pages and mark truncated. */
 const MAX_BRANCH_PAGES = 10;
+
+/** Tag pages are 100 entries; ordered by modification (newest first). */
+const MAX_TAG_PAGES = 3;
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 
@@ -136,6 +141,26 @@ export class BitbucketServerProvider implements GitProvider {
     }
   }
 
+  async listTags(slug: RepoSlug): Promise<RepoTagList> {
+    const tags: RepoTag[] = [];
+    let start = 0;
+    for (let page = 1; ; page++) {
+      const data = await this.getJson<BbsPaged<{ displayId: string; latestCommit: string }>>(
+        slug,
+        `${repoApi(slug)}/tags?orderBy=MODIFICATION&limit=100&start=${start}`,
+        { notFound: 'Repository not found — it may not exist or it may be private.' },
+      );
+      for (const tag of data.values ?? []) {
+        tags.push({ name: tag.displayId, sha: tag.latestCommit });
+      }
+      if (data.isLastPage !== false || data.nextPageStart == null) {
+        return { tags, truncated: false };
+      }
+      if (page >= MAX_TAG_PAGES) return { tags, truncated: true };
+      start = data.nextPageStart;
+    }
+  }
+
   async getTree(slug: RepoSlug, ref: string): Promise<RepoTree> {
     const resolvedCommit = SHA_PATTERN.test(ref) ? ref : await this.firstCommitId(slug, ref);
     const entries: TreeEntry[] = [];
@@ -233,9 +258,13 @@ export class BitbucketServerProvider implements GitProvider {
   }
 
   async getCommit(slug: RepoSlug, sha: string): Promise<CommitInfo> {
-    const data = await this.getJson<BbsCommit>(slug, `${repoApi(slug)}/commits/${encodeURIComponent(sha)}`, {
-      notFound: `Commit ${sha.slice(0, 7)} was not found in this repository.`,
-    });
+    const data = await this.getJson<BbsCommit>(
+      slug,
+      `${repoApi(slug)}/commits/${encodeURIComponent(sha)}`,
+      {
+        notFound: `Commit ${sha.slice(0, 7)} was not found in this repository.`,
+      },
+    );
     return mapCommit(data, slug);
   }
 
@@ -264,7 +293,9 @@ export class BitbucketServerProvider implements GitProvider {
         files.push({
           path,
           status,
-          ...(status === 'renamed' && previousPath && previousPath !== path ? { previousPath } : {}),
+          ...(status === 'renamed' && previousPath && previousPath !== path
+            ? { previousPath }
+            : {}),
         });
       }
       if (data.isLastPage !== false || data.nextPageStart == null || page >= MAX_PAGES) break;

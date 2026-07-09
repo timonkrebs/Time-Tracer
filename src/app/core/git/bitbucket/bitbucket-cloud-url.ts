@@ -62,7 +62,12 @@ function tryParseHttpUrl(input: string): URL | null {
   }
 }
 
-function validated(workspace: string, repo: string, ref?: string, path?: string): ParsedRepoUrl | null {
+function validated(
+  workspace: string,
+  repo: string,
+  ref?: string,
+  path?: string,
+): ParsedRepoUrl | null {
   if (!SEGMENT_PATTERN.test(workspace) || !SEGMENT_PATTERN.test(repo)) return null;
   return { owner: workspace, repo, ...(ref ? { ref } : {}), ...(path ? { path } : {}) };
 }

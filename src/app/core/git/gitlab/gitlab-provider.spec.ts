@@ -66,6 +66,17 @@ describe('GitlabProvider', () => {
     expect(list.truncated).toBe(false);
   });
 
+  it('lists tags with the commits they point at', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([{ name: 'v1.0.0', commit: { id: 'abc' } }]));
+
+    const list = await provider.listTags(slug);
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://gitlab.com/api/v4/projects/gitlab-org%2Fgitlab/repository/tags?per_page=100&page=1',
+    );
+    expect(list).toEqual({ tags: [{ name: 'v1.0.0', sha: 'abc' }], truncated: false });
+  });
+
   it('pages through the recursive tree until a short page arrives', async () => {
     const fullPage = Array.from({ length: 100 }, (_, i) => ({
       id: `sha${i}`,

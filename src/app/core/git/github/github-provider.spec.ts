@@ -275,6 +275,28 @@ describe('GithubProvider', () => {
     expect(list.truncated).toBe(true);
   });
 
+  it('lists tags with the commits they point at', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        { name: 'v2.0.0', commit: { sha: 'abc' } },
+        { name: 'v1.0.0', commit: { sha: 'def' } },
+      ]),
+    );
+
+    const list = await provider.listTags(slug);
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://api.github.com/repos/acme/rocket/tags?per_page=100&page=1',
+    );
+    expect(list).toEqual({
+      tags: [
+        { name: 'v2.0.0', sha: 'abc' },
+        { name: 'v1.0.0', sha: 'def' },
+      ],
+      truncated: false,
+    });
+  });
+
   it('builds web links with encoded paths', () => {
     const links = provider.webLinks(slug, 'main', 'docs/my file.md');
     expect(links.fileUrl).toBe('https://github.com/acme/rocket/blob/main/docs/my%20file.md');
@@ -533,6 +555,37 @@ describe('GithubProvider', () => {
       );
 
       await expect(provider.getCommitFiles(slug, 'abc')).resolves.toEqual([]);
+    });
+
+    it('follows file pagination when a commit touches more than one page', async () => {
+      // The files array pages at the explicitly requested per_page; a single
+      // request would silently drop everything beyond the first page.
+      const commit = {
+        sha: 'abc',
+        html_url: 'https://github.com/acme/rocket/commit/abc',
+        commit: { message: 'big: sweep', author: null },
+        parents: [{ sha: 'p1' }],
+      };
+      const fullPage = Array.from({ length: 100 }, (_, i) => ({
+        filename: `src/file-${i}.ts`,
+        status: 'modified',
+      }));
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ ...commit, files: fullPage }))
+        .mockResolvedValueOnce(
+          jsonResponse({ ...commit, files: [{ filename: 'src/last.ts', status: 'added' }] }),
+        );
+
+      const files = await provider.getCommitFiles(slug, 'abc');
+
+      expect(files).toHaveLength(101);
+      expect(files.at(-1)).toEqual({ path: 'src/last.ts', status: 'added' });
+      expect(fetchMock.mock.calls[0][0]).toBe(
+        'https://api.github.com/repos/acme/rocket/commits/abc?per_page=100&page=1',
+      );
+      expect(fetchMock.mock.calls[1][0]).toBe(
+        'https://api.github.com/repos/acme/rocket/commits/abc?per_page=100&page=2',
+      );
     });
   });
 });

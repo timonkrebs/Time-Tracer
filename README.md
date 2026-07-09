@@ -65,9 +65,9 @@ renames — see the feature list and roadmap below for what's done and what's ne
   'feature/x'", Bitbucket's "Merged in x") — the only place git still remembers a deleted
   branch's name — so merges read as labelled curves that fork off and rejoin their target. Long
   linear runs collapse into an "N commits" pill that expands on click. The initial graph costs
-  **one request** (a window of the viewed ref's history); **+ Add branch** overlays any other
-  branch and **← Older commits** pages every loaded branch further back, one request per branch
-  each. **Commit sizes** (opt-in — one request per commit, shared with the Insights cache, so an
+  **one request** (a window of the viewed ref's history); **+ Add branch** checks off any number
+  of other branches to overlay in one go and **← Older commits** pages every loaded branch
+  further back, one request per branch each. **Commit sizes** (opt-in — one request per commit, shared with the Insights cache, so an
   analysed repo sizes for free; automatic for local repositories) fills each dot **from the
   bottom, gauge-style,** by **how much the commit changed**: lines added+removed where the
   provider reports line stats (GitHub), files touched elsewhere, log-scaled — heavy commits read
@@ -75,9 +75,16 @@ renames — see the feature list and roadmap below for what's done and what's ne
   merges only**: their first-parent diff spans the whole merged branch, so their fills compare
   PR against PR while regular commits compare against regular commits. Azure DevOps omits parent links from
   its bulk listing; the explorer says so ("unlinked commits") and offers **Connect commits** to
-  fetch them one commit at a time. Clicking a commit opens a detail bar — full message, author,
-  copyable sha, `+added −removed · files`, hop-to-parent chips — with **Browse this commit**,
-  which time-travels the whole file tree to that sha.
+  fetch them one commit at a time. **Tags show as dashed golden chips** on their commits (one
+  request, annotated tags dereferenced on every provider — local repos included) and tagged
+  commits never fold into pills. Clicking a commit opens a detail bar — full message, author,
+  copyable sha, `+added −removed · files`, hop-to-parent chips — with a **Files** panel listing
+  everything the commit changed (status, `+/−` per file; click a file to open its diff at that
+  commit, free when the commit was already sized) and **Browse this commit**, which time-travels
+  the whole file tree to that sha. **Compare from here** anchors a comparison: pick any other
+  commit and the bar shows **ahead/behind counts** (`git rev-list --left-right`-style, computed
+  client-side over the loaded window — marked as lower bounds when the window doesn't reach the
+  merge base) while everything outside the two branches' difference dims away.
 - **Per-file commit history**: a History panel lists the commits that touched the selected file
   (paginated — page through older commits or **Load all** at once), with author and relative date.
   Its open/closed state is remembered, so it can stay open permanently across files and sessions.
