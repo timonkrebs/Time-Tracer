@@ -174,6 +174,46 @@ describe('LocalGitProvider', () => {
     logSpy.mockRestore();
   });
 
+  it('serves a path history through the one-pass prime walk (no filepath log)', async () => {
+    const logSpy = vi.spyOn(git, 'log');
+    await provider.listCommits(slug, { ref: 'main', path: 'hello.txt' });
+    // One full-history walk with no per-commit path resolution…
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(logSpy.mock.calls[0][0]).not.toHaveProperty('filepath');
+    // …that also primes every other path and the unfiltered log.
+    const greeting = await provider.listCommits(slug, { ref: 'main', path: 'greeting.txt' });
+    const all = await provider.listCommits(slug, { ref: 'main', perPage: 2, page: 2 });
+    expect(greeting.map((c) => c.sha)).toEqual([c3]);
+    expect(all.map((c) => c.sha)).toEqual([c1]);
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    logSpy.mockRestore();
+  });
+
+  it('shares one prime walk across concurrent path-history requests', async () => {
+    const logSpy = vi.spyOn(git, 'log');
+    const [hello, greeting] = await Promise.all([
+      provider.listCommits(slug, { ref: 'main', path: 'hello.txt' }),
+      provider.listCommits(slug, { ref: 'main', path: 'greeting.txt' }),
+    ]);
+    expect(hello.map((c) => c.sha)).toEqual([c3, c2, c1]);
+    expect(greeting.map((c) => c.sha)).toEqual([c3]);
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    logSpy.mockRestore();
+  });
+
+  it('extends an unfiltered walk by at least doubling (paging stays linear)', async () => {
+    const logSpy = vi.spyOn(git, 'log');
+    await provider.listCommits(slug, { ref: 'main', perPage: 1, page: 1 });
+    await provider.listCommits(slug, { ref: 'main', perPage: 1, page: 2 });
+    await provider.listCommits(slug, { ref: 'main', perPage: 1, page: 3 });
+    const depths = logSpy.mock.calls.map(([options]) => (options as { depth?: number }).depth);
+    expect(depths).toEqual([1, 2, 4]);
+    // The third walk overshot the 3-commit history, so the log is complete now.
+    await provider.listCommits(slug, { ref: 'main', perPage: 1, page: 1 });
+    expect(logSpy).toHaveBeenCalledTimes(3);
+    logSpy.mockRestore();
+  });
+
   it('primeHistories precomputes every path history in one pass (nested dirs)', async () => {
     // Add a nested file across two commits to exercise subtree-diff recursion.
     await fs.promises.writeFile('/src/lib/util.ts', 'export const a = 1;\n');

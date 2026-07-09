@@ -83,6 +83,11 @@ interface CommitLogCache {
 const CACHE_KEY_SEP = String.fromCharCode(0);
 const logCacheKey = (ref: string, path: string): string => `${ref}${CACHE_KEY_SEP}${path}`;
 
+/** Commits between macrotask yields during a prime walk — a fully cached
+ * re-walk suspends only into microtasks, which would starve rendering. */
+const PRIME_YIELD_INTERVAL = 1024;
+const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => setTimeout(resolve));
+
 /**
  * Reads repositories straight from a local folder (File System Access API)
  * by parsing the `.git` directory with isomorphic-git — no server, no
@@ -98,13 +103,10 @@ export class LocalGitProvider implements GitProvider {
   /**
    * Commit-log walks memoised per filesystem, then per `<ref>\0<path>`.
    * isomorphic-git's `log` can neither resume nor page — it re-walks from the
-   * tip on every call, and a path filter forces a *full*-history walk every
-   * time. That made paging quadratic on local repos: "Load all history" and
-   * the per-file co-change walk re-walked the whole repository for each page.
-   * The repo is read-only for the session, so the ordered walk is stable and
-   * safe to reuse. Keying by the fs object — a re-picked or reconnected folder
-   * gets a fresh one — keeps the cache from going stale; a WeakMap lets it die
-   * with the fs.
+   * tip on every call. The repo is read-only for the session, so the ordered
+   * walk is stable and safe to reuse. Keying by the fs object — a re-picked or
+   * reconnected folder gets a fresh one — keeps the cache from going stale; a
+   * WeakMap lets it die with the fs.
    */
   private readonly logCache = new WeakMap<FsLike, Map<string, CommitLogCache>>();
 
@@ -114,6 +116,22 @@ export class LocalGitProvider implements GitProvider {
    * {@link logCache} has genuinely no history — no per-file walk is needed.
    */
   private readonly primedRefs = new WeakMap<FsLike, Set<string>>();
+
+  /**
+   * In-flight prime walks per fs+ref, so concurrent path-history requests —
+   * a History click racing the folder-ownership scan, or blame prefetching
+   * several files at once — share one full-history walk instead of each
+   * starting their own.
+   */
+  private readonly primeRuns = new WeakMap<FsLike, Map<string, Promise<void>>>();
+
+  /**
+   * Working-tree `stat` sizes per fs (`path → size`, null when absent from
+   * the working tree). The folder is read-only for the session, so repeated
+   * tree loads — branch switches, the rename search's per-sha trees — skip
+   * the two FS round trips per file after the first walk.
+   */
+  private readonly workingSizes = new WeakMap<FsLike, Map<string, number | null>>();
 
   /**
    * Tree entries by oid, per fs. Tree oids are content-addressed and immutable,
@@ -193,8 +211,7 @@ export class LocalGitProvider implements GitProvider {
         oid: commitOid,
         cache: this.gitCache(fs),
       });
-      const entries: TreeEntry[] = [];
-      await this.walkTree(git, fs, commit.tree, '', entries);
+      const entries = await this.walkTree(git, fs, commit.tree, '');
       return { entries: await this.withSizes(fs, entries), truncated: false };
     } catch (error) {
       throw this.mapError(error, `Ref "${ref}" was not found in this repository.`, 'invalid-ref');
@@ -208,7 +225,9 @@ export class LocalGitProvider implements GitProvider {
    * otherwise have nothing to scale by. A working-tree `stat` is cheap metadata
    * — no blob inflation — and reflects the checked-out files; entries absent
    * from the working tree (e.g. when viewing a ref other than the checkout)
-   * keep an undefined size. Bounded concurrency overlaps the FS reads.
+   * keep an undefined size. Bounded concurrency overlaps the FS reads, and
+   * results are memoised per fs ({@link workingSizes}) so only paths never
+   * statted before pay a round trip.
    */
   private async withSizes(
     fs: FsLike,
@@ -216,49 +235,59 @@ export class LocalGitProvider implements GitProvider {
   ): Promise<readonly TreeEntry[]> {
     const files = entries.filter((entry) => entry.kind === 'file');
     if (files.length === 0) return entries;
-    const sizes = new Map<string, number>();
+    let cached = this.workingSizes.get(fs);
+    if (!cached) this.workingSizes.set(fs, (cached = new Map()));
+    const sizes = cached;
+    const pending = files.filter((entry) => !sizes.has(entry.path));
     let next = 0;
     const worker = async (): Promise<void> => {
-      while (next < files.length) {
-        const entry = files[next++];
+      while (next < pending.length) {
+        const entry = pending[next++];
         try {
           const stat = await fs.promises.stat(entry.path);
-          if (stat.isFile()) sizes.set(entry.path, stat.size);
+          sizes.set(entry.path, stat.isFile() ? stat.size : null);
         } catch {
-          // Not in the working tree — leave the size undefined.
+          // Not in the working tree — remembered so it isn't re-asked.
+          sizes.set(entry.path, null);
         }
       }
     };
     await Promise.all(
-      Array.from({ length: Math.min(SIZE_STAT_CONCURRENCY, files.length) }, worker),
+      Array.from({ length: Math.min(SIZE_STAT_CONCURRENCY, pending.length) }, worker),
     );
-    if (sizes.size === 0) return entries;
-    return entries.map((entry) =>
-      entry.kind === 'file' && sizes.has(entry.path)
-        ? { ...entry, size: sizes.get(entry.path) }
-        : entry,
-    );
+    return entries.map((entry) => {
+      if (entry.kind !== 'file') return entry;
+      const size = sizes.get(entry.path);
+      return size == null ? entry : { ...entry, size };
+    });
   }
 
+  /**
+   * Recursive tree walk in depth-first order. Sibling subtrees load
+   * concurrently — a cold walk is bound by FS round trips, not CPU — and each
+   * level's results are assembled in order, so the listing stays deterministic.
+   * Trees go through {@link readTreeCached}: the same subtrees back the
+   * commit-diff walks, so a later prime/rename search reuses them for free.
+   */
   private async walkTree(
     git: GitApi,
     fs: FsLike,
     treeOid: string,
     prefix: string,
-    out: TreeEntry[],
-  ): Promise<void> {
-    const { tree } = await git.readTree({ fs, dir: '/', oid: treeOid, cache: this.gitCache(fs) });
-    for (const entry of tree) {
-      const path = prefix ? `${prefix}/${entry.path}` : entry.path;
-      if (entry.type === 'tree') {
-        out.push({ path, name: entry.path, kind: 'dir', sha: entry.oid });
-        await this.walkTree(git, fs, entry.oid, path, out);
-      } else if (entry.type === 'blob') {
-        out.push({ path, name: entry.path, kind: 'file', sha: entry.oid });
-      } else {
-        out.push({ path, name: entry.path, kind: 'submodule', sha: entry.oid });
-      }
-    }
+  ): Promise<TreeEntry[]> {
+    const children = await this.readTreeCached(git, fs, treeOid);
+    const parts = await Promise.all(
+      children.map(async (entry): Promise<TreeEntry[]> => {
+        const path = prefix ? `${prefix}/${entry.path}` : entry.path;
+        if (entry.type === 'tree') {
+          const sub = await this.walkTree(git, fs, entry.oid, path);
+          return [{ path, name: entry.path, kind: 'dir', sha: entry.oid }, ...sub];
+        }
+        const kind: TreeEntry['kind'] = entry.type === 'blob' ? 'file' : 'submodule';
+        return [{ path, name: entry.path, kind, sha: entry.oid }];
+      }),
+    );
+    return parts.flat();
   }
 
   async getFile(slug: RepoSlug, entry: TreeEntry): Promise<RepoFile> {
@@ -326,10 +355,20 @@ export class LocalGitProvider implements GitProvider {
   /**
    * At least `wanted` commits reachable from `ref` (optionally only those that
    * touched `path`), newest first, memoised per fs so repeated paging never
-   * re-walks. A path filter has no shallow form in isomorphic-git — it always
-   * walks the full history — so its result is cached complete and every later
-   * page is a free slice. An unfiltered walk grows the cached prefix on demand
-   * and never reads deeper than the request itself would have.
+   * re-walks.
+   *
+   * A path filter has no shallow form — any answer requires walking the full
+   * history. isomorphic-git's own `log({ filepath })` does that walk *and*
+   * re-resolves the file's path from the root tree for every commit visited,
+   * once per file asked about. The one-pass prime walk ({@link primeHistories})
+   * answers the same question for *every* path at once, for about the price
+   * isomorphic-git charges for a single file — so the first path history primes
+   * the ref and every later one (and every later page) is a cache slice.
+   *
+   * An unfiltered walk grows the cached prefix on demand; each extension at
+   * least doubles the depth because `log` cannot resume — it re-walks from the
+   * tip on every call, and per-page growth would make paging the whole history
+   * (the Age and co-change walks) quadratic in commits.
    */
   private async commitLog(
     fs: FsLike,
@@ -347,46 +386,63 @@ export class LocalGitProvider implements GitProvider {
     if (cached && (cached.complete || cached.commits.length >= wanted)) {
       return cached.commits;
     }
-    // After a one-pass prime, every touched path is cached; a miss is empty.
-    if (path && this.primedRefs.get(fs)?.has(ref)) {
+
+    if (path) {
+      await this.ensurePrimed(fs, ref);
+      // After the prime every touched path is cached; a miss is truly empty.
+      const primed = perFs.get(key);
+      if (primed) return primed.commits;
       const empty: CommitLogCache = { commits: [], complete: true };
       perFs.set(key, empty);
       return empty.commits;
     }
 
     const git = await loadGit();
-    // With a path, isomorphic-git must walk the whole history to find every
-    // commit that touched it (`force` skips commits where it is absent rather
-    // than throwing); without one, the walk is capped at the requested depth.
+    const depth = Math.max(wanted, cached ? cached.commits.length * 2 : 0);
     const log = (await git.log({
       fs,
       dir: '/',
       ref,
       cache: this.gitCache(fs),
-      ...(path ? { filepath: path, force: true } : { depth: wanted }),
+      depth,
     })) as ReadCommitResult[];
     const commits = log.map(mapCommit);
-    perFs.set(key, { commits, complete: !!path || commits.length < wanted });
+    perFs.set(key, { commits, complete: commits.length < depth });
     return commits;
   }
 
   /**
    * Precomputes the full commit history of *every* path reachable from `ref` in
    * a single walk, then serves all later `listCommits({ path })` calls from the
-   * cache. Bulk consumers — the folder ownership / busfactor scan — otherwise
-   * ask for hundreds of files' histories, and isomorphic-git's per-path `log`
-   * re-walks the whole repository for each one: an O(files × commits) storm
-   * that took many minutes. Here the history is walked once and each commit is
-   * diffed against its first parent with oid-pruned tree comparison (identical
-   * subtrees are skipped), so the cost is ~O(commits + changes) for the entire
-   * repository. Idempotent and cached per fs+ref; safe because the repo is
-   * read-only for the session.
+   * cache. isomorphic-git's per-path `log` re-walks the whole repository for
+   * each file — an O(files × commits) storm for bulk consumers like the folder
+   * ownership scan, and a full-history walk per file even for a single History
+   * click. Here the history is walked once and each commit is diffed against
+   * its first parent with oid-pruned tree comparison (identical subtrees are
+   * skipped), so the cost is ~O(commits + changes) for the entire repository.
+   * Idempotent and cached per fs+ref; safe because the repo is read-only for
+   * the session.
    */
   async primeHistories(slug: RepoSlug, ref: string): Promise<void> {
-    const fs = this.fs(slug);
-    let primed = this.primedRefs.get(fs);
-    if (primed?.has(ref)) return;
+    await this.ensurePrimed(this.fs(slug), ref);
+  }
 
+  /** The prime walk for fs+ref, started at most once and shared by concurrent
+   * callers; a failed walk clears its slot so a retry can walk again. */
+  private ensurePrimed(fs: FsLike, ref: string): Promise<void> {
+    if (this.primedRefs.get(fs)?.has(ref)) return Promise.resolve();
+    let perFs = this.primeRuns.get(fs);
+    if (!perFs) this.primeRuns.set(fs, (perFs = new Map()));
+    const runs = perFs;
+    let run = runs.get(ref);
+    if (!run) {
+      run = this.primeAllHistories(fs, ref).finally(() => runs.delete(ref));
+      runs.set(ref, run);
+    }
+    return run;
+  }
+
+  private async primeAllHistories(fs: FsLike, ref: string): Promise<void> {
     const git = await loadGit();
     const log = (await git.log({
       fs,
@@ -394,24 +450,25 @@ export class LocalGitProvider implements GitProvider {
       ref,
       cache: this.gitCache(fs),
     })) as LogCommitResult[];
+    const infos = log.map(mapCommit);
     const treeOf = new Map(log.map((entry) => [entry.oid, entry.commit.tree]));
     const readTree = (oid: string): Promise<readonly TreeChild[]> =>
       this.readTreeCached(git, fs, oid);
 
     // The log is newest-first, so appending keeps each path's history newest-first.
     const histories = new Map<string, CommitInfo[]>();
-    for (const entry of log) {
+    for (let i = 0; i < log.length; i++) {
+      const entry = log[i];
       const parentOid = entry.commit.parent[0];
       const parentTree = parentOid ? (treeOf.get(parentOid) ?? null) : null;
       const changed: CommitFileChange[] = [];
       await this.diffTrees(readTree, parentTree, entry.commit.tree, '', changed);
-      if (changed.length === 0) continue;
-      const info = mapCommit(entry);
       for (const change of changed) {
         let arr = histories.get(change.path);
         if (!arr) histories.set(change.path, (arr = []));
-        arr.push(info);
+        arr.push(infos[i]);
       }
+      if (i % PRIME_YIELD_INTERVAL === PRIME_YIELD_INTERVAL - 1) await yieldToEventLoop();
     }
 
     let perFs = this.logCache.get(fs);
@@ -419,9 +476,13 @@ export class LocalGitProvider implements GitProvider {
       perFs = new Map();
       this.logCache.set(fs, perFs);
     }
+    // The walk visited every reachable commit, so the *unfiltered* log is now
+    // complete too — the Age/co-change history read becomes a cache slice.
+    perFs.set(logCacheKey(ref, ''), { commits: infos, complete: true });
     for (const [p, commits] of histories) {
       perFs.set(logCacheKey(ref, p), { commits, complete: true });
     }
+    let primed = this.primedRefs.get(fs);
     if (!primed) this.primedRefs.set(fs, (primed = new Set()));
     primed.add(ref);
   }
