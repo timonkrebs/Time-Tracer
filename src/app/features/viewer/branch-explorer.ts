@@ -209,6 +209,14 @@ interface SizeScale {
           unlinked commits
         </span>
       }
+      @if (tagsTruncated()) {
+        <span
+          class="rounded-full border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 text-[11px] text-amber-300"
+          title="The repository holds more tags than the listing window, so some commits may be missing their tag chips."
+        >
+          tags capped
+        </span>
+      }
       @if (sizesLegend(); as legend) {
         <span
           class="hidden text-[11px] text-zinc-600 lg:block"
@@ -875,6 +883,12 @@ export class BranchExplorer {
 
   protected readonly sizing = computed(() => this.sizes()?.status === 'sizing');
   protected readonly sizesMessage = computed(() => this.sizes()?.message ?? null);
+
+  /** True when the repository holds more tags than the listing window. */
+  protected readonly tagsTruncated = computed(() => {
+    const state = this.tags();
+    return state?.status === 'ready' && state.truncated;
+  });
 
   /**
    * Fill-level scales across the loaded window: lines changed where the

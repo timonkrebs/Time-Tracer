@@ -398,6 +398,18 @@ describe('BranchExplorer', () => {
     expect(dots().every((g) => g.getAttribute('opacity') === '1')).toBe(true);
   });
 
+  it('flags a capped tag listing instead of pretending chips are complete', async () => {
+    await setState(MERGE_STATE);
+    fixture.componentRef.setInput('tags', {
+      status: 'ready' as const,
+      bySha: new Map(),
+      truncated: true,
+    });
+    await fixture.whenStable();
+
+    expect(root().textContent).toContain('tags capped');
+  });
+
   it('shows tag chips and pins tagged commits out of collapsed runs', async () => {
     await setState(LINEAR_STATE);
     expect(pills().length).toBe(1); // p1..p5 folded

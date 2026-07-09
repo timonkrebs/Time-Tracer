@@ -28,8 +28,13 @@ export const MAX_FILE_SIZE_BYTES = 2_000_000;
 /** Branch pages are 100 entries; stop after this many pages and mark truncated. */
 const MAX_BRANCH_PAGES = 10;
 
-/** Tag pages are 100 entries; the graph's chips only need the recent ones. */
-const MAX_TAG_PAGES = 3;
+/**
+ * Tag pages are 100 entries. GitHub's tag listing exposes no sort parameter
+ * and no dates, so there is no way to fetch "the recent tags" specifically —
+ * repositories beyond the cap return `truncated: true` and the Branch
+ * Explorer says so instead of pretending the chips are complete.
+ */
+const MAX_TAG_PAGES = 5;
 
 interface GithubRepoResponse {
   name: string;
