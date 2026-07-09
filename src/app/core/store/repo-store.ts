@@ -1459,28 +1459,33 @@ export class RepoStore {
   }
 
   /**
-   * Adds another branch's recent history to the Branch Explorer graph (one
-   * request). Where the branch shares commits with what is already loaded,
-   * the histories join into one DAG; a failure keeps the current graph and
-   * surfaces the message on it.
+   * Adds more branches' recent histories to the Branch Explorer graph in one
+   * load cycle (one request per branch, already-loaded names skipped). Where
+   * a branch shares commits with what is already loaded, the histories join
+   * into one DAG; the first failure stops the run, keeps whatever merged and
+   * surfaces the message on the graph.
    */
-  async addGraphBranch(name: string): Promise<void> {
+  async addGraphBranches(names: readonly string[]): Promise<void> {
     const slug = this._slug();
-    if (!slug || this._branchGraph()?.status !== 'ready' || this.graphHeads.has(name)) return;
+    const pending = names.filter((name) => !this.graphHeads.has(name));
+    if (!slug || this._branchGraph()?.status !== 'ready' || pending.length === 0) return;
 
     const run = this.graphRun;
     this.publishGraph('loading-more');
-    try {
-      const commits = await this.registry
-        .byId(slug.provider)
-        .listCommits(slug, { ref: name, perPage: GRAPH_PAGE_SIZE });
-      if (run !== this.graphRun) return;
-      this.mergeGraphPage(name, commits, 1);
-      this.publishGraph('ready');
-    } catch (error) {
-      if (run !== this.graphRun) return;
-      this.publishGraph('ready', `${name}: ${toRepoProviderError(error).message}`);
+    const provider = this.registry.byId(slug.provider);
+    let failure: string | undefined;
+    for (const name of pending) {
+      try {
+        const commits = await provider.listCommits(slug, { ref: name, perPage: GRAPH_PAGE_SIZE });
+        if (run !== this.graphRun) return;
+        this.mergeGraphPage(name, commits, 1);
+      } catch (error) {
+        if (run !== this.graphRun) return;
+        failure = `${name}: ${toRepoProviderError(error).message}`;
+        break;
+      }
     }
+    this.publishGraph('ready', failure);
   }
 
   /**

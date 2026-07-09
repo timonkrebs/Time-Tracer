@@ -281,7 +281,7 @@ interface SizeScale {
           (click)="toggleAdd()"
           aria-haspopup="listbox"
           [attr.aria-expanded]="addOpen()"
-          title="Add another branch to the graph (one request)"
+          title="Add more branches to the graph (one request per branch)"
         >
           + Add branch
         </button>
@@ -310,6 +310,7 @@ interface SizeScale {
                 <ul
                   role="listbox"
                   aria-label="Branches to add"
+                  aria-multiselectable="true"
                   class="slim-scrollbar max-h-72 min-h-0 overflow-y-auto py-1"
                 >
                   @for (name of addableBranches(); track name) {
@@ -317,10 +318,21 @@ interface SizeScale {
                       <button
                         type="button"
                         role="option"
-                        aria-selected="false"
+                        [attr.aria-selected]="pendingAdds().has(name)"
                         class="flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-xs text-zinc-200 transition-colors hover:bg-white/5"
-                        (click)="chooseBranch(name)"
+                        (click)="toggleBranch(name)"
                       >
+                        <span
+                          aria-hidden="true"
+                          class="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border text-[10px] leading-none"
+                          [class]="
+                            pendingAdds().has(name)
+                              ? 'border-indigo-400 bg-indigo-500/30 text-indigo-200'
+                              : 'border-zinc-600 text-transparent'
+                          "
+                        >
+                          ✓
+                        </span>
                         <span class="min-w-0 flex-1 truncate">{{ name }}</span>
                         @if (name === defaultBranch()) {
                           <span
@@ -333,6 +345,19 @@ interface SizeScale {
                     </li>
                   }
                 </ul>
+                <div
+                  class="flex items-center justify-between gap-2 border-t border-zinc-800 px-3 py-2"
+                >
+                  <span class="text-[11px] text-zinc-500">{{ pendingAdds().size }} selected</span>
+                  <button
+                    type="button"
+                    class="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-200 transition hover:border-zinc-500 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    [disabled]="pendingAdds().size === 0"
+                    (click)="applyAdd()"
+                  >
+                    Add {{ pendingAdds().size === 1 ? 'branch' : 'branches' }}
+                  </button>
+                </div>
               }
             } @else if (branches()?.status === 'error') {
               <div class="px-3 py-3 text-xs">
@@ -842,8 +867,8 @@ export class BranchExplorer {
     previousPath?: string;
     merge: boolean;
   }>();
-  /** Add a branch to the graph. */
-  readonly addBranch = output<string>();
+  /** Add the checked branches to the graph. */
+  readonly addBranches = output<readonly string[]>();
   /** The add-branch dropdown was opened — load the branch list. */
   readonly loadBranches = output<void>();
   /** "Browse this commit" — open the file tree at that sha. */
@@ -863,6 +888,8 @@ export class BranchExplorer {
   protected readonly compareFrom = signal<string | null>(null);
   protected readonly addOpen = signal(false);
   protected readonly filter = signal('');
+  /** Branches checked in the add dropdown, applied together on "Add". */
+  protected readonly pendingAdds = signal<ReadonlySet<string>>(new Set());
 
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly scroller = viewChild<ElementRef<HTMLDivElement>>('scroller');
@@ -1260,13 +1287,25 @@ export class BranchExplorer {
       return;
     }
     this.filter.set('');
+    this.pendingAdds.set(new Set());
     this.addOpen.set(true);
     this.loadBranches.emit();
   }
 
-  protected chooseBranch(name: string): void {
+  protected toggleBranch(name: string): void {
+    this.pendingAdds.update((pending) => {
+      const next = new Set(pending);
+      if (!next.delete(name)) next.add(name);
+      return next;
+    });
+  }
+
+  /** Emits every checked branch at once — one load cycle in the store. */
+  protected applyAdd(): void {
+    const names = [...this.pendingAdds()];
     this.addOpen.set(false);
-    this.addBranch.emit(name);
+    this.pendingAdds.set(new Set());
+    if (names.length > 0) this.addBranches.emit(names);
   }
 
   protected onFilterInput(event: Event): void {

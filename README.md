@@ -65,9 +65,9 @@ renames — see the feature list and roadmap below for what's done and what's ne
   'feature/x'", Bitbucket's "Merged in x") — the only place git still remembers a deleted
   branch's name — so merges read as labelled curves that fork off and rejoin their target. Long
   linear runs collapse into an "N commits" pill that expands on click. The initial graph costs
-  **one request** (a window of the viewed ref's history); **+ Add branch** overlays any other
-  branch and **← Older commits** pages every loaded branch further back, one request per branch
-  each. **Commit sizes** (opt-in — one request per commit, shared with the Insights cache, so an
+  **one request** (a window of the viewed ref's history); **+ Add branch** checks off any number
+  of other branches to overlay in one go and **← Older commits** pages every loaded branch
+  further back, one request per branch each. **Commit sizes** (opt-in — one request per commit, shared with the Insights cache, so an
   analysed repo sizes for free; automatic for local repositories) fills each dot **from the
   bottom, gauge-style,** by **how much the commit changed**: lines added+removed where the
   provider reports line stats (GitHub), files touched elsewhere, log-scaled — heavy commits read

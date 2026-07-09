@@ -404,7 +404,7 @@ const OWNERS_OPEN_KEY = 'time-tracer.owners-open';
               (resolveParents)="store.resolveGraphParents()"
               (filesRequest)="store.loadGraphCommitFiles($event)"
               (openFile)="onGraphOpenFile($event)"
-              (addBranch)="store.addGraphBranch($event)"
+              (addBranches)="store.addGraphBranches($event)"
               (loadBranches)="store.loadBranches()"
               (browse)="onGraphBrowse($event)"
             />

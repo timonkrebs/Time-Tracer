@@ -76,7 +76,7 @@ describe('BranchExplorer', () => {
   let sizeLoads: number;
   let parentResolves: number;
   let branchLoads: number;
-  let added: string[];
+  let added: (readonly string[])[];
   let browsed: string[];
   let filesRequested: string[];
   let opened: { path: string; sha: string; previousPath?: string; merge: boolean }[];
@@ -105,7 +105,7 @@ describe('BranchExplorer', () => {
     fixture.componentInstance.loadSizes.subscribe(() => sizeLoads++);
     fixture.componentInstance.resolveParents.subscribe(() => parentResolves++);
     fixture.componentInstance.loadBranches.subscribe(() => branchLoads++);
-    fixture.componentInstance.addBranch.subscribe((name) => added.push(name));
+    fixture.componentInstance.addBranches.subscribe((names) => added.push(names));
     fixture.componentInstance.browse.subscribe((sha) => browsed.push(sha));
     fixture.componentInstance.filesRequest.subscribe((sha) => filesRequested.push(sha));
     fixture.componentInstance.openFile.subscribe((target) => opened.push(target));
@@ -134,8 +134,10 @@ describe('BranchExplorer', () => {
     ) as SVGGElement[];
   }
 
-  function buttonByText(text: string): HTMLButtonElement | undefined {
-    return Array.from(root().querySelectorAll('button')).find((b) => b.textContent?.includes(text));
+  function buttonByText(text: string, nth = 0): HTMLButtonElement | undefined {
+    return Array.from(root().querySelectorAll('button')).filter((b) =>
+      b.textContent?.includes(text),
+    )[nth];
   }
 
   it('shows a loading state until the graph arrives', () => {
@@ -225,7 +227,41 @@ describe('BranchExplorer', () => {
       .find((b) => b.textContent?.includes('dev'))!
       .click();
     await fixture.whenStable();
-    expect(added).toEqual(['dev']);
+    // Checking a branch only marks it — the emit happens on Add.
+    expect(added).toEqual([]);
+
+    buttonByText('Add branch', 1)!.click();
+    await fixture.whenStable();
+    expect(added).toEqual([['dev']]);
+  });
+
+  it('checks several branches and adds them together, unchecking on re-click', async () => {
+    await setState(MERGE_STATE);
+    fixture.componentRef.setInput('branches', BRANCHES);
+    await fixture.whenStable();
+
+    buttonByText('Add branch')!.click();
+    await fixture.whenStable();
+
+    const option = (name: string): HTMLButtonElement =>
+      (Array.from(root().querySelectorAll('li button')) as HTMLButtonElement[]).find((b) =>
+        b.textContent?.includes(name),
+      )!;
+    option('dev').click();
+    option('feature/foo').click();
+    await fixture.whenStable();
+    expect(root().textContent).toContain('2 selected');
+    expect(option('dev').getAttribute('aria-selected')).toBe('true');
+
+    option('dev').click();
+    await fixture.whenStable();
+    expect(option('dev').getAttribute('aria-selected')).toBe('false');
+
+    buttonByText('Add branch', 1)!.click();
+    await fixture.whenStable();
+    expect(added).toEqual([['feature/foo']]);
+    // Applying closes the dropdown.
+    expect(root().querySelector('[role="listbox"]')).toBeNull();
   });
 
   it('flags a partial graph when the state carries a message', async () => {

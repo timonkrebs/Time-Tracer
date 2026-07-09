@@ -1791,7 +1791,7 @@ describe('RepoStore', () => {
       });
 
       await store.loadBranchGraph();
-      await store.addGraphBranch('dev');
+      await store.addGraphBranches(['dev']);
 
       const graph = store.branchGraph();
       expect(graph?.status).toBe('ready');
@@ -1803,6 +1803,27 @@ describe('RepoStore', () => {
       ]);
     });
 
+    it('adds several branches in one load cycle, skipping loaded ones', async () => {
+      await store.loadRepo(slug);
+      answer({
+        main: [[commit('m1')]],
+        dev: [[commit('d1', ['m1']), commit('m1')]],
+        feat: [[commit('f1', ['m1']), commit('m1')]],
+      });
+
+      await store.loadBranchGraph();
+      const before = provider.listCommitsCalls.length;
+      await store.addGraphBranches(['main', 'dev', 'feat']);
+
+      const graph = store.branchGraph();
+      expect(graph?.status).toBe('ready');
+      if (graph?.status !== 'ready') return;
+      expect(graph.commits.map((c) => c.sha).sort()).toEqual(['d1', 'f1', 'm1']);
+      expect([...graph.heads.keys()]).toEqual(['main', 'dev', 'feat']);
+      // 'main' was already loaded — only the two new branches cost a request.
+      expect(provider.listCommitsCalls.length).toBe(before + 2);
+    });
+
     it('remembers which ref first brought each commit in', async () => {
       await store.loadRepo(slug);
       answer({
@@ -1811,7 +1832,7 @@ describe('RepoStore', () => {
       });
 
       await store.loadBranchGraph();
-      await store.addGraphBranch('dev');
+      await store.addGraphBranches(['dev']);
 
       // 'm1' arrived with the viewed ref's own listing; 'd1' only via dev —
       // navigation leaving the graph must switch the ref for 'd1' alone.
@@ -1827,7 +1848,7 @@ describe('RepoStore', () => {
       await store.loadBranchGraph();
 
       provider.listCommitsResult = () => Promise.reject(new RepoProviderError('nope', 'not-found'));
-      await store.addGraphBranch('ghost');
+      await store.addGraphBranches(['ghost']);
 
       const graph = store.branchGraph();
       expect(graph?.status).toBe('ready');
