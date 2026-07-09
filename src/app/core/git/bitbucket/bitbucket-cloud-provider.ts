@@ -133,12 +133,18 @@ export class BitbucketCloudProvider implements GitProvider {
     const tags: RepoTag[] = [];
     let url = `${repoApi(slug)}/refs/tags?pagelen=100&sort=-target.date`;
     for (let page = 1; ; page++) {
-      const data = await this.getJson<BbPaged<{ name: string; target: { hash: string } }>>(
-        slug,
-        url,
-        { notFound: 'Repository not found — it may not exist or it may be private.' },
-      );
-      for (const tag of data.values ?? []) tags.push({ name: tag.name, sha: tag.target.hash });
+      const data = await this.getJson<
+        BbPaged<{ name: string; target?: { hash?: string; type?: string } }>
+      >(slug, url, { notFound: 'Repository not found — it may not exist or it may be private.' });
+      for (const tag of data.values ?? []) {
+        // Bitbucket reports the tagged commit as `target` (annotated-tag
+        // metadata lives in message/tagger). Guard anyway: a hash-less entry,
+        // or a target something other than a commit, must not put a
+        // non-commit sha on the chip map.
+        const target = tag.target;
+        if (!target?.hash || (target.type !== undefined && target.type !== 'commit')) continue;
+        tags.push({ name: tag.name, sha: target.hash });
+      }
       if (!data.next) return { tags, truncated: false };
       if (page >= MAX_TAG_PAGES) return { tags, truncated: true };
       url = data.next;

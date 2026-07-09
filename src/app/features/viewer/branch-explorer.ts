@@ -1065,7 +1065,7 @@ export class BranchExplorer {
   protected readonly filesLabel = computed(() => {
     const files = this.selectedFiles();
     if (files?.status === 'ready') return `Files (${files.files.length})`;
-    if (files?.status === 'error') return 'Files ⚠';
+    if (files?.status === 'error') return 'Files (failed)';
     return 'Files';
   });
 
@@ -1302,8 +1302,9 @@ function dotView(
   let title = commit
     ? `${shortSha(commit.sha)} · ${commit.summary}\n${commit.authorName} · ${relativeTime(commit.authoredAt)}`
     : shortSha(node.sha);
+  // Plain text — the title doubles as the dot's aria-label.
   const tagNames = tags.get(node.sha) ?? [];
-  if (tagNames.length > 0) title += `\n🏷 ${tagNames.join(', ')}`;
+  if (tagNames.length > 0) title += `\nTags: ${tagNames.join(', ')}`;
 
   // Fill level: the commit's change size as a bottom-up gauge, log-scaled
   // (change sizes are heavy-tailed — one lockfile bump must not flatten

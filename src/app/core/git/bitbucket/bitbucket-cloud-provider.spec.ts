@@ -67,9 +67,16 @@ describe('BitbucketCloudProvider', () => {
     expect(list).toEqual({ names: ['develop', 'main', 'release/1.0'], truncated: false });
   });
 
-  it('lists tags with the commits they point at', async () => {
+  it('lists tags with the commits they point at, skipping non-commit targets', async () => {
     fetchMock.mockResolvedValue(
-      jsonResponse({ values: [{ name: 'v1.0.0', target: { hash: 'abc' } }] }),
+      jsonResponse({
+        values: [
+          { name: 'v1.0.0', target: { hash: 'abc', type: 'commit' } },
+          // Defensive: a target that is not a commit must not reach the chips.
+          { name: 'odd-tag-object', target: { hash: 'tag-obj', type: 'tag' } },
+          { name: 'no-hash', target: {} },
+        ],
+      }),
     );
 
     const list = await provider.listTags(slug);
